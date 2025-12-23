@@ -1,5 +1,6 @@
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -13,6 +14,7 @@ import requests
 import threading
 from dotenv import load_dotenv
 from urllib.parse import urlparse
+import uvicorn
 
 try:
     from tkcalendar import DateEntry
@@ -24,6 +26,8 @@ COLOR_PURPLE = "#7C3D96"
 COLOR_TEAL = "#07B499"
 _LOGO_PATH = None
 _LOGO_CACHE: dict[int, tk.PhotoImage] = {}
+_DESKTOP_FACTURAS = os.path.join(os.path.expanduser("~"), "Desktop", "ODS - Facturas")
+_BACKEND_THREAD = None
 
 
 def _load_logo(subsample: int = 12) -> tk.PhotoImage | None:
@@ -77,11 +81,15 @@ def _ensure_backend_running(base_url: str, status_callback=None) -> None:
     if status_callback:
         status_callback("Iniciando backend...", 30)
     host, port = _parse_host_port(base_url)
-    cmd = [sys.executable, "-m", "uvicorn", "main:app", "--host", host, "--port", str(port)]
-    kwargs = {"cwd": os.path.dirname(os.path.abspath(__file__))}
-    if os.name == "nt":
-        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-    subprocess.Popen(cmd, **kwargs)
+
+    if getattr(sys, "frozen", False):
+        _start_backend_inprocess(host, port)
+    else:
+        cmd = [sys.executable, "-m", "uvicorn", "main:app", "--host", host, "--port", str(port)]
+        kwargs = {"cwd": os.path.dirname(os.path.abspath(__file__))}
+        if os.name == "nt":
+            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        subprocess.Popen(cmd, **kwargs)
 
     for attempt in range(10):
         if status_callback:
@@ -95,6 +103,17 @@ def _ensure_backend_running(base_url: str, status_callback=None) -> None:
             time.sleep(0.5)
 
     raise RuntimeError("No se pudo iniciar el backend. Verifica que uvicorn este disponible.")
+
+
+def _start_backend_inprocess(host: str, port: int) -> None:
+    global _BACKEND_THREAD
+    if _BACKEND_THREAD and _BACKEND_THREAD.is_alive():
+        return
+    config = uvicorn.Config("main:app", host=host, port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    _BACKEND_THREAD = thread
+    thread.start()
 
 
 def _prefetch_initial_data(api: "ApiClient", status_callback=None) -> None:
@@ -1429,6 +1448,8 @@ class WizardApp:
         self.factura_preview_frame = ttk.Frame(self.main_frame)
         self.factura_preview_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=8)
 
+        os.makedirs(_DESKTOP_FACTURAS, exist_ok=True)
+
         self.factura_action_frame = ttk.Frame(self.main_frame)
         self.factura_action_frame.pack(fill=tk.X, padx=12, pady=4)
 
@@ -1446,6 +1467,23 @@ class WizardApp:
             state="disabled",
         )
         self.factura_insert_button.pack(side="right")
+
+        ruta_label = ttk.Label(
+            self.main_frame,
+            text=f"Ruta facturas: {_DESKTOP_FACTURAS}",
+            foreground=COLOR_PURPLE,
+        )
+        ruta_label.pack(pady=(2, 8))
+
+        tk.Button(
+            self.main_frame,
+            text="Abrir facturas",
+            command=self._abrir_carpeta_facturas,
+            bg=COLOR_TEAL,
+            fg="white",
+            padx=12,
+            pady=4,
+        ).pack(pady=(0, 12))
 
     def _generar_factura_preview(self) -> None:
         tipo = self.factura_tipo_var.get().strip().lower()
@@ -1584,10 +1622,23 @@ class WizardApp:
             return
         loading.close()
         archivo = response.get("data", {}).get("archivo", "")
+        if archivo:
+            try:
+                dest = os.path.join(_DESKTOP_FACTURAS, os.path.basename(archivo))
+                shutil.copy2(archivo, dest)
+            except Exception:
+                pass
         messagebox.showinfo(
             "Factura generada",
             f"Factura generada con exito.\nArchivo: {archivo}",
         )
+
+    def _abrir_carpeta_facturas(self) -> None:
+        os.makedirs(_DESKTOP_FACTURAS, exist_ok=True)
+        try:
+            os.startfile(_DESKTOP_FACTURAS)
+        except Exception:
+            messagebox.showerror("Error", "No se pudo abrir la carpeta de facturas.")
     def show_edit_search_screen(self) -> None:
         for child in self.main_frame.winfo_children():
             child.destroy()
