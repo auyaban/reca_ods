@@ -42,8 +42,17 @@ $hash = (Get-FileHash -Algorithm SHA256 $installerPath).Hash.ToLower()
 
 $releaseTag = "v$version"
 $exists = $true
-& $gh release view $releaseTag 2>$null | Out-Null
-if ($LASTEXITCODE -ne 0) {
+try {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & $gh release view $releaseTag 2>$null | Out-Null
+    $exitCode = $LASTEXITCODE
+    $ErrorActionPreference = $prev
+} catch {
+    $ErrorActionPreference = $prev
+    $exitCode = 1
+}
+if ($exitCode -ne 0) {
     $exists = $false
 }
 
