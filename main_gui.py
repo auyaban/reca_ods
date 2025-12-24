@@ -21,6 +21,7 @@ _LOGO_CACHE: dict[int, tk.PhotoImage] = {}
 _BACKEND_THREAD = None
 _BACKEND_SERVER = None
 _BACKEND_PROCESS = None
+_BACKEND_STARTUP_ERROR = None
 _DATE_ENTRY_CLS = None
 
 
@@ -115,7 +116,45 @@ def _ensure_backend_running(base_url: str, status_callback=None) -> None:
         except requests.exceptions.RequestException:
             time.sleep(0.5)
 
+    if getattr(sys, "frozen", False):
+        if status_callback:
+            status_callback("Reintentando backend...", 70)
+        _start_backend_subprocess(host, port)
+        for attempt in range(10):
+            if status_callback:
+                status_callback(f"Conectando al backend... ({attempt + 1}/10)", 70 + attempt * 3)
+            try:
+                requests.get(f"{base_url}/health", timeout=2)
+                if status_callback:
+                    status_callback("Backend listo.", 100)
+                return
+            except requests.exceptions.RequestException:
+                time.sleep(0.6)
+
+    if _BACKEND_STARTUP_ERROR:
+        raise RuntimeError(f"No se pudo iniciar el backend: {_BACKEND_STARTUP_ERROR}")
     raise RuntimeError("No se pudo iniciar el backend. Verifica que uvicorn este disponible.")
+
+
+def _backend_log_config() -> dict:
+    return {
+        "version": 1,
+        "disable_existing_loggers": True,
+        "formatters": {
+            "default": {"class": "logging.Formatter", "format": "%(message)s"},
+            "access": {"class": "logging.Formatter", "format": "%(message)s"},
+        },
+        "handlers": {
+            "default": {"class": "logging.NullHandler", "formatter": "default"},
+            "access": {"class": "logging.NullHandler", "formatter": "access"},
+        },
+        "loggers": {
+            "uvicorn": {"handlers": ["default"], "level": "WARNING", "propagate": False},
+            "uvicorn.error": {"handlers": ["default"], "level": "WARNING", "propagate": False},
+            "uvicorn.access": {"handlers": ["access"], "level": "WARNING", "propagate": False},
+        },
+        "root": {"handlers": ["default"], "level": "WARNING"},
+    }
 
 
 def _start_backend_inprocess(host: str, port: int) -> None:
@@ -128,32 +167,49 @@ def _start_backend_inprocess(host: str, port: int) -> None:
         host=host,
         port=port,
         log_level="warning",
-        log_config={
-            "version": 1,
-            "disable_existing_loggers": True,
-            "formatters": {
-                "default": {"class": "logging.Formatter", "format": "%(message)s"},
-                "access": {"class": "logging.Formatter", "format": "%(message)s"},
-            },
-            "handlers": {
-                "default": {"class": "logging.NullHandler", "formatter": "default"},
-                "access": {"class": "logging.NullHandler", "formatter": "access"},
-            },
-            "loggers": {
-                "uvicorn": {"handlers": ["default"], "level": "WARNING", "propagate": False},
-                "uvicorn.error": {"handlers": ["default"], "level": "WARNING", "propagate": False},
-                "uvicorn.access": {"handlers": ["access"], "level": "WARNING", "propagate": False},
-            },
-            "root": {"handlers": ["default"], "level": "WARNING"},
-        },
+        log_config=_backend_log_config(),
         access_log=False,
         use_colors=False,
     )
     server = uvicorn.Server(config)
     _BACKEND_SERVER = server
-    thread = threading.Thread(target=server.run, daemon=True)
+    thread = threading.Thread(target=_run_backend_server, args=(server,), daemon=True)
     _BACKEND_THREAD = thread
     thread.start()
+
+
+def _start_backend_subprocess(host: str, port: int) -> None:
+    global _BACKEND_PROCESS
+    if _BACKEND_PROCESS and _BACKEND_PROCESS.poll() is None:
+        return
+    cmd = [sys.executable, "--backend", "--host", host, "--port", str(port)]
+    kwargs = {"cwd": os.path.dirname(os.path.abspath(__file__))}
+    if os.name == "nt":
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    _BACKEND_PROCESS = subprocess.Popen(cmd, **kwargs)
+
+
+def _run_backend_server(server) -> None:
+    global _BACKEND_STARTUP_ERROR
+    try:
+        server.run()
+    except Exception as exc:
+        _BACKEND_STARTUP_ERROR = exc
+
+
+def _run_backend_only(host: str, port: int) -> None:
+    import uvicorn
+    config = uvicorn.Config(
+        "main:app",
+        host=host,
+        port=port,
+        log_level="warning",
+        log_config=_backend_log_config(),
+        access_log=False,
+        use_colors=False,
+    )
+    server = uvicorn.Server(config)
+    server.run()
 
 
 def _stop_backend() -> None:
@@ -2279,6 +2335,19 @@ class WizardApp:
 
 
 def main() -> None:
+    if "--backend" in sys.argv:
+        host = "127.0.0.1"
+        port = "8123"
+        if "--host" in sys.argv:
+            idx = sys.argv.index("--host")
+            if idx + 1 < len(sys.argv):
+                host = sys.argv[idx + 1]
+        if "--port" in sys.argv:
+            idx = sys.argv.index("--port")
+            if idx + 1 < len(sys.argv):
+                port = sys.argv[idx + 1]
+        _run_backend_only(host, int(port))
+        return
     root = tk.Tk()
     root.withdraw()
     splash = StartupSplash(root)

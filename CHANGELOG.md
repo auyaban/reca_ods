@@ -20,3 +20,6 @@
 
 ## 1.1.4
 - Hotfix: logging de uvicorn con handler/formatter de access en modo embebido.
+
+## 1.1.5
+- Hotfix: fallback de backend embebido a subproceso y modo `--backend` para ejecutable.
