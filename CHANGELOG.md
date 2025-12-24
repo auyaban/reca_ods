@@ -32,3 +32,6 @@
 
 ## 1.1.8
 - Hotfix: log del subproceso backend con salida no bufferizada y logging default.
+
+## 1.1.9
+- Hotfix: backend embebido/subproceso usa app construida en runtime (sin importar `main`).

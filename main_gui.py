@@ -14,6 +14,8 @@ import tkinter.font as tkfont
 import threading
 from urllib.parse import urlparse
 import socket
+import logging
+from pathlib import Path
 
 
 COLOR_PURPLE = "#7C3D96"
@@ -107,6 +109,66 @@ def _port_in_use(host: str, port: int) -> bool:
             return True
     except OSError:
         return False
+
+
+def _build_backend_app():
+    try:
+        import importlib
+
+        backend_main = importlib.import_module("main")
+        return backend_main.app
+    except Exception:
+        from fastapi import FastAPI, Request
+
+        from app.routes import router
+        from app.storage import ensure_appdata_files
+
+        app = FastAPI(title="RECA ODS API")
+        app.include_router(router)
+
+        @app.on_event("startup")
+        def _startup() -> None:
+            ensure_appdata_files()
+
+        log_dir = Path(__file__).resolve().parent / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "api.log"
+
+        logger = logging.getLogger("reca_ods_api")
+        if not logger.handlers:
+            handler = logging.FileHandler(log_file, encoding="utf-8")
+            formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
+        logger.setLevel(logging.INFO)
+        logger.info("API logger iniciado. Archivo=%s", log_file)
+
+        @app.middleware("http")
+        async def log_requests(request: Request, call_next):
+            start = time.perf_counter()
+            try:
+                response = await call_next(request)
+            except Exception as exc:
+                duration_ms = (time.perf_counter() - start) * 1000
+                logger.exception(
+                    "ERROR %s %s -> 500 in %.2fms",
+                    request.method,
+                    request.url.path,
+                    duration_ms,
+                )
+                raise exc
+
+            duration_ms = (time.perf_counter() - start) * 1000
+            logger.info(
+                "%s %s -> %s in %.2fms",
+                request.method,
+                request.url.path,
+                response.status_code,
+                duration_ms,
+            )
+            return response
+
+        return app
 
 
 def _ensure_backend_running(base_url: str, status_callback=None) -> None:
@@ -207,8 +269,9 @@ def _start_backend_inprocess(host: str, port: int) -> None:
     global _BACKEND_THREAD, _BACKEND_SERVER
     if _BACKEND_THREAD and _BACKEND_THREAD.is_alive():
         return
+    app = _build_backend_app()
     config = uvicorn.Config(
-        "main:app",
+        app,
         host=host,
         port=port,
         log_level="warning",
@@ -261,8 +324,9 @@ def _run_backend_only(host: str, port: int) -> None:
     import uvicorn
     _log_startup(f"Backend subproceso iniciado. host={host} port={port}")
     try:
+        app = _build_backend_app()
         config = uvicorn.Config(
-            "main:app",
+            app,
             host=host,
             port=port,
             log_level="info",
