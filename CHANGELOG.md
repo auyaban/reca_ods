@@ -26,3 +26,6 @@
 
 ## 1.1.6
 - Hotfix: log de arranque del backend en `%TEMP%` para diagnostico en instaladores.
+
+## 1.1.7
+- Hotfix: forzar `localhost` a `127.0.0.1` y log adicional de subproceso backend.

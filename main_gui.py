@@ -76,6 +76,8 @@ def _load_backend_url() -> str:
 def _parse_host_port(base_url: str) -> tuple[str, int]:
     parsed = urlparse(base_url)
     host = parsed.hostname or "127.0.0.1"
+    if host.lower() in {"localhost", "::1"}:
+        host = "127.0.0.1"
     port = parsed.port or 8000
     return host, port
 
@@ -83,6 +85,11 @@ def _parse_host_port(base_url: str) -> tuple[str, int]:
 def _startup_log_path() -> str:
     base = os.getenv("TEMP") or os.getenv("TMP") or os.getcwd()
     return os.path.join(base, "reca_ods_startup.log")
+
+
+def _backend_subprocess_log_path() -> str:
+    base = os.getenv("TEMP") or os.getenv("TMP") or os.getcwd()
+    return os.path.join(base, "reca_ods_backend.log")
 
 
 def _log_startup(message: str) -> None:
@@ -108,6 +115,7 @@ def _ensure_backend_running(base_url: str, status_callback=None) -> None:
     if status_callback:
         status_callback("Iniciando backend...", 30)
     host, port = _parse_host_port(base_url)
+    _log_startup(f"Backend solicitado. base_url={base_url} host={host} port={port}")
 
     if getattr(sys, "frozen", False):
         _start_backend_inprocess(host, port)
@@ -144,6 +152,11 @@ def _ensure_backend_running(base_url: str, status_callback=None) -> None:
                 return
             except requests.exceptions.RequestException:
                 time.sleep(0.6)
+        if _BACKEND_PROCESS and _BACKEND_PROCESS.poll() is not None:
+            _log_startup(
+                "Backend subproceso termino con codigo "
+                f"{_BACKEND_PROCESS.returncode}. Log: {_backend_subprocess_log_path()}"
+            )
 
     if _BACKEND_STARTUP_ERROR:
         raise RuntimeError(
@@ -207,6 +220,15 @@ def _start_backend_subprocess(host: str, port: int) -> None:
     kwargs = {"cwd": os.path.dirname(os.path.abspath(__file__))}
     if os.name == "nt":
         kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    log_path = _backend_subprocess_log_path()
+    _log_startup(f"Lanzando backend subproceso. Log={log_path}")
+    try:
+        fh = open(log_path, "a", encoding="utf-8")
+    except Exception:
+        fh = None
+    if fh:
+        kwargs["stdout"] = fh
+        kwargs["stderr"] = fh
     _BACKEND_PROCESS = subprocess.Popen(cmd, **kwargs)
 
 
