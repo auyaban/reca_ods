@@ -13,6 +13,7 @@ import tkinter.font as tkfont
 
 import threading
 from urllib.parse import urlparse
+import socket
 
 
 COLOR_PURPLE = "#7C3D96"
@@ -100,6 +101,14 @@ def _log_startup(message: str) -> None:
         pass
 
 
+def _port_in_use(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
 def _ensure_backend_running(base_url: str, status_callback=None) -> None:
     import requests
     if status_callback:
@@ -116,6 +125,8 @@ def _ensure_backend_running(base_url: str, status_callback=None) -> None:
         status_callback("Iniciando backend...", 30)
     host, port = _parse_host_port(base_url)
     _log_startup(f"Backend solicitado. base_url={base_url} host={host} port={port}")
+    if _port_in_use(host, port):
+        _log_startup(f"Puerto en uso antes de iniciar backend: {host}:{port}")
 
     if getattr(sys, "frozen", False):
         _start_backend_inprocess(host, port)
@@ -223,12 +234,15 @@ def _start_backend_subprocess(host: str, port: int) -> None:
     log_path = _backend_subprocess_log_path()
     _log_startup(f"Lanzando backend subproceso. Log={log_path}")
     try:
-        fh = open(log_path, "a", encoding="utf-8")
+        fh = open(log_path, "a", encoding="utf-8", buffering=1)
     except Exception:
         fh = None
     if fh:
         kwargs["stdout"] = fh
         kwargs["stderr"] = fh
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    kwargs["env"] = env
     _BACKEND_PROCESS = subprocess.Popen(cmd, **kwargs)
 
 
@@ -251,8 +265,8 @@ def _run_backend_only(host: str, port: int) -> None:
             "main:app",
             host=host,
             port=port,
-            log_level="warning",
-            log_config=_backend_log_config(),
+            log_level="info",
+            log_config=None,
             access_log=False,
             use_colors=False,
         )

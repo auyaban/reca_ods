@@ -29,3 +29,6 @@
 
 ## 1.1.7
 - Hotfix: forzar `localhost` a `127.0.0.1` y log adicional de subproceso backend.
+
+## 1.1.8
+- Hotfix: log del subproceso backend con salida no bufferizada y logging default.
