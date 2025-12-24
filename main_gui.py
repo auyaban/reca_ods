@@ -128,7 +128,13 @@ def _start_backend_inprocess(host: str, port: int) -> None:
         host=host,
         port=port,
         log_level="warning",
-        log_config={"version": 1, "disable_existing_loggers": True},
+        log_config={
+            "version": 1,
+            "disable_existing_loggers": True,
+            "formatters": {},
+            "handlers": {},
+            "loggers": {},
+        },
         access_log=False,
         use_colors=False,
     )

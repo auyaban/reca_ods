@@ -11,3 +11,6 @@
 
 ## 1.1.1
 - Hotfix: desactivar logging de uvicorn en modo embebido para evitar error en ejecutable.
+
+## 1.1.2
+- Hotfix: configuracion minima de logging de uvicorn en modo embebido.
