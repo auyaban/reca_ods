@@ -42,15 +42,16 @@ $hash = (Get-FileHash -Algorithm SHA256 $installerPath).Hash.ToLower()
 
 $releaseTag = "v$version"
 $exists = $true
-try {
-    & $gh release view $releaseTag | Out-Null
-} catch {
+& $gh release view $releaseTag 2>$null | Out-Null
+if ($LASTEXITCODE -ne 0) {
     $exists = $false
 }
 
 if ($exists) {
+    Write-Host "Release $releaseTag encontrado. Subiendo assets..."
     & $gh release upload $releaseTag $installerPath (Join-Path $root "installer\\RECA_ODS_Setup.exe.sha256") --clobber
 } else {
+    Write-Host "Release $releaseTag no existe. Creandolo..."
     & $gh release create $releaseTag $installerPath (Join-Path $root "installer\\RECA_ODS_Setup.exe.sha256") `
       --title "Sistema de Gestión ODS RECA v$version" `
       --notes "Release v$version"
