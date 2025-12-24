@@ -4,11 +4,11 @@ from typing import Any
 
 import requests
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from app.models.payloads import TerminarServicioRequest, dump_ods_for_rpc
 from app.config import get_settings
-from app.excel_sync import append_row, queue_action
+from app.excel_sync import append_row_and_update_factura, queue_action
 from app.supabase_client import get_supabase_client
 
 router = APIRouter(prefix="/wizard", tags=["wizard"])
@@ -113,11 +113,36 @@ def _apply_schema(ods_data: dict[str, Any]) -> dict[str, Any]:
     return filtered
 
 
+def _queue_factura_update(ods_data: dict, reason: str) -> None:
+    mes = int(ods_data.get("mes_servicio", 0) or 0)
+    año = int(ods_data.get("año_servicio", 0) or 0)
+    if not mes or not año:
+        return
+    orden = str(ods_data.get("orden_clausulada", "")).strip().lower()
+    tipo = "clausulada" if orden.startswith("s") or orden == "true" else "no clausulada"
+    queue_action(
+        "factura_update",
+        {},
+        None,
+        reason,
+        meta={"mes": mes, "año": año, "tipo": tipo},
+    )
+
+
+def _persist_excel_background(ods_data: dict) -> None:
+    try:
+        append_row_and_update_factura(ods_data)
+    except PermissionError:
+        queue_action("append", ods_data, None, "archivo_abierto")
+        _queue_factura_update(ods_data, "archivo_abierto")
+    except Exception:
+        queue_action("append", ods_data, None, "error_guardado")
+        _queue_factura_update(ods_data, "error_guardado")
+
+
 @router.post("/terminar-servicio")
-def terminar_servicio(payload: TerminarServicioRequest) -> dict:
+def terminar_servicio(payload: TerminarServicioRequest, background_tasks: BackgroundTasks) -> dict:
     client = get_supabase_client()
-    excel_status = "ok"
-    excel_error = None
     try:
         if payload.usuarios_nuevos:
             nuevos = [item.model_dump() for item in payload.usuarios_nuevos]
@@ -144,6 +169,10 @@ def terminar_servicio(payload: TerminarServicioRequest) -> dict:
 
         _logger.info("ODS payload keys=%s", list(ods_data.keys()))
         response = client.table("ods").insert(ods_data).execute()
+        if response.data:
+            inserted = response.data[0]
+            if isinstance(inserted, dict) and inserted.get("id"):
+                ods_data["id"] = inserted["id"]
     except Exception as exc:
         message = str(exc)
         if "boolean" in message:
@@ -177,16 +206,6 @@ def terminar_servicio(payload: TerminarServicioRequest) -> dict:
                 )
         raise HTTPException(status_code=502, detail=message) from exc
 
-    try:
-        append_row(ods_data)
-        excel_status = "ok"
-    except PermissionError:
-        excel_status = "pendiente"
-        excel_error = "El archivo Excel esta abierto. Se dejo en cola."
-        queue_action("append", ods_data, None, "archivo_abierto")
-    except Exception as exc:
-        excel_status = "error"
-        excel_error = str(exc)
-        queue_action("append", ods_data, None, "error_guardado")
+    background_tasks.add_task(_persist_excel_background, ods_data)
 
-    return {"data": response.data, "excel_status": excel_status, "excel_error": excel_error}
+    return {"data": response.data, "excel_status": "background", "excel_error": None}

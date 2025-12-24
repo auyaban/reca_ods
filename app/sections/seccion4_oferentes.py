@@ -23,7 +23,7 @@ GENEROS = {
     "otro": "Otro",
 }
 
-TIPOS_CONTRATO = ["Laboral", "Aprendizaje"]
+TIPOS_CONTRATO = ["Laboral", "Contrato Aprendiz Especial"]
 
 
 def _normalize_key(value: str) -> str:

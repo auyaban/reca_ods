@@ -2,11 +2,19 @@ from functools import lru_cache
 from typing import Any
 
 import requests
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
-from app.excel_sync import delete_row, flush_queue, queue_action, update_row
+from app.excel_sync import (
+    clear_queue,
+    delete_row_and_update_factura,
+    flush_queue,
+    get_queue_status,
+    queue_action,
+    rebuild_excel_from_supabase,
+    update_row_and_update_factura,
+)
 from app.supabase_client import get_supabase_client
 
 
@@ -15,7 +23,6 @@ router = APIRouter(prefix="/wizard/editar", tags=["wizard"])
 
 class OdsFiltro(BaseModel):
     id: str | None = None
-    id_servicio: int | None = None
     fecha_servicio: str | None = None
     codigo_servicio: str | None = None
     nit_empresa: str | None = None
@@ -65,7 +72,6 @@ def _require_filtro(filtro: OdsFiltro) -> None:
     if not any(
         [
             filtro.id,
-            filtro.id_servicio,
             filtro.fecha_servicio,
             filtro.codigo_servicio,
             filtro.nit_empresa,
@@ -78,8 +84,6 @@ def _require_filtro(filtro: OdsFiltro) -> None:
 def _apply_filters(query, filtro: OdsFiltro, partial: bool = False):
     if filtro.id:
         query = query.eq("id", filtro.id)
-    if filtro.id_servicio is not None:
-        query = query.eq("id_servicio", filtro.id_servicio)
     if filtro.fecha_servicio:
         query = query.eq("fecha_servicio", filtro.fecha_servicio.strip())
     if filtro.codigo_servicio:
@@ -142,6 +146,8 @@ def _coerce_update_value(value: Any, schema: dict[str, Any]) -> Any:
                 return value
 
     if expected == "string" and fmt == "date" and isinstance(value, str):
+        if ";" in value or "," in value:
+            return value.replace(";", ",").split(",")[0].strip()
         return value.strip()
 
     if isinstance(value, str):
@@ -164,14 +170,12 @@ def _filter_update_fields(datos: dict) -> dict:
 
 @router.get("/buscar")
 def buscar_entradas(
-    id_servicio: int | None = None,
     nombre_profesional: str | None = None,
     nit_empresa: str | None = None,
     fecha_servicio: str | None = None,
     codigo_servicio: str | None = None,
 ):
     filtro = OdsFiltro(
-        id_servicio=id_servicio,
         nombre_profesional=nombre_profesional,
         nit_empresa=nit_empresa,
         fecha_servicio=fecha_servicio,
@@ -182,7 +186,7 @@ def buscar_entradas(
     client = get_supabase_client()
     try:
         query = client.table("ods").select(
-            "id,id_servicio,fecha_servicio,nombre_profesional,nombre_empresa,codigo_servicio,nit_empresa"
+            "id,fecha_servicio,nombre_profesional,nombre_empresa,codigo_servicio,nit_empresa"
         )
         query = _apply_filters(query, filtro, partial=True)
         response = query.execute()
@@ -195,7 +199,6 @@ def buscar_entradas(
 @router.get("/entrada")
 def obtener_entrada(
     id: str | None = None,
-    id_servicio: int | None = None,
     nombre_profesional: str | None = None,
     nit_empresa: str | None = None,
     fecha_servicio: str | None = None,
@@ -203,7 +206,6 @@ def obtener_entrada(
 ):
     filtro = OdsFiltro(
         id=id,
-        id_servicio=id_servicio,
         nombre_profesional=nombre_profesional,
         nit_empresa=nit_empresa,
         fecha_servicio=fecha_servicio,
@@ -229,8 +231,46 @@ def obtener_entrada(
     return {"data": response.data[0]}
 
 
+def _queue_factura_update(row: dict, reason: str) -> None:
+    mes = int(row.get("mes_servicio", 0) or 0)
+    año = int(row.get("año_servicio", 0) or 0)
+    if not mes or not año:
+        return
+    orden = str(row.get("orden_clausulada", "")).strip().lower()
+    tipo = "clausulada" if orden.startswith("s") or orden == "true" else "no clausulada"
+    queue_action(
+        "factura_update",
+        {},
+        None,
+        reason,
+        meta={"mes": mes, "año": año, "tipo": tipo},
+    )
+
+
+def _update_excel_background(original: dict, merged: dict) -> None:
+    try:
+        update_row_and_update_factura(original, merged)
+    except PermissionError:
+        queue_action("update", merged, original, "archivo_abierto")
+        _queue_factura_update(merged, "archivo_abierto")
+    except Exception:
+        queue_action("update", merged, original, "error_guardado")
+        _queue_factura_update(merged, "error_guardado")
+
+
+def _delete_excel_background(original: dict) -> None:
+    try:
+        delete_row_and_update_factura(original)
+    except PermissionError:
+        queue_action("delete", original, original, "archivo_abierto")
+        _queue_factura_update(original, "archivo_abierto")
+    except Exception:
+        queue_action("delete", original, original, "error_guardado")
+        _queue_factura_update(original, "error_guardado")
+
+
 @router.post("/actualizar")
-def actualizar_entrada(payload: OdsActualizarRequest):
+def actualizar_entrada(payload: OdsActualizarRequest, background_tasks: BackgroundTasks):
     _require_filtro(payload.filtro)
     if not payload.datos:
         raise HTTPException(status_code=422, detail="No hay datos para actualizar")
@@ -269,30 +309,20 @@ def actualizar_entrada(payload: OdsActualizarRequest):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Supabase error: {exc}") from exc
 
-    excel_status = "ok"
-    excel_error = None
     original = payload.original or current_row
-    try:
-        update_row(original, {**current_row, **cambios})
-    except PermissionError:
-        excel_status = "pendiente"
-        excel_error = "El archivo Excel esta abierto. Se dejo en cola."
-        queue_action("update", {**current_row, **cambios}, original, "archivo_abierto")
-    except Exception as exc:
-        excel_status = "error"
-        excel_error = str(exc)
-        queue_action("update", {**current_row, **cambios}, original, "error_guardado")
+    merged = {**current_row, **cambios}
+    background_tasks.add_task(_update_excel_background, original, merged)
 
     return {
         "data": updated.data,
         "cambios": list(cambios.keys()),
-        "excel_status": excel_status,
-        "excel_error": excel_error,
+        "excel_status": "background",
+        "excel_error": None,
     }
 
 
 @router.post("/eliminar")
-def eliminar_entrada(payload: OdsEliminarRequest):
+def eliminar_entrada(payload: OdsEliminarRequest, background_tasks: BackgroundTasks):
     _require_filtro(payload.filtro)
 
     client = get_supabase_client()
@@ -318,21 +348,10 @@ def eliminar_entrada(payload: OdsEliminarRequest):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Supabase error: {exc}") from exc
 
-    excel_status = "ok"
-    excel_error = None
     original = payload.original or current.data[0]
-    try:
-        delete_row(original)
-    except PermissionError:
-        excel_status = "pendiente"
-        excel_error = "El archivo Excel esta abierto. Se dejo en cola."
-        queue_action("delete", original, original, "archivo_abierto")
-    except Exception as exc:
-        excel_status = "error"
-        excel_error = str(exc)
-        queue_action("delete", original, original, "error_guardado")
+    background_tasks.add_task(_delete_excel_background, original)
 
-    return {"data": response.data, "excel_status": excel_status, "excel_error": excel_error}
+    return {"data": response.data, "excel_status": "background", "excel_error": None}
 
 
 @router.post("/excel/flush")
@@ -344,4 +363,34 @@ def flush_excel_queue() -> dict:
             status_code=423,
             detail=f"El archivo Excel esta abierto. {exc}",
         ) from exc
+    return {"data": result}
+
+
+@router.get("/excel/status")
+def excel_status() -> dict:
+    return {"data": get_queue_status()}
+
+
+@router.post("/excel/rebuild")
+def rebuild_excel() -> dict:
+    status = get_queue_status()
+    if status.get("locked"):
+        raise HTTPException(
+            status_code=423,
+            detail="El archivo Excel esta abierto. Cierralo antes de reconstruir.",
+        )
+
+    client = get_supabase_client()
+    try:
+        response = client.table("ods").select("*").execute()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Supabase error: {exc}") from exc
+
+    rows = response.data or []
+    try:
+        result = rebuild_excel_from_supabase(rows)
+        clear_queue()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"No se pudo reconstruir el Excel: {exc}") from exc
+
     return {"data": result}

@@ -1,6 +1,5 @@
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -9,25 +8,32 @@ from datetime import date
 
 import tkinter as tk
 from tkinter import messagebox, ttk
+import tkinter.font as tkfont
 
-import requests
 import threading
-from dotenv import load_dotenv
 from urllib.parse import urlparse
-import uvicorn
-
-try:
-    from tkcalendar import DateEntry
-except ImportError:  # optional dependency
-    DateEntry = None
 
 
 COLOR_PURPLE = "#7C3D96"
 COLOR_TEAL = "#07B499"
 _LOGO_PATH = None
 _LOGO_CACHE: dict[int, tk.PhotoImage] = {}
-_DESKTOP_FACTURAS = os.path.join(os.path.expanduser("~"), "Desktop", "ODS - Facturas")
 _BACKEND_THREAD = None
+_BACKEND_SERVER = None
+_BACKEND_PROCESS = None
+_DATE_ENTRY_CLS = None
+
+
+def _get_date_entry():
+    global _DATE_ENTRY_CLS
+    if _DATE_ENTRY_CLS is None:
+        try:
+            from tkcalendar import DateEntry
+        except ImportError:
+            _DATE_ENTRY_CLS = False
+        else:
+            _DATE_ENTRY_CLS = DateEntry
+    return None if _DATE_ENTRY_CLS is False else _DATE_ENTRY_CLS
 
 
 def _load_logo(subsample: int = 12) -> tk.PhotoImage | None:
@@ -36,7 +42,11 @@ def _load_logo(subsample: int = 12) -> tk.PhotoImage | None:
         try:
             from app.paths import resource_path
 
-            _LOGO_PATH = str(resource_path("logo/logo_reca.png"))
+            candidate = resource_path("logo/logo_reca.png")
+            if candidate.exists():
+                _LOGO_PATH = str(candidate)
+            else:
+                _LOGO_PATH = os.path.join(os.path.dirname(__file__), "logo", "logo_reca.png")
         except Exception:
             _LOGO_PATH = os.path.join(os.path.dirname(__file__), "logo", "logo_reca.png")
     if not os.path.exists(_LOGO_PATH):
@@ -47,6 +57,7 @@ def _load_logo(subsample: int = 12) -> tk.PhotoImage | None:
 
 
 def _load_backend_url() -> str:
+    from dotenv import load_dotenv
     env_path = None
     try:
         from app.paths import app_data_dir
@@ -68,6 +79,7 @@ def _parse_host_port(base_url: str) -> tuple[str, int]:
 
 
 def _ensure_backend_running(base_url: str, status_callback=None) -> None:
+    import requests
     if status_callback:
         status_callback("Verificando backend...", 10)
     try:
@@ -89,7 +101,8 @@ def _ensure_backend_running(base_url: str, status_callback=None) -> None:
         kwargs = {"cwd": os.path.dirname(os.path.abspath(__file__))}
         if os.name == "nt":
             kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-        subprocess.Popen(cmd, **kwargs)
+        global _BACKEND_PROCESS
+        _BACKEND_PROCESS = subprocess.Popen(cmd, **kwargs)
 
     for attempt in range(10):
         if status_callback:
@@ -106,7 +119,8 @@ def _ensure_backend_running(base_url: str, status_callback=None) -> None:
 
 
 def _start_backend_inprocess(host: str, port: int) -> None:
-    global _BACKEND_THREAD
+    import uvicorn
+    global _BACKEND_THREAD, _BACKEND_SERVER
     if _BACKEND_THREAD and _BACKEND_THREAD.is_alive():
         return
     config = uvicorn.Config(
@@ -118,9 +132,36 @@ def _start_backend_inprocess(host: str, port: int) -> None:
         access_log=False,
     )
     server = uvicorn.Server(config)
+    _BACKEND_SERVER = server
     thread = threading.Thread(target=server.run, daemon=True)
     _BACKEND_THREAD = thread
     thread.start()
+
+
+def _stop_backend() -> None:
+    global _BACKEND_PROCESS, _BACKEND_SERVER
+    if _BACKEND_PROCESS and _BACKEND_PROCESS.poll() is None:
+        try:
+            _BACKEND_PROCESS.terminate()
+        except Exception:
+            pass
+    if _BACKEND_SERVER:
+        try:
+            _BACKEND_SERVER.should_exit = True
+        except Exception:
+            pass
+
+    try:
+        host, port = _parse_host_port(_load_backend_url())
+        if sys.platform.startswith("win"):
+            cmd = f"for /f \"tokens=5\" %a in ('netstat -ano ^| findstr :{port}') do taskkill /PID %a /F"
+            subprocess.Popen(
+                ["cmd.exe", "/c", cmd],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+    except Exception:
+        pass
 
 
 def _prefetch_initial_data(api: "ApiClient", status_callback=None) -> None:
@@ -139,6 +180,7 @@ def _prefetch_initial_data(api: "ApiClient", status_callback=None) -> None:
 
 class ApiClient:
     def __init__(self, base_url: str) -> None:
+        import requests
         self.base_url = base_url.rstrip("/")
         self._session = requests.Session()
         self._cache: dict[tuple[str, str, tuple[tuple[str, str], ...] | None], dict] = {}
@@ -151,6 +193,7 @@ class ApiClient:
         return ("GET", path, normalized)
 
     def get(self, path: str, params: dict | None = None, use_cache: bool = False) -> dict:
+        import requests
         cache_key = self._cache_key(path, params) if use_cache else None
         if cache_key and cache_key in self._cache:
             return self._cache[cache_key]
@@ -167,6 +210,10 @@ class ApiClient:
     def get_cached(self, path: str, params: dict | None = None) -> dict:
         return self.get(path, params=params, use_cache=True)
 
+    def invalidate(self, path: str, params: dict | None = None) -> None:
+        key = self._cache_key(path, params)
+        self._cache.pop(key, None)
+
     def prefetch(self, items: list[tuple[str, dict | None, str]], status_callback=None) -> None:
         total = len(items)
         for index, (path, params, label) in enumerate(items, start=1):
@@ -175,15 +222,16 @@ class ApiClient:
                 status_callback(f"Cargando {label}...", progress)
             self.get(path, params=params, use_cache=True)
 
-    def post(self, path: str, payload: dict | None = None) -> dict:
+    def post(self, path: str, payload: dict | None = None, timeout: int | float = 10) -> dict:
+        import requests
         url = f"{self.base_url}{path}"
         try:
-            response = self._session.post(url, json=payload, timeout=10)
+            response = self._session.post(url, json=payload, timeout=timeout)
             return self._handle_response(response)
         except requests.exceptions.RequestException as exc:
             raise RuntimeError("No se pudo conectar al backend. Asegura que este corriendo.") from exc
 
-    def _handle_response(self, response: requests.Response) -> dict:
+    def _handle_response(self, response) -> dict:
         try:
             data = response.json()
         except ValueError:
@@ -247,6 +295,10 @@ class StartupSplash(tk.Toplevel):
         self.configure(bg="white")
         self.protocol("WM_DELETE_WINDOW", lambda: None)
         try:
+            self.transient(parent)
+        except tk.TclError:
+            pass
+        try:
             self.attributes("-topmost", True)
         except tk.TclError:
             pass
@@ -260,15 +312,91 @@ class StartupSplash(tk.Toplevel):
 
         tk.Label(
             container,
-            text="Iniciando aplicacion...",
+            text="Cargando aplicacion...",
             font=("Arial", 12, "bold"),
+            bg="white",
+            fg=COLOR_PURPLE,
+        ).pack(pady=(0, 8))
+
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure(
+            "Reca.Horizontal.TProgressbar",
+            background=COLOR_TEAL,
+            troughcolor="#EDE7F3",
+            bordercolor="#EDE7F3",
+            lightcolor=COLOR_TEAL,
+            darkcolor=COLOR_TEAL,
+        )
+        self.progress = ttk.Progressbar(
+            container,
+            length=280,
+            mode="indeterminate",
+            style="Reca.Horizontal.TProgressbar",
+        )
+        self.progress.pack(pady=(0, 6))
+        self.progress.start(10)
+
+        self._center_window(360, 220)
+        self.lift()
+        self.update_idletasks()
+
+    def _center_window(self, width, height):
+        self.update_idletasks()
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        x = int((screen_w - width) / 2)
+        y = int((screen_h - height) / 2)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+
+    def set_status(self, message: str, progress: int | None = None) -> None:
+        self.update_idletasks()
+        self.update()
+
+    def close(self) -> None:
+        if hasattr(self, "progress"):
+            self.progress.stop()
+        self.destroy()
+
+
+class LoadingDialog(tk.Toplevel):
+    def __init__(self, parent, message: str, determinate: bool = False):
+        super().__init__(parent)
+        self.title("Procesando")
+        self.resizable(False, False)
+        self.configure(bg="white")
+        self.protocol("WM_DELETE_WINDOW", lambda: None)
+        try:
+            self.transient(parent)
+        except tk.TclError:
+            pass
+        try:
+            self.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        self._determinate = determinate
+
+        container = tk.Frame(self, bg="white")
+        container.pack(fill=tk.BOTH, expand=True, padx=24, pady=20)
+
+        self.logo_image = _load_logo(subsample=7)
+        if self.logo_image:
+            tk.Label(container, image=self.logo_image, bg="white").pack(pady=(0, 8))
+
+        tk.Label(
+            container,
+            text=message,
+            font=("Arial", 11, "bold"),
             bg="white",
             fg=COLOR_PURPLE,
         ).pack(pady=(0, 10))
 
         self.status_label = tk.Label(
             container,
-            text="Verificando backend...",
+            text="Iniciando...",
             font=("Arial", 10),
             bg="white",
             fg=COLOR_TEAL,
@@ -290,16 +418,21 @@ class StartupSplash(tk.Toplevel):
         )
         self.progress = ttk.Progressbar(
             container,
-            length=320,
-            mode="determinate",
+            length=280,
+            mode="determinate" if determinate else "indeterminate",
             maximum=100,
             style="Reca.Horizontal.TProgressbar",
         )
-        self.progress.pack(pady=(0, 4))
+        self.progress.pack()
+        if determinate:
+            self.progress["value"] = 0
+        else:
+            self.progress.start(10)
 
         self._center_window(420, 200)
         self.lift()
         self.update_idletasks()
+        self.update()
 
     def _center_window(self, width, height):
         self.update_idletasks()
@@ -308,77 +441,19 @@ class StartupSplash(tk.Toplevel):
         x = int((screen_w - width) / 2)
         y = int((screen_h - height) / 2)
         self.geometry(f"{width}x{height}+{x}+{y}")
+
+    def close(self) -> None:
+        if not self._determinate:
+            self.progress.stop()
+        self.destroy()
 
     def set_status(self, message: str, progress: int | None = None) -> None:
         if message:
             self.status_label.config(text=message)
-        if progress is not None:
+        if self._determinate and progress is not None:
             self.progress["value"] = max(0, min(100, progress))
         self.update_idletasks()
         self.update()
-
-    def close(self) -> None:
-        self.destroy()
-
-
-class LoadingDialog(tk.Toplevel):
-    def __init__(self, parent, message: str):
-        super().__init__(parent)
-        self.title("Procesando")
-        self.resizable(False, False)
-        self.configure(bg="white")
-        self.protocol("WM_DELETE_WINDOW", lambda: None)
-
-        container = tk.Frame(self, bg="white")
-        container.pack(fill=tk.BOTH, expand=True, padx=24, pady=20)
-
-        self.logo_image = _load_logo(subsample=7)
-        if self.logo_image:
-            tk.Label(container, image=self.logo_image, bg="white").pack(pady=(0, 8))
-
-        tk.Label(
-            container,
-            text=message,
-            font=("Arial", 11, "bold"),
-            bg="white",
-            fg=COLOR_PURPLE,
-        ).pack(pady=(0, 10))
-
-        style = ttk.Style(self)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        style.configure(
-            "Reca.Horizontal.TProgressbar",
-            background=COLOR_TEAL,
-            troughcolor="#EDE7F3",
-            bordercolor="#EDE7F3",
-            lightcolor=COLOR_TEAL,
-            darkcolor=COLOR_TEAL,
-        )
-        self.progress = ttk.Progressbar(
-            container,
-            length=280,
-            mode="indeterminate",
-            style="Reca.Horizontal.TProgressbar",
-        )
-        self.progress.pack()
-        self.progress.start(10)
-
-        self._center_window(360, 140)
-
-    def _center_window(self, width, height):
-        self.update_idletasks()
-        screen_w = self.winfo_screenwidth()
-        screen_h = self.winfo_screenheight()
-        x = int((screen_w - width) / 2)
-        y = int((screen_h - height) / 2)
-        self.geometry(f"{width}x{height}+{x}+{y}")
-
-    def close(self) -> None:
-        self.progress.stop()
-        self.destroy()
 
 
 def set_widgets_state(container: tk.Widget, state: str) -> None:
@@ -427,15 +502,12 @@ def safe_int(value: str) -> int | None:
 
 @dataclass
 class WizardState:
-    id_servicio: int | None = None
     secciones: dict[str, dict] = field(default_factory=dict)
     usuarios_nuevos: list[dict] = field(default_factory=list)
 
     def reset_service(self, keep_id: bool = True) -> None:
         self.secciones = {}
         self.usuarios_nuevos = []
-        if not keep_id:
-            self.id_servicio = None
 
 
 class BaseSection(ttk.Frame):
@@ -460,28 +532,26 @@ class Seccion1Frame(BaseSection):
         self.state = state
         self.orden_var = tk.StringVar()
         self.prof_var = tk.StringVar()
-        self.id_servicio_var = tk.StringVar()
-
-        ttk.Label(self.body, text="ID Servicio").grid(row=0, column=0, sticky="w")
-        id_entry = ttk.Entry(self.body, textvariable=self.id_servicio_var, state="readonly", width=20)
-        id_entry.grid(row=0, column=1, sticky="w")
-
-        ttk.Label(self.body, text="Orden Clausulada").grid(row=1, column=0, sticky="w")
+        ttk.Label(self.body, text="Orden Clausulada").grid(row=0, column=0, sticky="w")
         self.orden_combo = ttk.Combobox(self.body, textvariable=self.orden_var, state="normal", width=20)
-        self.orden_combo.grid(row=1, column=1, sticky="w")
+        self.orden_combo.grid(row=0, column=1, sticky="w")
         configure_combobox(self.orden_combo)
 
-        ttk.Label(self.body, text="Profesional").grid(row=2, column=0, sticky="w")
+        ttk.Label(self.body, text="Profesional").grid(row=1, column=0, sticky="w")
         self.prof_combo = ttk.Combobox(self.body, textvariable=self.prof_var, state="normal", width=40)
-        self.prof_combo.grid(row=2, column=1, sticky="w")
+        self.prof_combo.grid(row=1, column=1, sticky="w")
         configure_combobox(self.prof_combo)
+        tk.Button(
+            self.body,
+            text="Agregar profesional/interprete",
+            command=self._open_add_profesional,
+            bg=COLOR_TEAL,
+            fg="white",
+            padx=8,
+            pady=2,
+        ).grid(row=1, column=2, sticky="w", padx=(10, 0))
 
     def load_data(self) -> None:
-        if self.state.id_servicio is None:
-            response = self.api.get("/wizard/seccion-1/id-servicio")
-            self.state.id_servicio = response["data"]["id_servicio"]
-        self.id_servicio_var.set(str(self.state.id_servicio))
-
         orden_data = self.api.get_cached("/wizard/seccion-1/orden-clausulada/opciones")
         orden_labels = [item["label"] for item in orden_data["data"]]
         self.orden_combo.configure(values=orden_labels)
@@ -490,7 +560,7 @@ class Seccion1Frame(BaseSection):
             self.orden_combo.set(orden_labels[0])
 
         prof_data = self.api.get_cached("/wizard/seccion-1/profesionales")
-        prof_labels = [item["nombre_profesional"] for item in prof_data["data"]]
+        prof_labels = sorted([item["nombre_profesional"] for item in prof_data["data"]])
         self.prof_combo.configure(values=prof_labels)
         self.prof_combo._all_values = prof_labels
         if prof_labels:
@@ -500,16 +570,72 @@ class Seccion1Frame(BaseSection):
         orden = self.orden_var.get().strip().lower()
         orden = "si" if orden.startswith("s") else "no"
         return {
-            "id_servicio": int(self.id_servicio_var.get()),
             "orden_clausulada": orden,
             "nombre_profesional": self.prof_var.get().strip(),
         }
 
     def set_data(self, data: dict) -> None:
-        self.id_servicio_var.set(str(data.get("id_servicio", "")))
         orden = str(data.get("orden_clausulada", "")).strip().lower()
         self.orden_var.set("Sí" if orden.startswith("s") or orden == "true" else "No")
         self.prof_var.set(data.get("nombre_profesional", ""))
+
+    def _open_add_profesional(self) -> None:
+        dialog = tk.Toplevel(self)
+        dialog.title("Agregar profesional/interprete")
+        dialog.resizable(False, False)
+        dialog.geometry("420x240")
+
+        nombre_var = tk.StringVar()
+        programa_var = tk.StringVar()
+
+        ttk.Label(dialog, text="Nombre profesional").grid(row=0, column=0, sticky="w", padx=10, pady=8)
+        ttk.Entry(dialog, textvariable=nombre_var, width=30).grid(row=0, column=1, padx=10, pady=8)
+
+        ttk.Label(dialog, text="Programa").grid(row=1, column=0, sticky="w", padx=10, pady=8)
+        programa_combo = ttk.Combobox(
+            dialog,
+            textvariable=programa_var,
+            values=["Inclusión Laboral", "Interprete"],
+            state="normal",
+            width=20,
+        )
+        programa_combo.grid(row=1, column=1, padx=10, pady=8, sticky="w")
+        programa_combo.set("Inclusión Laboral")
+
+        def on_save():
+            payload = {
+                "nombre_profesional": nombre_var.get(),
+                "programa": programa_var.get(),
+            }
+            try:
+                data = self.api.post("/wizard/seccion-1/profesionales", payload)
+            except Exception as exc:
+                messagebox.showerror("Error", f"No se pudo guardar: {exc}")
+                return
+
+            if data.get("data"):
+                nuevo = data["data"][0]
+                nombre = nuevo.get("nombre_profesional", "").strip()
+                if nombre:
+                    values = list(self.prof_combo._all_values)
+                    if nombre not in values:
+                        values.append(nombre)
+                        values.sort()
+                        self.prof_combo._all_values = values
+                        self.prof_combo.configure(values=values)
+                    self.prof_var.set(nombre)
+                self.api.invalidate("/wizard/seccion-1/profesionales")
+            dialog.destroy()
+
+        tk.Button(
+            dialog,
+            text="Guardar",
+            command=on_save,
+            bg=COLOR_TEAL,
+            fg="white",
+            padx=10,
+            pady=4,
+        ).grid(row=2, column=0, columnspan=2, pady=16)
 class Seccion2Frame(BaseSection):
     def __init__(self, parent, api: ApiClient):
         super().__init__(parent, "Seccion 2 - Informacion de la empresa")
@@ -646,6 +772,7 @@ class Seccion3Frame(BaseSection):
         self._last_codigo: str | None = None
 
         ttk.Label(self.body, text="Fecha Servicio (YYYY-MM-DD)").grid(row=0, column=0, sticky="w")
+        DateEntry = _get_date_entry()
         if DateEntry:
             self.fecha_widget = DateEntry(
                 self.body,
@@ -794,11 +921,8 @@ class Seccion3Frame(BaseSection):
 
     def _calcular_interprete(self) -> None:
         base = float(self.valor_base_var.get() or 0)
-        horas = safe_int(self.horas_var.get() or "")
-        minutos = safe_int(self.minutos_var.get() or "")
-        if horas is None or minutos is None:
-            messagebox.showerror("Error", "Ingresa horas y minutos validos.")
-            return
+        horas = safe_int(self.horas_var.get() or "") or 0
+        minutos = safe_int(self.minutos_var.get() or "") or 0
         horas_decimal = horas + (minutos / 60)
         self.horas_decimal_var.set(f"{horas_decimal:.2f}")
         total = horas_decimal * base
@@ -898,6 +1022,7 @@ class PersonaRow(ttk.Frame):
         configure_combobox(self.genero_combo, generos)
 
         ttk.Label(self, text="Fecha ingreso (YYYY-MM-DD)").grid(row=2, column=0, sticky="w")
+        DateEntry = _get_date_entry()
         if DateEntry:
             self.fecha_ingreso_widget = DateEntry(
                 self,
@@ -1115,9 +1240,9 @@ class Seccion4Frame(BaseSection):
             "No existe un usuario con esa cedula. Deseas crearlo?",
         )
         if confirm:
-            self._open_create_user(prefill_cedula=cedula)
+            self._open_create_user(prefill_cedula=cedula, target_row=row)
 
-    def _open_create_user(self, prefill_cedula: str | None = None) -> None:
+    def _open_create_user(self, prefill_cedula: str | None = None, target_row: PersonaRow | None = None) -> None:
         dialog = tk.Toplevel(self)
         dialog.title("Crear usuario")
         dialog.geometry("420x360")
@@ -1176,14 +1301,20 @@ class Seccion4Frame(BaseSection):
             if user["cedula_usuario"] not in self.cedulas:
                 self.cedulas.append(user["cedula_usuario"])
                 self.usuarios_by_cedula[user["cedula_usuario"]] = user
+                self.rows = [r for r in self.rows if r.winfo_exists()]
                 for row in self.rows:
                     row.cedula_combo.configure(values=self.cedulas)
 
-            row = self.rows[-1] if self.rows else None
-            if row is None or row.cedula_var.get().strip():
-                self._add_row()
-                row = self.rows[-1]
+            self.api.invalidate("/wizard/seccion-4/usuarios")
+
+            row = target_row if target_row and target_row.winfo_exists() else None
+            if row is None:
+                row = self.rows[-1] if self.rows else None
+                if row is None or row.cedula_var.get().strip():
+                    self._add_row()
+                    row = self.rows[-1]
             row.set_from_user(user)
+            messagebox.showinfo("Exito", "Usuario guardado correctamente.")
             dialog.destroy()
 
         tk.Button(
@@ -1248,7 +1379,7 @@ class Seccion5Frame(BaseSection):
 
 
 class ResumenFrame(ttk.Frame):
-    def __init__(self, parent, on_terminar):
+    def __init__(self, parent, on_terminar, on_retry_queue=None, show_terminar: bool = True):
         super().__init__(parent)
         self.on_terminar = on_terminar
         self.vars = {
@@ -1274,7 +1405,7 @@ class ResumenFrame(ttk.Frame):
             ttk.Label(self, textvariable=self.vars[key]).grid(row=row, column=1, sticky="w")
             row += 1
 
-        tk.Button(
+        self._terminar_btn = tk.Button(
             self,
             text="Confirmar informacion y terminar",
             command=self.on_terminar,
@@ -1283,7 +1414,24 @@ class ResumenFrame(ttk.Frame):
             font=("Arial", 10, "bold"),
             padx=12,
             pady=6,
-        ).grid(row=row, column=0, pady=(10, 8), sticky="w")
+        )
+        if show_terminar:
+            self._terminar_btn.grid(row=row, column=0, pady=(10, 8), sticky="w")
+
+        row += 1
+        self.queue_label = ttk.Label(self, text="", foreground=COLOR_TEAL)
+        self.queue_label.grid(row=row, column=0, columnspan=2, sticky="w")
+        row += 1
+        if on_retry_queue:
+            tk.Button(
+                self,
+                text="Reintentar cola Excel",
+                command=on_retry_queue,
+                bg=COLOR_TEAL,
+                fg="white",
+                padx=10,
+                pady=4,
+            ).grid(row=row, column=0, pady=(6, 0), sticky="w")
 
     def update_summary(self, data: dict) -> None:
         for key, var in self.vars.items():
@@ -1304,7 +1452,7 @@ class WizardApp:
         self.edit_original_entry: dict | None = None
 
         self.root.title("SISTEMA DE GESTIÓN ODS - RECA")
-        self.root.geometry("1100x800")
+        self._set_window_size()
 
         self.header = tk.Frame(self.root, bg=COLOR_PURPLE, height=70)
         self.header.pack(fill=tk.X)
@@ -1365,9 +1513,9 @@ class WizardApp:
 
         tk.Button(
             self.main_frame,
-            text="Generar factura",
-            command=self.show_factura_screen,
-            bg=COLOR_TEAL,
+            text="Reconstruir Excel desde Supabase",
+            command=self._rebuild_excel_from_supabase,
+            bg="#C0392B",
             fg="white",
             font=("Arial", 12, "bold"),
             padx=16,
@@ -1377,275 +1525,51 @@ class WizardApp:
     def _not_ready(self) -> None:
         messagebox.showinfo("Info", "Funcion de edicion aun no implementada")
 
-    def show_factura_screen(self) -> None:
-        for child in self.main_frame.winfo_children():
-            child.destroy()
-
-        ttk.Label(
-            self.main_frame,
-            text="Generar factura",
-            font=("Arial", 14, "bold"),
-            foreground=COLOR_PURPLE,
-        ).pack(pady=12)
-
-        form = ttk.Frame(self.main_frame)
-        form.pack(fill=tk.X, padx=12, pady=8)
-
-        self.factura_tipo_var = tk.StringVar()
-        self.factura_mes_var = tk.StringVar()
-        self.factura_ano_var = tk.StringVar()
-        self.factura_preview = None
-
-        ttk.Label(form, text="Tipo de factura").grid(row=0, column=0, sticky="w")
-        tipo_combo = ttk.Combobox(
-            form,
-            textvariable=self.factura_tipo_var,
-            values=["Clausulada", "No clausulada"],
-            state="normal",
-            width=18,
-        )
-        tipo_combo.grid(row=0, column=1, sticky="w", padx=(0, 16))
-        tipo_combo.set("Clausulada")
-
-        ttk.Label(form, text="Mes").grid(row=0, column=2, sticky="w")
-        meses = [
-            "Enero",
-            "Febrero",
-            "Marzo",
-            "Abril",
-            "Mayo",
-            "Junio",
-            "Julio",
-            "Agosto",
-            "Septiembre",
-            "Octubre",
-            "Noviembre",
-            "Diciembre",
-        ]
-        mes_combo = ttk.Combobox(form, textvariable=self.factura_mes_var, values=meses, width=16, state="normal")
-        mes_combo.grid(row=0, column=3, sticky="w", padx=(0, 16))
-        mes_combo.set(meses[0])
-
-        ttk.Label(form, text="Año").grid(row=0, column=4, sticky="w")
-        anos = [str(year) for year in range(2020, 2031)]
-        ano_combo = ttk.Combobox(form, textvariable=self.factura_ano_var, values=anos, width=10, state="normal")
-        ano_combo.grid(row=0, column=5, sticky="w")
-        ano_combo.set(anos[-1])
-
-        tk.Button(
-            form,
-            text="Generar",
-            command=self._generar_factura_preview,
-            bg=COLOR_TEAL,
-            fg="white",
-            padx=12,
-            pady=4,
-        ).grid(row=0, column=6, padx=(16, 0))
-
-        tk.Button(
-            form,
-            text="Volver",
-            command=self.show_initial_screen,
-            bg=COLOR_PURPLE,
-            fg="white",
-            padx=12,
-            pady=4,
-        ).grid(row=0, column=7, padx=(10, 0))
-
-        self.factura_preview_frame = ttk.Frame(self.main_frame)
-        self.factura_preview_frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=8)
-
-        os.makedirs(_DESKTOP_FACTURAS, exist_ok=True)
-
-        self.factura_action_frame = ttk.Frame(self.main_frame)
-        self.factura_action_frame.pack(fill=tk.X, padx=12, pady=4)
-
-        self.factura_resumen_label = ttk.Label(self.factura_action_frame, text="", foreground=COLOR_PURPLE)
-        self.factura_resumen_label.pack(side="left")
-
-        self.factura_insert_button = tk.Button(
-            self.factura_action_frame,
-            text="Insertar a Excel",
-            command=self._insertar_factura_excel,
-            bg=COLOR_TEAL,
-            fg="white",
-            padx=12,
-            pady=4,
-            state="disabled",
-        )
-        self.factura_insert_button.pack(side="right")
-
-        ruta_label = ttk.Label(
-            self.main_frame,
-            text=f"Ruta facturas: {_DESKTOP_FACTURAS}",
-            foreground=COLOR_PURPLE,
-        )
-        ruta_label.pack(pady=(2, 8))
-
-        tk.Button(
-            self.main_frame,
-            text="Abrir facturas",
-            command=self._abrir_carpeta_facturas,
-            bg=COLOR_TEAL,
-            fg="white",
-            padx=12,
-            pady=4,
-        ).pack(pady=(0, 12))
-
-    def _generar_factura_preview(self) -> None:
-        tipo = self.factura_tipo_var.get().strip().lower()
-        mes_nombre = self.factura_mes_var.get().strip()
-        ano = self.factura_ano_var.get().strip()
-
-        meses = {
-            "Enero": 1,
-            "Febrero": 2,
-            "Marzo": 3,
-            "Abril": 4,
-            "Mayo": 5,
-            "Junio": 6,
-            "Julio": 7,
-            "Agosto": 8,
-            "Septiembre": 9,
-            "Octubre": 10,
-            "Noviembre": 11,
-            "Diciembre": 12,
-        }
-        if mes_nombre not in meses:
-            messagebox.showerror("Error", "Selecciona un mes valido.")
-            return
-        if not ano.isdigit():
-            messagebox.showerror("Error", "Selecciona un año valido.")
-            return
-
+    def _rebuild_excel_from_supabase(self) -> None:
         confirm = messagebox.askyesno(
-            "Confirmar",
-            f"Generar preview de factura {self.factura_tipo_var.get()} para {mes_nombre} {ano}?",
+            "Reconstruir Excel",
+            "¿Estas seguro de que deseas reconstruir el Excel desde Supabase?",
         )
         if not confirm:
             return
-
-        payload = {"tipo": tipo, "mes": meses[mes_nombre], "año": int(ano)}
-        loading = LoadingDialog(self.root, "Generando preview...")
+        confirm2 = messagebox.askyesno(
+            "Confirmacion final",
+            "Este proceso BORRARA el contenido actual del Excel y lo recreara desde Supabase.\n"
+            "Si el Excel tenia cambios no guardados, se perderan.\n"
+            "¿Deseas continuar?",
+        )
+        if not confirm2:
+            return
+        loading = LoadingDialog(self.root, "Reconstruyendo Excel...")
         self.root.update_idletasks()
         try:
-            response = self.api.post("/wizard/facturas/preview", payload)
+            response = self.api.post("/wizard/editar/excel/rebuild", {}, timeout=300)
         except Exception as exc:
             loading.close()
-            messagebox.showerror("Error", f"No se pudo generar preview: {exc}")
+            messagebox.showerror("Error", f"No se pudo reconstruir el Excel: {exc}")
             return
         loading.close()
-        self.factura_preview = response.get("data", {})
-        self._render_factura_preview(self.factura_preview)
-        self.factura_insert_button.configure(state="normal")
-
-    def _render_factura_preview(self, preview: dict) -> None:
-        for child in self.factura_preview_frame.winfo_children():
-            child.destroy()
-
-        items = preview.get("items", [])
-        if not items:
-            ttk.Label(self.factura_preview_frame, text="No hay datos para mostrar.").pack()
-            self.factura_insert_button.configure(state="disabled")
-            self.factura_resumen_label.config(text="")
-            return
-
-        columns = ("codigo", "referencia", "descripcion", "valor", "cantidad", "total")
-        tree = ttk.Treeview(self.factura_preview_frame, columns=columns, show="headings", height=10)
-        tree.heading("codigo", text="Cod.")
-        tree.heading("referencia", text="No")
-        tree.heading("descripcion", text="Descripcion del Servicio")
-        tree.heading("valor", text="Valor")
-        tree.heading("cantidad", text="Cantidad")
-        tree.heading("total", text="Total")
-
-        tree.column("codigo", width=80, anchor="w")
-        tree.column("referencia", width=80, anchor="w")
-        tree.column("descripcion", width=280, anchor="w")
-        tree.column("valor", width=120, anchor="e")
-        tree.column("cantidad", width=100, anchor="e")
-        tree.column("total", width=120, anchor="e")
-
-        scrollbar = ttk.Scrollbar(self.factura_preview_frame, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=scrollbar.set)
-        tree.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        for item in items:
-            tree.insert(
-                "",
-                "end",
-                values=(
-                    item.get("codigo_servicio", ""),
-                    item.get("referencia_servicio", ""),
-                    item.get("descripcion_servicio", ""),
-                    format_currency(item.get("valor_base")),
-                    f"{item.get('cantidad', 0):.2f}".rstrip("0").rstrip("."),
-                    format_currency(item.get("total")),
-                ),
-            )
-
-        total_base = preview.get("total_base", 0)
-        iva = preview.get("iva", 0)
-        total = preview.get("total", 0)
-        self.factura_resumen_label.config(
-            text=f"Total: {format_currency(total_base)} | IVA 19%: {format_currency(iva)} | Total final: {format_currency(total)}"
-        )
-
-    def _insertar_factura_excel(self) -> None:
-        if not self.factura_preview:
-            return
-        tipo = self.factura_tipo_var.get().strip().lower()
-        mes_nombre = self.factura_mes_var.get().strip()
-        ano = self.factura_ano_var.get().strip()
-        meses = {
-            "Enero": 1,
-            "Febrero": 2,
-            "Marzo": 3,
-            "Abril": 4,
-            "Mayo": 5,
-            "Junio": 6,
-            "Julio": 7,
-            "Agosto": 8,
-            "Septiembre": 9,
-            "Octubre": 10,
-            "Noviembre": 11,
-            "Diciembre": 12,
-        }
-        confirm = messagebox.askyesno(
-            "Confirmar",
-            f"Insertar factura {self.factura_tipo_var.get()} en Excel para {mes_nombre} {ano}?",
-        )
-        if not confirm:
-            return
-        payload = {"tipo": tipo, "mes": meses[mes_nombre], "año": int(ano)}
-        loading = LoadingDialog(self.root, "Generando factura en Excel...")
-        self.root.update_idletasks()
-        try:
-            response = self.api.post("/wizard/facturas/generar", payload)
-        except Exception as exc:
-            loading.close()
-            messagebox.showerror("Error", f"No se pudo generar la factura: {exc}")
-            return
-        loading.close()
-        archivo = response.get("data", {}).get("archivo", "")
-        if archivo:
-            try:
-                dest = os.path.join(_DESKTOP_FACTURAS, os.path.basename(archivo))
-                shutil.copy2(archivo, dest)
-            except Exception:
-                pass
+        data = response.get("data", {})
+        backup = data.get("backup") or "No aplica"
         messagebox.showinfo(
-            "Factura generada",
-            f"Factura generada con exito.\nArchivo: {archivo}",
+            "Reconstruccion completa",
+            f"Filas recreadas: {data.get('rows', 0)}\nBackup: {backup}",
         )
+        self._update_queue_status()
 
-    def _abrir_carpeta_facturas(self) -> None:
-        os.makedirs(_DESKTOP_FACTURAS, exist_ok=True)
-        try:
-            os.startfile(_DESKTOP_FACTURAS)
-        except Exception:
-            messagebox.showerror("Error", "No se pudo abrir la carpeta de facturas.")
+    def _set_window_size(self) -> None:
+        self.root.update_idletasks()
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        width = max(1100, int(screen_w * 0.9))
+        height = max(800, int(screen_h * 0.9))
+        self.root.geometry(f"{width}x{height}+0+0")
+        if sys.platform.startswith("win"):
+            try:
+                self.root.state("zoomed")
+            except tk.TclError:
+                pass
+
     def show_edit_search_screen(self) -> None:
         for child in self.main_frame.winfo_children():
             child.destroy()
@@ -1662,24 +1586,19 @@ class WizardApp:
         search_frame.pack(fill=tk.X, padx=12, pady=8)
 
         self.edit_filters = {
-            "id_servicio": tk.StringVar(),
             "nombre_profesional": tk.StringVar(),
             "nit_empresa": tk.StringVar(),
             "fecha_servicio": tk.StringVar(),
             "codigo_servicio": tk.StringVar(),
         }
 
-        ttk.Label(search_frame, text="ID servicio").grid(row=0, column=0, sticky="w")
-        ttk.Entry(search_frame, textvariable=self.edit_filters["id_servicio"], width=14).grid(
+        ttk.Label(search_frame, text="Profesional").grid(row=0, column=0, sticky="w")
+        ttk.Entry(search_frame, textvariable=self.edit_filters["nombre_profesional"], width=24).grid(
             row=0, column=1, sticky="w", padx=(0, 10)
         )
-        ttk.Label(search_frame, text="Profesional").grid(row=0, column=2, sticky="w")
-        ttk.Entry(search_frame, textvariable=self.edit_filters["nombre_profesional"], width=24).grid(
-            row=0, column=3, sticky="w", padx=(0, 10)
-        )
-        ttk.Label(search_frame, text="NIT").grid(row=0, column=4, sticky="w")
+        ttk.Label(search_frame, text="NIT").grid(row=0, column=2, sticky="w")
         ttk.Entry(search_frame, textvariable=self.edit_filters["nit_empresa"], width=16).grid(
-            row=0, column=5, sticky="w", padx=(0, 10)
+            row=0, column=3, sticky="w", padx=(0, 10)
         )
 
         ttk.Label(search_frame, text="Fecha servicio (YYYY-MM-DD)").grid(row=1, column=0, sticky="w")
@@ -1765,14 +1684,18 @@ class WizardApp:
             messagebox.showerror("Error", "Debes llenar al menos un filtro")
             return
 
-        loading = LoadingDialog(self.root, "Buscando entradas...")
+        loading = LoadingDialog(self.root, "Buscando entradas...", determinate=True)
         self.root.update_idletasks()
+        loading.set_status("Preparando filtros...", 25)
         try:
+            loading.set_status("Consultando ODS...", 70)
             data = self.api.get("/wizard/editar/buscar", params=params)
         except Exception as exc:
             loading.close()
             messagebox.showerror("Error", f"No se pudo buscar: {exc}")
             return
+        loading.set_status("Renderizando resultados...", 90)
+        loading.set_status("Listo...", 100)
         loading.close()
         self._render_results(data.get("data", []))
 
@@ -1790,7 +1713,6 @@ class WizardApp:
 
         columns = (
             "id",
-            "id_servicio",
             "fecha",
             "profesional",
             "empresa",
@@ -1800,7 +1722,6 @@ class WizardApp:
         )
         tree = ttk.Treeview(self.results_container, columns=columns, show="headings", height=10)
         tree.heading("id", text="ID")
-        tree.heading("id_servicio", text="ID Servicio")
         tree.heading("fecha", text="Fecha")
         tree.heading("profesional", text="Profesional")
         tree.heading("empresa", text="Empresa")
@@ -1809,7 +1730,6 @@ class WizardApp:
         tree.heading("accion", text="")
 
         tree.column("id", width=60, anchor="w")
-        tree.column("id_servicio", width=90, anchor="w")
         tree.column("fecha", width=110, anchor="w")
         tree.column("profesional", width=170, anchor="w")
         tree.column("empresa", width=170, anchor="w")
@@ -1826,7 +1746,6 @@ class WizardApp:
         for row in results:
             values = (
                 row.get("id", ""),
-                row.get("id_servicio", ""),
                 row.get("fecha_servicio", ""),
                 row.get("nombre_profesional", ""),
                 row.get("nombre_empresa", ""),
@@ -1859,7 +1778,6 @@ class WizardApp:
         self.edit_original_entry = None
         resumen = (
             f"Seleccionado ID {row.get('id')} | "
-            f"ID servicio {row.get('id_servicio')} | "
             f"{row.get('fecha_servicio')} | "
             f"{row.get('nombre_profesional')} | "
             f"{row.get('codigo_servicio')}"
@@ -1878,14 +1796,17 @@ class WizardApp:
         if not confirm:
             return
 
-        loading = LoadingDialog(self.root, "Cargando entrada...")
+        loading = LoadingDialog(self.root, "Cargando entrada...", determinate=True)
         self.root.update_idletasks()
+        loading.set_status("Consultando ODS...", 60)
         try:
             data = self.api.get("/wizard/editar/entrada", params={"id": self.edit_entry_id})
         except Exception as exc:
             loading.close()
             messagebox.showerror("Error", f"No se pudo cargar la entrada: {exc}")
             return
+        loading.set_status("Aplicando datos al formulario...", 90)
+        loading.set_status("Preparando formulario...", 95)
         loading.close()
         entry = data.get("data", {})
         self.edit_original_entry = entry
@@ -1898,29 +1819,39 @@ class WizardApp:
 
             self.scroll = ScrollableFrame(self.main_frame)
             self.scroll.pack(fill=tk.BOTH, expand=True)
+            self.scroll.content.grid_columnconfigure(0, weight=1)
+            self.scroll.content.grid_columnconfigure(1, weight=1)
 
-            self.seccion1 = Seccion1Frame(self.scroll.content, self.api, self.state)
+            left_col = ttk.Frame(self.scroll.content)
+            left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+            right_col = ttk.Frame(self.scroll.content)
+            right_col.grid(row=0, column=1, sticky="nsew")
+            left_col.grid_columnconfigure(0, weight=1)
+            right_col.grid_columnconfigure(0, weight=1)
+
+            self.seccion1 = Seccion1Frame(left_col, self.api, self.state)
             self.seccion1.grid(row=0, column=0, sticky="ew", pady=8)
 
-            self.seccion2 = Seccion2Frame(self.scroll.content, self.api)
+            self.seccion2 = Seccion2Frame(left_col, self.api)
             self.seccion2.grid(row=1, column=0, sticky="ew", pady=8)
 
-            self.seccion3 = Seccion3Frame(self.scroll.content, self.api)
+            self.seccion3 = Seccion3Frame(left_col, self.api)
             self.seccion3.grid(row=2, column=0, sticky="ew", pady=8)
 
-            self.seccion4 = Seccion4Frame(self.scroll.content, self.api, self.state)
-            self.seccion4.grid(row=3, column=0, sticky="ew", pady=8)
+            self.seccion4 = Seccion4Frame(right_col, self.api, self.state)
+            self.seccion4.grid(row=0, column=0, sticky="ew", pady=8)
 
-            self.seccion5 = Seccion5Frame(self.scroll.content, self.api)
-            self.seccion5.grid(row=4, column=0, sticky="ew", pady=8)
+            self.seccion5 = Seccion5Frame(right_col, self.api)
+            self.seccion5.grid(row=1, column=0, sticky="ew", pady=8)
 
-            self.resumen = ResumenFrame(self.scroll.content, self.terminar_servicio)
-            self.resumen.grid(row=5, column=0, sticky="ew", pady=8)
+            self.resumen = ResumenFrame(right_col, self.terminar_servicio, self._flush_excel_queue)
+            self.resumen.grid(row=2, column=0, sticky="ew", pady=8)
 
             self._load_section_data()
             self._lock_sections()
             self._bind_summary_updates()
             self._refresh_summary()
+            self._update_queue_status()
         except Exception as exc:
             messagebox.showerror("Error", f"No se pudo iniciar el formulario: {exc}")
 
@@ -1931,27 +1862,36 @@ class WizardApp:
 
             self.scroll = ScrollableFrame(self.main_frame)
             self.scroll.pack(fill=tk.BOTH, expand=True)
+            self.scroll.content.grid_columnconfigure(0, weight=1)
+            self.scroll.content.grid_columnconfigure(1, weight=1)
 
-            self.seccion1 = Seccion1Frame(self.scroll.content, self.api, self.state)
+            left_col = ttk.Frame(self.scroll.content)
+            left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+            right_col = ttk.Frame(self.scroll.content)
+            right_col.grid(row=0, column=1, sticky="nsew")
+            left_col.grid_columnconfigure(0, weight=1)
+            right_col.grid_columnconfigure(0, weight=1)
+
+            self.seccion1 = Seccion1Frame(left_col, self.api, self.state)
             self.seccion1.grid(row=0, column=0, sticky="ew", pady=8)
 
-            self.seccion2 = Seccion2Frame(self.scroll.content, self.api)
+            self.seccion2 = Seccion2Frame(left_col, self.api)
             self.seccion2.grid(row=1, column=0, sticky="ew", pady=8)
 
-            self.seccion3 = Seccion3Frame(self.scroll.content, self.api)
+            self.seccion3 = Seccion3Frame(left_col, self.api)
             self.seccion3.grid(row=2, column=0, sticky="ew", pady=8)
 
-            self.seccion4 = Seccion4Frame(self.scroll.content, self.api, self.state)
-            self.seccion4.grid(row=3, column=0, sticky="ew", pady=8)
+            self.seccion4 = Seccion4Frame(right_col, self.api, self.state)
+            self.seccion4.grid(row=0, column=0, sticky="ew", pady=8)
 
-            self.seccion5 = Seccion5Frame(self.scroll.content, self.api)
-            self.seccion5.grid(row=4, column=0, sticky="ew", pady=8)
+            self.seccion5 = Seccion5Frame(right_col, self.api)
+            self.seccion5.grid(row=1, column=0, sticky="ew", pady=8)
 
-            self.resumen = ResumenFrame(self.scroll.content, self.terminar_servicio)
-            self.resumen.grid(row=5, column=0, sticky="ew", pady=8)
+            self.resumen = ResumenFrame(right_col, self.terminar_servicio, self._flush_excel_queue, show_terminar=False)
+            self.resumen.grid(row=2, column=0, sticky="ew", pady=8)
 
             self.edit_actions = ttk.Frame(self.scroll.content)
-            self.edit_actions.grid(row=6, column=0, sticky="w", pady=8)
+            self.edit_actions.grid(row=1, column=0, columnspan=2, sticky="w", pady=8)
             tk.Button(
                 self.edit_actions,
                 text="Actualizar entrada",
@@ -1984,7 +1924,6 @@ class WizardApp:
             self._lock_sections()
             self._bind_summary_updates()
 
-            self.state.id_servicio = entry.get("id_servicio")
             self.seccion1.set_data(entry)
             self.seccion2.set_data(entry)
             self.seccion3.set_data(entry)
@@ -1996,19 +1935,37 @@ class WizardApp:
             messagebox.showerror("Error", f"No se pudo cargar el formulario: {exc}")
 
     def _flush_excel_queue(self) -> None:
-        loading = LoadingDialog(self.root, "Reintentando cola Excel...")
+        loading = LoadingDialog(self.root, "Reintentando cola Excel...", determinate=True)
         self.root.update_idletasks()
+        loading.set_status("Procesando pendientes...", 60)
         try:
             response = self.api.post("/wizard/editar/excel/flush", {})
         except Exception as exc:
             loading.close()
             messagebox.showerror("Error", f"No se pudo reintentar la cola: {exc}")
             return
+        loading.set_status("Actualizando estado...", 90)
+        loading.set_status("Finalizando...", 100)
         loading.close()
         data = response.get("data", {})
-        self.queue_status_label.config(
-            text=f"Cola Excel: procesados {data.get('procesados', 0)} / pendientes {data.get('pendientes', 0)}"
-        )
+        if hasattr(self, "queue_status_label"):
+            self.queue_status_label.config(
+                text=f"Cola Excel: procesados {data.get('procesados', 0)} / pendientes {data.get('pendientes', 0)}"
+            )
+        self._update_queue_status()
+
+    def _update_queue_status(self) -> None:
+        try:
+            data = self.api.get("/wizard/editar/excel/status").get("data", {})
+        except Exception:
+            return
+        pendientes = int(data.get("pendientes", 0) or 0)
+        locked = bool(data.get("locked"))
+        if self.resumen and getattr(self.resumen, "queue_label", None):
+            status = f"Cola Excel: {pendientes} pendiente(s)"
+            if locked:
+                status += " (Excel en uso)"
+            self.resumen.queue_label.config(text=status)
 
     def _load_section_data(self) -> None:
         self.seccion1.load_data()
@@ -2055,6 +2012,7 @@ class WizardApp:
             base = float(self.seccion3.valor_base_var.get() or 0)
             data["valor_total"] = base if base else ""
         self.resumen.update_summary(data)
+        self._update_queue_status()
 
     def _build_ods_payload(self) -> dict:
         ods = {}
@@ -2116,7 +2074,24 @@ class WizardApp:
         return self._build_ods_payload()
 
     def terminar_servicio(self) -> None:
-        loading = LoadingDialog(self.root, "Guardando servicio en la base de datos...")
+        try:
+            status = self.api.get("/wizard/editar/excel/status").get("data", {})
+        except Exception:
+            status = {}
+        if int(status.get("pendientes", 0) or 0) > 0:
+            messagebox.showwarning(
+                "Pendientes en Excel",
+                "Hay registros pendientes por escribir en Excel. "
+                "Usa 'Reintentar cola Excel' y espera a que termine antes de guardar otro servicio.",
+            )
+            return
+        if status.get("locked"):
+            messagebox.showwarning(
+                "Excel en uso",
+                "El archivo Excel esta abierto. Cierralo para continuar con el guardado.",
+            )
+            return
+        loading = LoadingDialog(self.root, "Preparando servicio...")
         self.root.update_idletasks()
         try:
             ods = self._validar_secciones()
@@ -2126,30 +2101,38 @@ class WizardApp:
             return
 
         try:
-            resumen = self.api.post("/wizard/resumen-final", {"ods": ods})["data"]
+            resumen = self.api.post("/wizard/resumen-final", {"ods": ods}, timeout=30)["data"]
             self.resumen.update_summary(resumen)
         except Exception as exc:
             loading.close()
             messagebox.showerror("Error", f"No se pudo generar el resumen: {exc}")
             return
+        loading.close()
 
         continuar = messagebox.askyesno(
             "Confirmar servicio",
             "Resumen generado. Deseas terminar y guardar el servicio?",
         )
         if not continuar:
-            loading.close()
             return
 
+        loading = LoadingDialog(self.root, "Guardando servicio en la base de datos...")
+        self.root.update_idletasks()
+        loading.set_status("Guardando servicio...", None)
         payload = {"ods": ods, "usuarios_nuevos": self.state.usuarios_nuevos}
         try:
-            response = self.api.post("/wizard/terminar-servicio", payload)
+            response = self.api.post("/wizard/terminar-servicio", payload, timeout=120)
         except Exception as exc:
             loading.close()
             messagebox.showerror("Error", f"No se pudo terminar el servicio: {exc}")
             return
         loading.close()
-        if response.get("excel_status") == "pendiente":
+        if response.get("excel_status") == "background":
+            messagebox.showinfo(
+                "Servicio guardado",
+                "Servicio guardado. El Excel y la factura se actualizan en segundo plano.",
+            )
+        elif response.get("excel_status") == "pendiente":
             messagebox.showwarning(
                 "Aviso",
                 "El archivo Excel estaba abierto. Se guardo la fila en cola.",
@@ -2162,20 +2145,18 @@ class WizardApp:
 
         add_another = messagebox.askyesno(
             "Servicio terminado",
-            "Servicio guardado. Deseas agregar otro servicio con el mismo ID?",
+            "Servicio guardado. Deseas agregar otro servicio?",
         )
         if add_another:
-            self.state.reset_service(keep_id=True)
             self.start_new_service()
         else:
-            self.state.reset_service(keep_id=False)
             self.show_initial_screen()
 
     def actualizar_entrada(self) -> None:
         if not self.edit_entry_id:
             messagebox.showerror("Error", "No hay una entrada seleccionada.")
             return
-        loading = LoadingDialog(self.root, "Actualizando entrada...")
+        loading = LoadingDialog(self.root, "Preparando actualizacion...")
         self.root.update_idletasks()
         try:
             ods = self._validar_secciones()
@@ -2193,6 +2174,7 @@ class WizardApp:
                     original_value = round(original_value, 4)
                 if str(value) != str(original_value):
                     cambios.append(key)
+        loading.close()
         if cambios:
             detalle = ", ".join(sorted(cambios))
             confirmar = messagebox.askyesno(
@@ -2200,17 +2182,17 @@ class WizardApp:
                 f"Se actualizaran {len(cambios)} campos:\n{detalle}\n\nDeseas continuar?",
             )
             if not confirmar:
-                loading.close()
                 return
         else:
             messagebox.showinfo("Sin cambios", "No hay cambios detectados.")
-            loading.close()
             return
+        loading = LoadingDialog(self.root, "Actualizando entrada...")
+        self.root.update_idletasks()
         payload = {"filtro": {"id": self.edit_entry_id}, "datos": ods}
         if self.edit_original_entry:
             payload["original"] = self.edit_original_entry
         try:
-            response = self.api.post("/wizard/editar/actualizar", payload)
+            response = self.api.post("/wizard/editar/actualizar", payload, timeout=120)
         except Exception as exc:
             loading.close()
             messagebox.showerror("Error", f"No se pudo actualizar: {exc}")
@@ -2221,7 +2203,12 @@ class WizardApp:
             "Actualizado",
             "Entrada actualizada. Campos cambiados: " + (", ".join(cambios) if cambios else "ninguno"),
         )
-        if response.get("excel_status") == "pendiente":
+        if response.get("excel_status") == "background":
+            messagebox.showinfo(
+                "Actualizado",
+                "Entrada actualizada. El Excel y la factura se actualizan en segundo plano.",
+            )
+        elif response.get("excel_status") == "pendiente":
             messagebox.showwarning(
                 "Aviso",
                 "El archivo Excel estaba abierto. Se guardo la actualizacion en cola.",
@@ -2248,14 +2235,19 @@ class WizardApp:
         if self.edit_original_entry:
             payload["original"] = self.edit_original_entry
         try:
-            response = self.api.post("/wizard/editar/eliminar", payload)
+            response = self.api.post("/wizard/editar/eliminar", payload, timeout=120)
         except Exception as exc:
             loading.close()
             messagebox.showerror("Error", f"No se pudo eliminar: {exc}")
             return
         loading.close()
         messagebox.showinfo("Eliminado", "Entrada eliminada correctamente.")
-        if response.get("excel_status") == "pendiente":
+        if response.get("excel_status") == "background":
+            messagebox.showinfo(
+                "Eliminado",
+                "Entrada eliminada. El Excel y la factura se actualizan en segundo plano.",
+            )
+        elif response.get("excel_status") == "pendiente":
             messagebox.showwarning(
                 "Aviso",
                 "El archivo Excel estaba abierto. Se guardo la eliminacion en cola.",
@@ -2269,10 +2261,19 @@ class WizardApp:
 
 
 def main() -> None:
-    backend_url = _load_backend_url()
     root = tk.Tk()
     root.withdraw()
     splash = StartupSplash(root)
+    try:
+        splash.deiconify()
+    except tk.TclError:
+        pass
+    splash.lift()
+    splash.update_idletasks()
+    splash.update()
+    time.sleep(0.2)
+    backend_url = _load_backend_url()
+    start_time = time.time()
     try:
         _ensure_backend_running(backend_url, splash.set_status)
     except RuntimeError as exc:
@@ -2289,8 +2290,14 @@ def main() -> None:
         messagebox.showerror("Error", f"No se pudieron cargar datos iniciales: {exc}")
         root.destroy()
         return
+    elapsed = time.time() - start_time
+    if elapsed < 1.0:
+        time.sleep(1.0 - elapsed)
     splash.close()
     root.deiconify()
+    default_font = tkfont.nametofont("TkDefaultFont")
+    default_font.configure(size=13)
+    root.option_add("*Font", default_font)
     style = ttk.Style(root)
     try:
         style.theme_use("clam")
@@ -2304,6 +2311,12 @@ def main() -> None:
     style.configure("Highlight.TFrame", background="#FFF2CC")
     root.configure(bg="white")
     app = WizardApp(root, api)
+
+    def _on_close():
+        _stop_backend()
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", _on_close)
 
     def _run_update():
         try:

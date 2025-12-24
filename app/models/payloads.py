@@ -14,7 +14,6 @@ class UsuarioNuevo(BaseModel):
 class OdsPayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    id_servicio: int
     orden_clausulada: str
     nombre_profesional: str
     nit_empresa: str
