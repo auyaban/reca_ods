@@ -14,3 +14,6 @@
 
 ## 1.1.2
 - Hotfix: configuracion minima de logging de uvicorn en modo embebido.
+
+## 1.1.3
+- Hotfix: logging de uvicorn con formatter/handler por defecto en modo embebido.
