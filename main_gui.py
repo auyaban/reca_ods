@@ -109,7 +109,14 @@ def _start_backend_inprocess(host: str, port: int) -> None:
     global _BACKEND_THREAD
     if _BACKEND_THREAD and _BACKEND_THREAD.is_alive():
         return
-    config = uvicorn.Config("main:app", host=host, port=port, log_level="warning")
+    config = uvicorn.Config(
+        "main:app",
+        host=host,
+        port=port,
+        log_level="warning",
+        log_config=None,
+        access_log=False,
+    )
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, daemon=True)
     _BACKEND_THREAD = thread
