@@ -23,3 +23,6 @@
 
 ## 1.1.5
 - Hotfix: fallback de backend embebido a subproceso y modo `--backend` para ejecutable.
+
+## 1.1.6
+- Hotfix: log de arranque del backend en `%TEMP%` para diagnostico en instaladores.

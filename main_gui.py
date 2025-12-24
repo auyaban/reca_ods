@@ -3,6 +3,7 @@ import re
 import subprocess
 import sys
 import time
+import traceback
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -79,6 +80,19 @@ def _parse_host_port(base_url: str) -> tuple[str, int]:
     return host, port
 
 
+def _startup_log_path() -> str:
+    base = os.getenv("TEMP") or os.getenv("TMP") or os.getcwd()
+    return os.path.join(base, "reca_ods_startup.log")
+
+
+def _log_startup(message: str) -> None:
+    try:
+        with open(_startup_log_path(), "a", encoding="utf-8") as fh:
+            fh.write(message.rstrip() + "\n")
+    except Exception:
+        pass
+
+
 def _ensure_backend_running(base_url: str, status_callback=None) -> None:
     import requests
     if status_callback:
@@ -132,8 +146,15 @@ def _ensure_backend_running(base_url: str, status_callback=None) -> None:
                 time.sleep(0.6)
 
     if _BACKEND_STARTUP_ERROR:
-        raise RuntimeError(f"No se pudo iniciar el backend: {_BACKEND_STARTUP_ERROR}")
-    raise RuntimeError("No se pudo iniciar el backend. Verifica que uvicorn este disponible.")
+        raise RuntimeError(
+            "No se pudo iniciar el backend. "
+            f"Detalle: {_BACKEND_STARTUP_ERROR}. "
+            f"Revisa el log: {_startup_log_path()}"
+        )
+    raise RuntimeError(
+        "No se pudo iniciar el backend. "
+        f"Revisa el log: {_startup_log_path()}"
+    )
 
 
 def _backend_log_config() -> dict:
@@ -192,24 +213,33 @@ def _start_backend_subprocess(host: str, port: int) -> None:
 def _run_backend_server(server) -> None:
     global _BACKEND_STARTUP_ERROR
     try:
+        _log_startup("Backend embebido iniciado.")
         server.run()
     except Exception as exc:
         _BACKEND_STARTUP_ERROR = exc
+        _log_startup("ERROR backend embebido:")
+        _log_startup(traceback.format_exc())
 
 
 def _run_backend_only(host: str, port: int) -> None:
     import uvicorn
-    config = uvicorn.Config(
-        "main:app",
-        host=host,
-        port=port,
-        log_level="warning",
-        log_config=_backend_log_config(),
-        access_log=False,
-        use_colors=False,
-    )
-    server = uvicorn.Server(config)
-    server.run()
+    _log_startup(f"Backend subproceso iniciado. host={host} port={port}")
+    try:
+        config = uvicorn.Config(
+            "main:app",
+            host=host,
+            port=port,
+            log_level="warning",
+            log_config=_backend_log_config(),
+            access_log=False,
+            use_colors=False,
+        )
+        server = uvicorn.Server(config)
+        server.run()
+    except Exception:
+        _log_startup("ERROR backend subproceso:")
+        _log_startup(traceback.format_exc())
+        raise
 
 
 def _stop_backend() -> None:
