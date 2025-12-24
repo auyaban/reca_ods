@@ -132,15 +132,17 @@ def _start_backend_inprocess(host: str, port: int) -> None:
             "version": 1,
             "disable_existing_loggers": True,
             "formatters": {
-                "default": {"class": "logging.Formatter", "format": "%(message)s"}
+                "default": {"class": "logging.Formatter", "format": "%(message)s"},
+                "access": {"class": "logging.Formatter", "format": "%(message)s"},
             },
             "handlers": {
-                "default": {"class": "logging.NullHandler", "formatter": "default"}
+                "default": {"class": "logging.NullHandler", "formatter": "default"},
+                "access": {"class": "logging.NullHandler", "formatter": "access"},
             },
             "loggers": {
                 "uvicorn": {"handlers": ["default"], "level": "WARNING", "propagate": False},
                 "uvicorn.error": {"handlers": ["default"], "level": "WARNING", "propagate": False},
-                "uvicorn.access": {"handlers": ["default"], "level": "WARNING", "propagate": False},
+                "uvicorn.access": {"handlers": ["access"], "level": "WARNING", "propagate": False},
             },
             "root": {"handlers": ["default"], "level": "WARNING"},
         },

@@ -17,3 +17,6 @@
 
 ## 1.1.3
 - Hotfix: logging de uvicorn con formatter/handler por defecto en modo embebido.
+
+## 1.1.4
+- Hotfix: logging de uvicorn con handler/formatter de access en modo embebido.
