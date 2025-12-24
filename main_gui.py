@@ -128,8 +128,9 @@ def _start_backend_inprocess(host: str, port: int) -> None:
         host=host,
         port=port,
         log_level="warning",
-        log_config=None,
+        log_config={"version": 1, "disable_existing_loggers": True},
         access_log=False,
+        use_colors=False,
     )
     server = uvicorn.Server(config)
     _BACKEND_SERVER = server

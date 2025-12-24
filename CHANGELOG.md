@@ -8,3 +8,6 @@
 - Reconstruccion de Excel desde Supabase con backup automatico.
 - Correcciones de actualizacion/edicion (fechas duplicadas, errores de requests).
 - Limpieza del frontend (flujo de factura removido).
+
+## 1.1.1
+- Hotfix: desactivar logging de uvicorn en modo embebido para evitar error en ejecutable.
