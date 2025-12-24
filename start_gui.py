@@ -9,8 +9,20 @@ from urllib.request import urlopen
 
 
 def _load_backend_url() -> str:
-    env_path = os.path.join(os.getcwd(), ".env")
-    if os.path.exists(env_path):
+    env_path = None
+    try:
+        from app.paths import app_data_dir
+
+        candidate = app_data_dir() / ".env"
+        if candidate.exists():
+            env_path = str(candidate)
+    except Exception:
+        env_path = None
+    if not env_path:
+        candidate = os.path.join(os.getcwd(), ".env")
+        if os.path.exists(candidate):
+            env_path = candidate
+    if env_path:
         try:
             with open(env_path, "r", encoding="utf-8") as handle:
                 for line in handle:
@@ -119,11 +131,17 @@ def _backend_ready(url: str) -> bool:
 
 
 def main() -> None:
+    if "--run-gui" in sys.argv:
+        import main_gui
+
+        main_gui.main()
+        return
+
     root = tk.Tk()
     root.withdraw()
     splash = Splash(root)
 
-    cmd = [sys.executable, os.path.join(os.path.dirname(__file__), "main_gui.py")]
+    cmd = [sys.executable, "--run-gui"]
     subprocess.Popen(cmd, cwd=os.path.dirname(__file__))
 
     backend_url = _load_backend_url()

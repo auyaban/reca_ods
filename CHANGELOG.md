@@ -35,3 +35,6 @@
 
 ## 1.1.9
 - Hotfix: backend embebido/subproceso usa app construida en runtime (sin importar `main`).
+
+## 1.1.10
+- Mejora: el instalador usa `start_gui.py` como entrypoint para asegurar pantalla de carga visible.

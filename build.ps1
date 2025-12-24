@@ -44,7 +44,7 @@ $pyiArgs = @(
     "--add-data", "VERSION;.",
     "--name", "RECA_ODS",
     "--collect-all", "supabase",
-    "main_gui.py"
+    "start_gui.py"
 )
 if (Test-Path $iconPath) {
     $pyiArgs = @("--icon", $iconPath) + $pyiArgs
