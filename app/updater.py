@@ -45,23 +45,32 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def check_and_update() -> None:
-    local_version = get_version()
+def _get_latest_release() -> tuple[str | None, dict]:
     api_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest"
     response = requests.get(api_url, timeout=15)
     if response.status_code >= 400:
-        return
-
+        return None, {}
     data = response.json()
     remote_version = str(data.get("tag_name", "")).lstrip("v")
+    assets = {asset["name"]: asset["browser_download_url"] for asset in data.get("assets", [])}
+    return remote_version or None, assets
+
+
+def check_and_update(status_callback=None, version_callback=None) -> None:
+    local_version = get_version()
+    remote_version, assets = _get_latest_release()
+    if version_callback:
+        version_callback(local_version, remote_version)
     if not remote_version or not _is_newer(remote_version, local_version):
         return
 
-    assets = {asset["name"]: asset["browser_download_url"] for asset in data.get("assets", [])}
     installer_url = assets.get(INSTALLER_ASSET)
     hash_url = assets.get(HASH_ASSET)
     if not installer_url or not hash_url:
         return
+
+    if status_callback:
+        status_callback("Descargando actualizacion...")
 
     temp_dir = Path(tempfile.mkdtemp(prefix="reca_ods_update_"))
     installer_path = temp_dir / INSTALLER_ASSET
@@ -75,9 +84,12 @@ def check_and_update() -> None:
     if expected.lower() != actual.lower():
         return
 
+    if status_callback:
+        status_callback("Iniciando instalador...")
+
     args = [
         str(installer_path),
-        "/VERYSILENT",
+        "/SILENT",
         "/SUPPRESSMSGBOXES",
         "/NORESTART",
         "/SP-",

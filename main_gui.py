@@ -1660,6 +1660,8 @@ class WizardApp:
         self._summary_after_id: str | None = None
         self.edit_entry_id: str | None = None
         self.edit_original_entry: dict | None = None
+        self._update_dialog: LoadingDialog | None = None
+        self._version_var = tk.StringVar()
 
         self.root.title("SISTEMA DE GESTIÓN ODS - RECA")
         self._set_window_size()
@@ -1686,7 +1688,31 @@ class WizardApp:
         self.main_frame = ttk.Frame(self.root)
         self.main_frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
 
+        self.footer = ttk.Frame(self.root)
+        self.footer.pack(fill=tk.X, padx=12, pady=(0, 6), side=tk.BOTTOM)
+        self._version_var.set("Version local: - | GitHub: -")
+        ttk.Label(
+            self.footer,
+            textvariable=self._version_var,
+            font=("Arial", 9),
+            foreground="#666666",
+        ).pack(side=tk.LEFT)
+
         self.show_initial_screen()
+
+    def set_version_info(self, local_version: str, remote_version: str | None) -> None:
+        remote_label = remote_version or "-"
+        self._version_var.set(f"Version local: {local_version} | GitHub: {remote_label}")
+
+    def show_update_status(self, message: str | None) -> None:
+        if message:
+            if self._update_dialog is None:
+                self._update_dialog = LoadingDialog(self.root, "Actualizando...", determinate=False)
+                self.root.update_idletasks()
+            self._update_dialog.set_status(message)
+        elif self._update_dialog is not None:
+            self._update_dialog.close()
+            self._update_dialog = None
 
     def show_initial_screen(self) -> None:
         for child in self.main_frame.winfo_children():
@@ -2531,6 +2557,12 @@ def main() -> None:
     style.configure("Highlight.TFrame", background="#FFF2CC")
     root.configure(bg="white")
     app = WizardApp(root, api)
+    try:
+        from app.version import get_version
+
+        app.set_version_info(get_version(), None)
+    except Exception:
+        pass
 
     def _on_close():
         _stop_backend()
@@ -2542,7 +2574,13 @@ def main() -> None:
         try:
             from app.updater import check_and_update
 
-            check_and_update()
+            def _set_versions(local: str, remote: str | None) -> None:
+                root.after(0, lambda: app.set_version_info(local, remote))
+
+            def _show_status(message: str) -> None:
+                root.after(0, lambda: app.show_update_status(message))
+
+            check_and_update(status_callback=_show_status, version_callback=_set_versions)
         except Exception:
             pass
 

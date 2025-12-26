@@ -41,3 +41,6 @@
 
 ## 1.1.11
 - Mejora: layout de una sola columna y `fecha_ingreso` opcional.
+
+## 1.1.12
+- Mejora: autoupdater con instalador visible y reinicio automatico; version local/remota en el GUI.
