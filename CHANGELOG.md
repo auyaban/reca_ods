@@ -38,3 +38,6 @@
 
 ## 1.1.10
 - Mejora: el instalador usa `start_gui.py` como entrypoint para asegurar pantalla de carga visible.
+
+## 1.1.11
+- Mejora: layout de una sola columna y `fecha_ingreso` opcional.

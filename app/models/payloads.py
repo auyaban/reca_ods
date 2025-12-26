@@ -37,7 +37,7 @@ class OdsPayload(BaseModel):
     cedula_usuario: str
     discapacidad_usuario: str
     genero_usuario: str
-    fecha_ingreso: str
+    fecha_ingreso: str | None = None
     tipo_contrato: str
     cargo_servicio: str
     total_personas: int

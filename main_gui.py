@@ -1237,6 +1237,12 @@ class PersonaRow(ttk.Frame):
         else:
             self.fecha_ingreso_widget = ttk.Entry(self, textvariable=self.fecha_ingreso_var, width=14)
         self.fecha_ingreso_widget.grid(row=2, column=1, sticky="w")
+        self.fecha_ingreso_var.set("")
+        if hasattr(self.fecha_ingreso_widget, "delete"):
+            try:
+                self.fecha_ingreso_widget.delete(0, "end")
+            except tk.TclError:
+                pass
 
         ttk.Label(self, text="Tipo contrato").grid(row=2, column=3, sticky="w", padx=(10, 0))
         self.contrato_combo = ttk.Combobox(
@@ -2024,32 +2030,28 @@ class WizardApp:
             self.scroll = ScrollableFrame(self.main_frame)
             self.scroll.pack(fill=tk.BOTH, expand=True)
             self.scroll.content.grid_columnconfigure(0, weight=1)
-            self.scroll.content.grid_columnconfigure(1, weight=1)
 
-            left_col = ttk.Frame(self.scroll.content)
-            left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-            right_col = ttk.Frame(self.scroll.content)
-            right_col.grid(row=0, column=1, sticky="nsew")
-            left_col.grid_columnconfigure(0, weight=1)
-            right_col.grid_columnconfigure(0, weight=1)
+            main_col = ttk.Frame(self.scroll.content)
+            main_col.grid(row=0, column=0, sticky="nsew")
+            main_col.grid_columnconfigure(0, weight=1)
 
-            self.seccion1 = Seccion1Frame(left_col, self.api, self.state)
+            self.seccion1 = Seccion1Frame(main_col, self.api, self.state)
             self.seccion1.grid(row=0, column=0, sticky="ew", pady=8)
 
-            self.seccion2 = Seccion2Frame(left_col, self.api)
+            self.seccion2 = Seccion2Frame(main_col, self.api)
             self.seccion2.grid(row=1, column=0, sticky="ew", pady=8)
 
-            self.seccion3 = Seccion3Frame(left_col, self.api)
+            self.seccion3 = Seccion3Frame(main_col, self.api)
             self.seccion3.grid(row=2, column=0, sticky="ew", pady=8)
 
-            self.seccion4 = Seccion4Frame(right_col, self.api, self.state)
-            self.seccion4.grid(row=0, column=0, sticky="ew", pady=8)
+            self.seccion4 = Seccion4Frame(main_col, self.api, self.state)
+            self.seccion4.grid(row=3, column=0, sticky="ew", pady=8)
 
-            self.seccion5 = Seccion5Frame(right_col, self.api)
-            self.seccion5.grid(row=1, column=0, sticky="ew", pady=8)
+            self.seccion5 = Seccion5Frame(main_col, self.api)
+            self.seccion5.grid(row=4, column=0, sticky="ew", pady=8)
 
-            self.resumen = ResumenFrame(right_col, self.terminar_servicio, self._flush_excel_queue)
-            self.resumen.grid(row=2, column=0, sticky="ew", pady=8)
+            self.resumen = ResumenFrame(main_col, self.terminar_servicio, self._flush_excel_queue)
+            self.resumen.grid(row=5, column=0, sticky="ew", pady=8)
 
             self._load_section_data()
             self._lock_sections()
@@ -2067,35 +2069,36 @@ class WizardApp:
             self.scroll = ScrollableFrame(self.main_frame)
             self.scroll.pack(fill=tk.BOTH, expand=True)
             self.scroll.content.grid_columnconfigure(0, weight=1)
-            self.scroll.content.grid_columnconfigure(1, weight=1)
 
-            left_col = ttk.Frame(self.scroll.content)
-            left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-            right_col = ttk.Frame(self.scroll.content)
-            right_col.grid(row=0, column=1, sticky="nsew")
-            left_col.grid_columnconfigure(0, weight=1)
-            right_col.grid_columnconfigure(0, weight=1)
+            main_col = ttk.Frame(self.scroll.content)
+            main_col.grid(row=0, column=0, sticky="nsew")
+            main_col.grid_columnconfigure(0, weight=1)
 
-            self.seccion1 = Seccion1Frame(left_col, self.api, self.state)
+            self.seccion1 = Seccion1Frame(main_col, self.api, self.state)
             self.seccion1.grid(row=0, column=0, sticky="ew", pady=8)
 
-            self.seccion2 = Seccion2Frame(left_col, self.api)
+            self.seccion2 = Seccion2Frame(main_col, self.api)
             self.seccion2.grid(row=1, column=0, sticky="ew", pady=8)
 
-            self.seccion3 = Seccion3Frame(left_col, self.api)
+            self.seccion3 = Seccion3Frame(main_col, self.api)
             self.seccion3.grid(row=2, column=0, sticky="ew", pady=8)
 
-            self.seccion4 = Seccion4Frame(right_col, self.api, self.state)
-            self.seccion4.grid(row=0, column=0, sticky="ew", pady=8)
+            self.seccion4 = Seccion4Frame(main_col, self.api, self.state)
+            self.seccion4.grid(row=3, column=0, sticky="ew", pady=8)
 
-            self.seccion5 = Seccion5Frame(right_col, self.api)
-            self.seccion5.grid(row=1, column=0, sticky="ew", pady=8)
+            self.seccion5 = Seccion5Frame(main_col, self.api)
+            self.seccion5.grid(row=4, column=0, sticky="ew", pady=8)
 
-            self.resumen = ResumenFrame(right_col, self.terminar_servicio, self._flush_excel_queue, show_terminar=False)
-            self.resumen.grid(row=2, column=0, sticky="ew", pady=8)
+            self.resumen = ResumenFrame(
+                main_col,
+                self.terminar_servicio,
+                self._flush_excel_queue,
+                show_terminar=False,
+            )
+            self.resumen.grid(row=5, column=0, sticky="ew", pady=8)
 
             self.edit_actions = ttk.Frame(self.scroll.content)
-            self.edit_actions.grid(row=1, column=0, columnspan=2, sticky="w", pady=8)
+            self.edit_actions.grid(row=1, column=0, columnspan=1, sticky="w", pady=8)
             tk.Button(
                 self.edit_actions,
                 text="Actualizar entrada",

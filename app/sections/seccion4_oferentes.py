@@ -140,7 +140,7 @@ class PersonaOferente(BaseModel):
     cedula_usuario: str
     discapacidad_usuario: str
     genero_usuario: str
-    fecha_ingreso: str
+    fecha_ingreso: str | None = None
     tipo_contrato: str
     cargo_servicio: str
 
@@ -175,13 +175,15 @@ def confirmar_seccion_4(payload: Seccion4ConfirmarRequest) -> dict:
         if genero_key not in GENEROS:
             raise HTTPException(status_code=422, detail="genero_usuario invalido")
 
-        try:
-            date.fromisoformat(persona.fecha_ingreso.strip())
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail="fecha_ingreso debe tener formato YYYY-MM-DD",
-            ) from exc
+        fecha_ingreso = (persona.fecha_ingreso or "").strip()
+        if fecha_ingreso:
+            try:
+                date.fromisoformat(fecha_ingreso)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail="fecha_ingreso debe tener formato YYYY-MM-DD",
+                ) from exc
 
         contrato_key = _normalize_key(persona.tipo_contrato)
         contrato_label = None
@@ -196,7 +198,7 @@ def confirmar_seccion_4(payload: Seccion4ConfirmarRequest) -> dict:
         cedulas.append(persona.cedula_usuario.strip())
         discapacidades.append(DISCAPACIDADES[discapacidad_key])
         generos.append(GENEROS[genero_key])
-        fechas.append(persona.fecha_ingreso.strip())
+        fechas.append(fecha_ingreso)
         contratos.append(contrato_label)
         cargos.append(persona.cargo_servicio.strip())
 
