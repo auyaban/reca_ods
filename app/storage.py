@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import logging
 import shutil
@@ -16,6 +17,12 @@ _logger.setLevel(logging.INFO)
 
 
 def _desktop_excel_dir() -> Path:
+    one_drive = os.getenv("OneDrive")
+    if one_drive:
+        for folder in ("Desktop", "Escritorio"):
+            candidate = Path(one_drive) / folder
+            if candidate.exists():
+                return candidate / "Excel ODS"
     return Path.home() / "Desktop" / "Excel ODS"
 
 
