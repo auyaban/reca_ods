@@ -24,16 +24,34 @@ def get_orden_clausulada_opciones() -> dict:
 @router.get("/profesionales")
 def get_profesionales(programa: str | None = None) -> dict:
     client = get_supabase_client()
-    query = client.table("profesionales").select("nombre_profesional")
-    if programa:
-        query = query.eq("programa", programa)
-
     try:
-        response = query.execute()
+        profesionales_query = client.table("profesionales").select("nombre_profesional")
+        if programa:
+            profesionales_query = profesionales_query.eq("programa", programa)
+        profesionales = profesionales_query.execute().data or []
+
+        interpretes = []
+        if not programa or programa.lower().strip() in {"interprete", "intérprete"}:
+            interpretes = (
+                client.table("interpretes")
+                .select("nombre")
+                .execute()
+            ).data or []
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Supabase error: {exc}") from exc
 
-    return {"data": response.data}
+    nombres = []
+    for item in profesionales:
+        nombre = (item.get("nombre_profesional") or "").strip()
+        if nombre:
+            nombres.append(nombre)
+    for item in interpretes:
+        nombre = (item.get("nombre") or "").strip()
+        if nombre:
+            nombres.append(nombre)
+
+    nombres = sorted(set(nombres), key=lambda value: value.lower())
+    return {"data": [{"nombre_profesional": nombre} for nombre in nombres]}
 
 
 class Seccion1ConfirmarRequest(BaseModel):
@@ -77,6 +95,9 @@ def crear_profesional(payload: CrearProfesionalRequest) -> dict:
 
     client = get_supabase_client()
     try:
+        if programa.lower() == "interprete":
+            response = client.table("interpretes").insert({"nombre": nombre}).execute()
+            return {"data": {"nombre_profesional": nombre}}
         last = (
             client.table("profesionales")
             .select("id")
@@ -90,7 +111,7 @@ def crear_profesional(payload: CrearProfesionalRequest) -> dict:
     except Exception as exc:
         message = str(exc)
         # Retry once if the id collided
-        if "duplicate key value" in message:
+        if "duplicate key value" in message and programa.lower() != "interprete":
             try:
                 last = (
                     client.table("profesionales")
@@ -107,4 +128,4 @@ def crear_profesional(payload: CrearProfesionalRequest) -> dict:
         else:
             raise HTTPException(status_code=502, detail=f"Supabase error: {exc}") from exc
 
-    return {"data": response.data}
+    return {"data": {"nombre_profesional": nombre}}

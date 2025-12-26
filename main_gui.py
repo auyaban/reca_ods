@@ -764,7 +764,7 @@ class Seccion1Frame(BaseSection):
             self.orden_combo.set(orden_labels[0])
 
         prof_data = self.api.get_cached("/wizard/seccion-1/profesionales")
-        prof_labels = sorted([item["nombre_profesional"] for item in prof_data["data"]])
+        prof_labels = [item["nombre_profesional"] for item in prof_data["data"]]
         self.prof_combo.configure(values=prof_labels)
         self.prof_combo._all_values = prof_labels
         if prof_labels:
@@ -817,18 +817,19 @@ class Seccion1Frame(BaseSection):
                 messagebox.showerror("Error", f"No se pudo guardar: {exc}")
                 return
 
-            if data.get("data"):
-                nuevo = data["data"][0]
+            nuevo = data.get("data")
+            nombre = ""
+            if isinstance(nuevo, dict):
                 nombre = nuevo.get("nombre_profesional", "").strip()
-                if nombre:
-                    values = list(self.prof_combo._all_values)
-                    if nombre not in values:
-                        values.append(nombre)
-                        values.sort()
-                        self.prof_combo._all_values = values
-                        self.prof_combo.configure(values=values)
-                    self.prof_var.set(nombre)
-                self.api.invalidate("/wizard/seccion-1/profesionales")
+            elif isinstance(nuevo, list) and nuevo:
+                nombre = (nuevo[0].get("nombre_profesional") or "").strip()
+            self.api.invalidate("/wizard/seccion-1/profesionales")
+            prof_data = self.api.get("/wizard/seccion-1/profesionales")
+            prof_labels = sorted([item["nombre_profesional"] for item in prof_data["data"]])
+            self.prof_combo.configure(values=prof_labels)
+            self.prof_combo._all_values = prof_labels
+            if nombre:
+                self.prof_var.set(nombre)
             dialog.destroy()
 
         tk.Button(
