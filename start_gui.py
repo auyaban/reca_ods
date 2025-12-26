@@ -131,6 +131,13 @@ def _backend_ready(url: str) -> bool:
 
 
 def main() -> None:
+    try:
+        from app.storage import ensure_appdata_files
+
+        ensure_appdata_files()
+    except Exception:
+        pass
+
     if "--run-gui" in sys.argv:
         import main_gui
 

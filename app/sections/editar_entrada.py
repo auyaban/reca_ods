@@ -146,9 +146,11 @@ def _coerce_update_value(value: Any, schema: dict[str, Any]) -> Any:
                 return value
 
     if expected == "string" and fmt == "date" and isinstance(value, str):
-        if ";" in value or "," in value:
-            return value.replace(";", ",").split(",")[0].strip()
-        return value.strip()
+        parts = [item.strip() for item in value.replace(";", ",").split(",")]
+        for part in parts:
+            if part:
+                return part
+        return None
 
     if isinstance(value, str):
         return value.strip()

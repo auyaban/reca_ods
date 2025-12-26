@@ -2507,6 +2507,13 @@ def main() -> None:
                 port = sys.argv[idx + 1]
         _run_backend_only(host, int(port))
         return
+    try:
+        from app.storage import ensure_appdata_files
+
+        ensure_appdata_files()
+    except Exception:
+        pass
+
     root = tk.Tk()
     root.withdraw()
     splash = StartupSplash(root)

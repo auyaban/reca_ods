@@ -24,8 +24,17 @@ def ensure_appdata_files() -> None:
     excel_dir = _desktop_excel_dir()
     facturas_dir = data_root / "facturas"
 
-    excel_dir.mkdir(parents=True, exist_ok=True)
-    facturas_dir.mkdir(parents=True, exist_ok=True)
+    if not excel_dir.exists():
+        excel_dir.mkdir(parents=True, exist_ok=True)
+        _logger.info("Carpeta Excel creada: %s", excel_dir)
+    else:
+        _logger.info("Carpeta Excel ya existe: %s", excel_dir)
+
+    if not facturas_dir.exists():
+        facturas_dir.mkdir(parents=True, exist_ok=True)
+        _logger.info("Carpeta facturas creada: %s", facturas_dir)
+    else:
+        _logger.info("Carpeta facturas ya existe: %s", facturas_dir)
     _logger.info("Verificando rutas. Excel=%s Facturas=%s", excel_dir, facturas_dir)
 
     ods_source = resource_path("Excel/ods_2026.xlsx")

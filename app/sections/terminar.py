@@ -45,6 +45,14 @@ def _fetch_ods_schema() -> dict[str, dict[str, Any]]:
     return schema.get("properties", {}) or {}
 
 
+def _first_date_value(raw: str) -> str | None:
+    parts = [item.strip() for item in raw.replace(";", ",").split(",")]
+    for part in parts:
+        if part:
+            return part
+    return None
+
+
 def _coerce_value(value: Any, schema: dict[str, Any]) -> Any:
     expected = schema.get("type")
     fmt = schema.get("format", "")
@@ -84,9 +92,10 @@ def _coerce_value(value: Any, schema: dict[str, Any]) -> Any:
                 return value
 
     if expected == "string" and fmt == "date" and isinstance(value, str):
-        if ";" in value or "," in value:
-            return value.replace(";", ",").split(",")[0].strip()
-        return value.strip()
+        clean = _first_date_value(value)
+        if clean is None:
+            return None
+        return clean
 
     if isinstance(value, str):
         return value.strip()
@@ -162,8 +171,9 @@ def terminar_servicio(payload: TerminarServicioRequest, background_tasks: Backgr
 
         ods_data = dump_ods_for_rpc(payload.ods)
         fecha_ingreso = ods_data.get("fecha_ingreso")
-        if isinstance(fecha_ingreso, str) and (";" in fecha_ingreso or "," in fecha_ingreso):
-            ods_data["fecha_ingreso"] = fecha_ingreso.replace(";", ",").split(",")[0].strip()
+        if isinstance(fecha_ingreso, str):
+            cleaned = _first_date_value(fecha_ingreso)
+            ods_data["fecha_ingreso"] = cleaned
 
         ods_data = _apply_schema(ods_data)
 
