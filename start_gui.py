@@ -4,36 +4,6 @@ import time
 import subprocess
 import tkinter as tk
 from tkinter import ttk
-from urllib.parse import urlparse
-from urllib.request import urlopen
-
-
-def _load_backend_url() -> str:
-    env_path = None
-    try:
-        from app.paths import app_data_dir
-
-        candidate = app_data_dir() / ".env"
-        if candidate.exists():
-            env_path = str(candidate)
-    except Exception:
-        env_path = None
-    if not env_path:
-        candidate = os.path.join(os.getcwd(), ".env")
-        if os.path.exists(candidate):
-            env_path = candidate
-    if env_path:
-        try:
-            with open(env_path, "r", encoding="utf-8") as handle:
-                for line in handle:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    if line.startswith("BACKEND_URL="):
-                        return line.split("=", 1)[1].strip().strip('"').strip("'")
-        except Exception:
-            pass
-    return os.getenv("BACKEND_URL", "http://localhost:8123")
 
 
 class Splash(tk.Toplevel):
@@ -122,14 +92,6 @@ class Splash(tk.Toplevel):
         self.destroy()
 
 
-def _backend_ready(url: str) -> bool:
-    try:
-        urlopen(f"{url.rstrip('/')}/health", timeout=1)
-        return True
-    except Exception:
-        return False
-
-
 def main() -> None:
     try:
         from app.storage import ensure_appdata_files
@@ -151,20 +113,8 @@ def main() -> None:
     cmd = [sys.executable, "--run-gui"]
     subprocess.Popen(cmd, cwd=os.path.dirname(__file__))
 
-    backend_url = _load_backend_url()
-    parsed = urlparse(backend_url)
-    host = parsed.hostname or "localhost"
-    port = parsed.port or 8123
-
-    start = time.time()
-    while time.time() - start < 20:
-        splash.set_status(f"Esperando backend {host}:{port}...")
-        if _backend_ready(backend_url):
-            break
-        time.sleep(0.3)
-
-    splash.set_status("Listo")
-    time.sleep(0.3)
+    splash.set_status("Iniciando interfaz...")
+    time.sleep(0.5)
     splash.close()
     root.destroy()
 

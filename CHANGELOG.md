@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.0
+- Nuevo flujo sin backend embebido: la app usa servicios locales para Supabase, Excel y validaciones.
+- Refactor por secciones a `app/services/*` y simplificacion de rutas.
+- Excel: cola y reconstruccion mas estable; backups solo en reconstruccion total.
+- Profesionales e interpretes separados en tablas y lista unificada en el GUI.
+- Mejoras en edicion: cierre automatico y regreso al menu principal.
+
 ## 1.1.17
 - Oferentes sin validacion obligatoria: se permiten vacios y se envian como NULL.
 

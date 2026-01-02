@@ -383,10 +383,10 @@ def _prefetch_initial_data(api: "ApiClient", status_callback=None) -> None:
 
 
 class ApiClient:
-    def __init__(self, base_url: str) -> None:
-        import requests
-        self.base_url = base_url.rstrip("/")
-        self._session = requests.Session()
+    def __init__(self, _base_url: str | None = None) -> None:
+        from app.services import wizard_service
+
+        self._svc = wizard_service
         self._cache: dict[tuple[str, str, tuple[tuple[str, str], ...] | None], dict] = {}
 
     def _cache_key(self, path: str, params: dict | None) -> tuple[str, str, tuple[tuple[str, str], ...] | None]:
@@ -397,19 +397,17 @@ class ApiClient:
         return ("GET", path, normalized)
 
     def get(self, path: str, params: dict | None = None, use_cache: bool = False) -> dict:
-        import requests
         cache_key = self._cache_key(path, params) if use_cache else None
         if cache_key and cache_key in self._cache:
             return self._cache[cache_key]
-        url = f"{self.base_url}{path}"
         try:
-            response = self._session.get(url, params=params, timeout=10)
-            data = self._handle_response(response)
+            data = self._dispatch_get(path, params or {})
             if cache_key:
                 self._cache[cache_key] = data
             return data
-        except requests.exceptions.RequestException as exc:
-            raise RuntimeError("No se pudo conectar al backend. Asegura que este corriendo.") from exc
+        except Exception as exc:
+            detail = getattr(exc, "detail", None) or str(exc)
+            raise RuntimeError(detail) from exc
 
     def get_cached(self, path: str, params: dict | None = None) -> dict:
         return self.get(path, params=params, use_cache=True)
@@ -427,25 +425,91 @@ class ApiClient:
             self.get(path, params=params, use_cache=True)
 
     def post(self, path: str, payload: dict | None = None, timeout: int | float = 10) -> dict:
-        import requests
-        url = f"{self.base_url}{path}"
         try:
-            response = self._session.post(url, json=payload, timeout=timeout)
-            return self._handle_response(response)
-        except requests.exceptions.RequestException as exc:
-            raise RuntimeError("No se pudo conectar al backend. Asegura que este corriendo.") from exc
+            return self._dispatch_post(path, payload or {})
+        except Exception as exc:
+            detail = getattr(exc, "detail", None) or str(exc)
+            raise RuntimeError(detail) from exc
 
-    def _handle_response(self, response) -> dict:
-        try:
-            data = response.json()
-        except ValueError:
-            response.raise_for_status()
-            raise
+    def _dispatch_get(self, path: str, params: dict) -> dict:
+        if path == "/health":
+            return {"status": "ok"}
+        if path == "/wizard/seccion-1/orden-clausulada/opciones":
+            return self._svc.get_orden_clausulada_opciones()
+        if path == "/wizard/seccion-1/profesionales":
+            return self._svc.get_profesionales(programa=params.get("programa"))
+        if path == "/wizard/seccion-2/empresas":
+            return self._svc.get_empresas()
+        if path == "/wizard/seccion-2/empresa":
+            return self._svc.get_empresa_por_nit(params.get("nit", ""))
+        if path == "/wizard/seccion-3/tarifas":
+            return self._svc.get_codigos_servicio()
+        if path == "/wizard/seccion-3/tarifa":
+            return self._svc.get_tarifa_por_codigo(params.get("codigo", ""))
+        if path == "/wizard/seccion-4/usuarios":
+            return self._svc.get_usuarios_reca()
+        if path == "/wizard/seccion-4/usuario":
+            return self._svc.get_usuario_por_cedula(params.get("cedula", ""))
+        if path == "/wizard/seccion-4/usuarios/existe":
+            return self._svc.verificar_usuario_existe(params.get("cedula", ""))
+        if path == "/wizard/seccion-4/discapacidades":
+            return self._svc.get_discapacidades()
+        if path == "/wizard/seccion-4/generos":
+            return self._svc.get_generos()
+        if path == "/wizard/seccion-4/contratos":
+            return self._svc.get_tipos_contrato()
+        if path == "/wizard/editar/buscar":
+            return self._svc.buscar_entradas(params)
+        if path == "/wizard/editar/entrada":
+            return self._svc.obtener_entrada(params)
+        if path == "/wizard/editar/excel/status":
+            return self._svc.excel_status()
+        if path == "/wizard/facturas/preview":
+            return self._svc.facturas_preview(params)
+        if path == "/wizard/facturas/generar":
+            return self._svc.facturas_generar(params)
+        if path == "/wizard/facturas/crear":
+            return self._svc.facturas_crear(params)
+        if path == "/wizard/facturas/debug/actualizar":
+            return self._svc.facturas_debug_actualizar(params)
+        raise RuntimeError(f"Endpoint no soportado: GET {path}")
 
-        if response.status_code >= 400:
-            detail = data.get("detail") if isinstance(data, dict) else data
-            raise RuntimeError(detail)
-        return data
+    def _dispatch_post(self, path: str, payload: dict) -> dict:
+        if path == "/wizard/seccion-1/confirmar":
+            return self._svc.confirmar_seccion_1(payload)
+        if path == "/wizard/seccion-1/profesionales":
+            return self._svc.crear_profesional(payload)
+        if path == "/wizard/seccion-2/confirmar":
+            return self._svc.confirmar_seccion_2(payload)
+        if path == "/wizard/seccion-3/confirmar":
+            return self._svc.confirmar_seccion_3(payload)
+        if path == "/wizard/seccion-4/confirmar":
+            return self._svc.confirmar_seccion_4(payload)
+        if path == "/wizard/seccion-4/usuarios":
+            return self._svc.crear_usuario(payload)
+        if path == "/wizard/seccion-5/confirmar":
+            return self._svc.confirmar_seccion_5(payload)
+        if path == "/wizard/resumen-final":
+            return self._svc.resumen_final_servicio(payload)
+        if path == "/wizard/terminar-servicio":
+            return self._svc.terminar_servicio(payload)
+        if path == "/wizard/editar/actualizar":
+            return self._svc.actualizar_entrada(payload)
+        if path == "/wizard/editar/eliminar":
+            return self._svc.eliminar_entrada(payload)
+        if path == "/wizard/editar/excel/flush":
+            return self._svc.excel_flush()
+        if path == "/wizard/editar/excel/rebuild":
+            return self._svc.excel_rebuild()
+        if path == "/wizard/facturas/preview":
+            return self._svc.facturas_preview(payload)
+        if path == "/wizard/facturas/generar":
+            return self._svc.facturas_generar(payload)
+        if path == "/wizard/facturas/crear":
+            return self._svc.facturas_crear(payload)
+        if path == "/wizard/facturas/debug/actualizar":
+            return self._svc.facturas_debug_actualizar(payload)
+        raise RuntimeError(f"Endpoint no soportado: POST {path}")
 
 
 class ScrollableFrame(ttk.Frame):
@@ -2057,23 +2121,35 @@ class WizardApp:
             main_col.grid(row=0, column=0, sticky="nsew")
             main_col.grid_columnconfigure(0, weight=1)
 
+            nav = ttk.Frame(main_col)
+            nav.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+            tk.Button(
+                nav,
+                text="Volver",
+                command=self.show_initial_screen,
+                bg=COLOR_PURPLE,
+                fg="white",
+                padx=12,
+                pady=4,
+            ).pack(side="left")
+
             self.seccion1 = Seccion1Frame(main_col, self.api, self.state)
-            self.seccion1.grid(row=0, column=0, sticky="ew", pady=8)
+            self.seccion1.grid(row=1, column=0, sticky="ew", pady=8)
 
             self.seccion2 = Seccion2Frame(main_col, self.api)
-            self.seccion2.grid(row=1, column=0, sticky="ew", pady=8)
+            self.seccion2.grid(row=2, column=0, sticky="ew", pady=8)
 
             self.seccion3 = Seccion3Frame(main_col, self.api)
-            self.seccion3.grid(row=2, column=0, sticky="ew", pady=8)
+            self.seccion3.grid(row=3, column=0, sticky="ew", pady=8)
 
             self.seccion4 = Seccion4Frame(main_col, self.api, self.state)
-            self.seccion4.grid(row=3, column=0, sticky="ew", pady=8)
+            self.seccion4.grid(row=4, column=0, sticky="ew", pady=8)
 
             self.seccion5 = Seccion5Frame(main_col, self.api)
-            self.seccion5.grid(row=4, column=0, sticky="ew", pady=8)
+            self.seccion5.grid(row=5, column=0, sticky="ew", pady=8)
 
             self.resumen = ResumenFrame(main_col, self.terminar_servicio, self._flush_excel_queue)
-            self.resumen.grid(row=5, column=0, sticky="ew", pady=8)
+            self.resumen.grid(row=6, column=0, sticky="ew", pady=8)
 
             self._load_section_data()
             self._lock_sections()
@@ -2177,10 +2253,17 @@ class WizardApp:
         loading.set_status("Finalizando...", 100)
         loading.close()
         data = response.get("data", {})
-        if hasattr(self, "queue_status_label"):
-            self.queue_status_label.config(
-                text=f"Cola Excel: procesados {data.get('procesados', 0)} / pendientes {data.get('pendientes', 0)}"
-            )
+        label = getattr(self, "queue_status_label", None)
+        if label and label.winfo_exists():
+            try:
+                label.config(
+                    text=(
+                        f"Cola Excel: procesados {data.get('procesados', 0)} "
+                        f"/ pendientes {data.get('pendientes', 0)}"
+                    )
+                )
+            except tk.TclError:
+                pass
         self._update_queue_status()
 
     def _update_queue_status(self) -> None:
@@ -2190,11 +2273,12 @@ class WizardApp:
             return
         pendientes = int(data.get("pendientes", 0) or 0)
         locked = bool(data.get("locked"))
-        if self.resumen and getattr(self.resumen, "queue_label", None):
+        resumen = getattr(self, "resumen", None)
+        if resumen and getattr(resumen, "queue_label", None):
             status = f"Cola Excel: {pendientes} pendiente(s)"
             if locked:
                 status += " (Excel en uso)"
-            self.resumen.queue_label.config(text=status)
+            resumen.queue_label.config(text=status)
 
     def _load_section_data(self) -> None:
         self.seccion1.load_data()
@@ -2371,6 +2455,7 @@ class WizardApp:
                 "Aviso",
                 f"No se pudo actualizar el Excel: {response.get('excel_error')}",
             )
+        self.show_initial_screen()
 
         add_another = messagebox.askyesno(
             "Servicio terminado",
@@ -2404,6 +2489,7 @@ class WizardApp:
                 if str(value) != str(original_value):
                     cambios.append(key)
         loading.close()
+        force_excel_sync = False
         if cambios:
             detalle = ", ".join(sorted(cambios))
             confirmar = messagebox.askyesno(
@@ -2413,13 +2499,14 @@ class WizardApp:
             if not confirmar:
                 return
         else:
-            messagebox.showinfo("Sin cambios", "No hay cambios detectados.")
-            return
+            force_excel_sync = True
         loading = LoadingDialog(self.root, "Actualizando entrada...")
         self.root.update_idletasks()
         payload = {"filtro": {"id": self.edit_entry_id}, "datos": ods}
         if self.edit_original_entry:
             payload["original"] = self.edit_original_entry
+        if force_excel_sync:
+            payload["force_excel_sync"] = True
         try:
             response = self.api.post("/wizard/editar/actualizar", payload, timeout=120)
         except Exception as exc:
@@ -2521,16 +2608,8 @@ def main() -> None:
     splash.update_idletasks()
     splash.update()
     time.sleep(0.2)
-    backend_url = _load_backend_url()
     start_time = time.time()
-    try:
-        _ensure_backend_running(backend_url, splash.set_status)
-    except RuntimeError as exc:
-        splash.close()
-        messagebox.showerror("Error", str(exc))
-        root.destroy()
-        return
-    api = ApiClient(backend_url)
+    api = ApiClient(None)
     try:
         splash.set_status("Cargando datos iniciales...", 55)
         _prefetch_initial_data(api, splash.set_status)
@@ -2568,7 +2647,6 @@ def main() -> None:
         pass
 
     def _on_close():
-        _stop_backend()
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", _on_close)

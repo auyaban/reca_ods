@@ -1,12 +1,10 @@
 from fastapi import APIRouter
 
+from app.services.sections import initial as service
+
 router = APIRouter(prefix="/wizard", tags=["wizard"])
 
 
-@router.get("/inicial/opciones")
+@router.get("/opciones")
 def get_opciones_iniciales() -> dict:
-    opciones = [
-        {"id": "nueva", "label": "Crear nueva entrada"},
-        {"id": "editar", "label": "Editar entrada existente"},
-    ]
-    return {"data": opciones}
+    return service.get_opciones_iniciales()
