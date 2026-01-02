@@ -33,14 +33,14 @@ class OdsPayload(BaseModel):
     horas_interprete: float | None = None
     valor_interprete: float
     valor_total: float
-    nombre_usuario: str
-    cedula_usuario: str
-    discapacidad_usuario: str
-    genero_usuario: str
+    nombre_usuario: str | None = None
+    cedula_usuario: str | None = None
+    discapacidad_usuario: str | None = None
+    genero_usuario: str | None = None
     fecha_ingreso: str | None = None
-    tipo_contrato: str
-    cargo_servicio: str
-    total_personas: int
+    tipo_contrato: str | None = None
+    cargo_servicio: str | None = None
+    total_personas: int = 0
     observaciones: str | None = None
     observacion_agencia: str | None = None
     seguimiento_servicio: str | None = None
@@ -84,7 +84,7 @@ class OdsPayload(BaseModel):
     @model_validator(mode="after")
     def _validar_total_personas(self) -> "OdsPayload":
         def count_items(value: str) -> int:
-            parts = [item.strip() for item in value.split(";")]
+            parts = [item.strip() for item in (value or "").split(";")]
             return len([item for item in parts if item])
 
         esperado = count_items(self.nombre_usuario)
