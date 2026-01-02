@@ -187,45 +187,13 @@ def confirmar_seccion_4(payload: Seccion4ConfirmarRequest) -> dict:
 
         if not any([nombre, cedula, discapacidad, genero, contrato, cargo, fecha_ingreso]):
             continue
-        if not all([nombre, cedula, discapacidad, genero, contrato, cargo]):
-            raise HTTPException(
-                status_code=422,
-                detail="Completa todos los campos del oferente o deja la fila vacia.",
-            )
-
-        discapacidad_key = _normalize_key(discapacidad)
-        genero_key = _normalize_key(genero)
-        if discapacidad_key not in DISCAPACIDADES:
-            raise HTTPException(
-                status_code=422, detail="discapacidad_usuario invalida"
-            )
-        if genero_key not in GENEROS:
-            raise HTTPException(status_code=422, detail="genero_usuario invalido")
-
-        if fecha_ingreso:
-            try:
-                date.fromisoformat(fecha_ingreso)
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=422,
-                    detail="fecha_ingreso debe tener formato YYYY-MM-DD",
-                ) from exc
-
-        contrato_key = _normalize_key(contrato)
-        contrato_label = None
-        for option in TIPOS_CONTRATO:
-            if _normalize_key(option) == contrato_key:
-                contrato_label = option
-                break
-        if contrato_label is None:
-            raise HTTPException(status_code=422, detail="tipo_contrato invalido")
 
         nombres.append(nombre)
         cedulas.append(cedula)
-        discapacidades.append(DISCAPACIDADES[discapacidad_key])
-        generos.append(GENEROS[genero_key])
+        discapacidades.append(discapacidad)
+        generos.append(genero)
         fechas.append(fecha_ingreso)
-        contratos.append(contrato_label)
+        contratos.append(contrato)
         cargos.append(cargo)
 
     if not nombres:

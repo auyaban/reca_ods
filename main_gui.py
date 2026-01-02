@@ -1540,16 +1540,11 @@ class Seccion4Frame(BaseSection):
 
     def get_payload(self) -> dict:
         self.rows = [row for row in self.rows if row.winfo_exists()]
-        personas = [row.as_payload() for row in self.rows if row.cedula_var.get().strip()]
-        cedulas = [p["cedula_usuario"] for p in personas]
-        duplicadas = {c for c in cedulas if cedulas.count(c) > 1}
+        personas = []
         for row in self.rows:
-            row.set_highlight(row.cedula_var.get().strip() in duplicadas)
-        if duplicadas:
-            listado = ", ".join(sorted(duplicadas))
-            raise RuntimeError(
-                f"Hay cedulas repetidas ({listado}). Elimina duplicados antes de continuar."
-            )
+            payload = row.as_payload()
+            if any(value for value in payload.values()):
+                personas.append(payload)
         return {"personas": personas}
 
 

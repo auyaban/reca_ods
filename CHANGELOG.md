@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.1.17
+- Oferentes sin validacion obligatoria: se permiten vacios y se envian como NULL.
+
 ## 1.1.0
 - Splash de arranque estable con wrapper `start_gui.py` y lanzador `run_gui.cmd`.
 - Guardado en Excel/factura en segundo plano y optimizado (una sola apertura).

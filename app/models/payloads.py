@@ -83,13 +83,6 @@ class OdsPayload(BaseModel):
 
     @model_validator(mode="after")
     def _validar_total_personas(self) -> "OdsPayload":
-        def count_items(value: str) -> int:
-            parts = [item.strip() for item in (value or "").split(";")]
-            return len([item for item in parts if item])
-
-        esperado = count_items(self.nombre_usuario)
-        if self.total_personas != esperado:
-            raise ValueError("total_personas no coincide con la cantidad de usuarios")
         return self
 
 
