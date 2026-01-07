@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.3
+- Actualizacion previa al GUI con barra propia y reinicio automatico.
+- Verificacion de version en GUI sin iniciar update en segundo plano.
+
 ## 2.0.2
 - Hotfix: restaura `get_usuarios_reca` y corrige caracteres corruptos en Seccion 4.
 

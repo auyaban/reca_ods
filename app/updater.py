@@ -28,13 +28,20 @@ def _is_newer(remote: str, local: str) -> bool:
     return _parse_version(remote) > _parse_version(local)
 
 
-def _download(url: str, target: Path) -> None:
+def _download(url: str, target: Path, progress_callback=None) -> None:
     with requests.get(url, stream=True, timeout=30) as response:
         response.raise_for_status()
+        total = response.headers.get("Content-Length")
+        total_size = int(total) if total and total.isdigit() else 0
+        downloaded = 0
         with target.open("wb") as handle:
             for chunk in response.iter_content(chunk_size=1024 * 256):
                 if chunk:
                     handle.write(chunk)
+                    if total_size and progress_callback:
+                        downloaded += len(chunk)
+                        percent = int((downloaded / total_size) * 100)
+                        progress_callback(min(percent, 100))
 
 
 def _sha256(path: Path) -> str:
@@ -56,43 +63,61 @@ def _get_latest_release() -> tuple[str | None, dict]:
     return remote_version or None, assets
 
 
-def check_and_update(status_callback=None, version_callback=None) -> None:
+def get_latest_version() -> str | None:
+    remote_version, _ = _get_latest_release()
+    return remote_version
+
+
+def check_and_update(status_callback=None, progress_callback=None, version_callback=None) -> bool:
     local_version = get_version()
     remote_version, assets = _get_latest_release()
     if version_callback:
         version_callback(local_version, remote_version)
     if not remote_version or not _is_newer(remote_version, local_version):
-        return
+        return False
 
     installer_url = assets.get(INSTALLER_ASSET)
     hash_url = assets.get(HASH_ASSET)
     if not installer_url or not hash_url:
-        return
+        return False
 
     if status_callback:
         status_callback("Descargando actualizacion...")
+    if progress_callback:
+        progress_callback(0)
 
     temp_dir = Path(tempfile.mkdtemp(prefix="reca_ods_update_"))
     installer_path = temp_dir / INSTALLER_ASSET
     hash_path = temp_dir / HASH_ASSET
 
-    _download(installer_url, installer_path)
-    _download(hash_url, hash_path)
+    _download(installer_url, installer_path, progress_callback=progress_callback)
+    if progress_callback:
+        progress_callback(70)
+    _download(hash_url, hash_path, progress_callback=None)
 
     expected = hash_path.read_text(encoding="utf-8").strip().split()[0]
     actual = _sha256(installer_path)
     if expected.lower() != actual.lower():
-        return
+        return False
 
     if status_callback:
         status_callback("Iniciando instalador...")
+    if progress_callback:
+        progress_callback(None)
 
     args = [
         str(installer_path),
-        "/SILENT",
+        "/VERYSILENT",
         "/SUPPRESSMSGBOXES",
         "/NORESTART",
         "/SP-",
     ]
-    subprocess.Popen(args, cwd=str(temp_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    os._exit(0)
+    result = subprocess.run(args, cwd=str(temp_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if result.returncode != 0:
+        return False
+
+    if status_callback:
+        status_callback("Reiniciando aplicacion...")
+    if progress_callback:
+        progress_callback(100)
+    return True

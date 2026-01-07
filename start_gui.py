@@ -60,6 +60,7 @@ class Splash(tk.Toplevel):
         )
         self.progress.pack(pady=(0, 6))
         self.progress.start(10)
+        self._progress_mode = "indeterminate"
 
         self.status_label = tk.Label(
             container,
@@ -87,6 +88,21 @@ class Splash(tk.Toplevel):
         self.update_idletasks()
         self.update()
 
+    def set_progress(self, value) -> None:
+        if value is None:
+            if self._progress_mode != "indeterminate":
+                self.progress.config(mode="indeterminate")
+                self._progress_mode = "indeterminate"
+                self.progress.start(10)
+            return
+        if self._progress_mode != "determinate":
+            self.progress.stop()
+            self.progress.config(mode="determinate", maximum=100)
+            self._progress_mode = "determinate"
+        self.progress["value"] = max(0, min(100, int(value)))
+        self.update_idletasks()
+        self.update()
+
     def close(self) -> None:
         self.progress.stop()
         self.destroy()
@@ -109,6 +125,34 @@ def main() -> None:
     root = tk.Tk()
     root.withdraw()
     splash = Splash(root)
+
+    update_applied = False
+    try:
+        from app.updater import check_and_update
+
+        def _show_status(message: str) -> None:
+            splash.set_status(message)
+
+        def _show_progress(value) -> None:
+            splash.set_progress(value)
+
+        splash.set_status("Buscando actualizaciones...")
+        update_applied = check_and_update(
+            status_callback=_show_status,
+            progress_callback=_show_progress,
+            version_callback=None,
+        )
+    except Exception:
+        update_applied = False
+
+    if update_applied:
+        splash.set_status("Reiniciando aplicacion...")
+        splash.set_progress(100)
+        time.sleep(0.6)
+        splash.close()
+        root.destroy()
+        subprocess.Popen([sys.executable], cwd=os.path.dirname(__file__))
+        return
 
     cmd = [sys.executable, "--run-gui"]
     subprocess.Popen(cmd, cwd=os.path.dirname(__file__))

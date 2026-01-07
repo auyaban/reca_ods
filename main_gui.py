@@ -2653,15 +2653,12 @@ def main() -> None:
 
     def _run_update():
         try:
-            from app.updater import check_and_update
+            from app.updater import get_latest_version
+            from app.version import get_version
 
-            def _set_versions(local: str, remote: str | None) -> None:
-                root.after(0, lambda: app.set_version_info(local, remote))
-
-            def _show_status(message: str) -> None:
-                root.after(0, lambda: app.show_update_status(message))
-
-            check_and_update(status_callback=_show_status, version_callback=_set_versions)
+            local = get_version()
+            remote = get_latest_version()
+            root.after(0, lambda: app.set_version_info(local, remote))
         except Exception:
             pass
 
