@@ -3,7 +3,6 @@ import re
 import subprocess
 import sys
 import time
-import traceback
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -12,20 +11,12 @@ from tkinter import messagebox, ttk
 import tkinter.font as tkfont
 
 import threading
-from urllib.parse import urlparse
-import socket
-import logging
-from pathlib import Path
 
 
 COLOR_PURPLE = "#7C3D96"
 COLOR_TEAL = "#07B499"
 _LOGO_PATH = None
 _LOGO_CACHE: dict[int, tk.PhotoImage] = {}
-_BACKEND_THREAD = None
-_BACKEND_SERVER = None
-_BACKEND_PROCESS = None
-_BACKEND_STARTUP_ERROR = None
 _DATE_ENTRY_CLS = None
 
 
@@ -61,311 +52,6 @@ def _load_logo(subsample: int = 12) -> tk.PhotoImage | None:
     return _LOGO_CACHE[subsample]
 
 
-def _load_backend_url() -> str:
-    from dotenv import load_dotenv
-    env_path = None
-    try:
-        from app.paths import app_data_dir
-
-        env_path = app_data_dir() / ".env"
-    except Exception:
-        env_path = None
-    load_dotenv(dotenv_path=env_path, override=True)
-    if not env_path or not env_path.exists():
-        load_dotenv()
-    return os.getenv("BACKEND_URL", "http://localhost:8123").rstrip("/")
-
-
-def _parse_host_port(base_url: str) -> tuple[str, int]:
-    parsed = urlparse(base_url)
-    host = parsed.hostname or "127.0.0.1"
-    if host.lower() in {"localhost", "::1"}:
-        host = "127.0.0.1"
-    port = parsed.port or 8000
-    return host, port
-
-
-def _startup_log_path() -> str:
-    base = os.getenv("TEMP") or os.getenv("TMP") or os.getcwd()
-    return os.path.join(base, "reca_ods_startup.log")
-
-
-def _backend_subprocess_log_path() -> str:
-    base = os.getenv("TEMP") or os.getenv("TMP") or os.getcwd()
-    return os.path.join(base, "reca_ods_backend.log")
-
-
-def _log_startup(message: str) -> None:
-    try:
-        with open(_startup_log_path(), "a", encoding="utf-8") as fh:
-            fh.write(message.rstrip() + "\n")
-    except Exception:
-        pass
-
-
-def _port_in_use(host: str, port: int) -> bool:
-    try:
-        with socket.create_connection((host, port), timeout=0.5):
-            return True
-    except OSError:
-        return False
-
-
-def _build_backend_app():
-    try:
-        import importlib
-
-        backend_main = importlib.import_module("main")
-        return backend_main.app
-    except Exception:
-        from fastapi import FastAPI, Request
-
-        from app.routes import router
-        from app.storage import ensure_appdata_files
-
-        app = FastAPI(title="RECA ODS API")
-        app.include_router(router)
-
-        @app.on_event("startup")
-        def _startup() -> None:
-            ensure_appdata_files()
-
-        log_dir = Path(__file__).resolve().parent / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = log_dir / "api.log"
-
-        logger = logging.getLogger("reca_ods_api")
-        if not logger.handlers:
-            handler = logging.FileHandler(log_file, encoding="utf-8")
-            formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
-        logger.info("API logger iniciado. Archivo=%s", log_file)
-
-        @app.middleware("http")
-        async def log_requests(request: Request, call_next):
-            start = time.perf_counter()
-            try:
-                response = await call_next(request)
-            except Exception as exc:
-                duration_ms = (time.perf_counter() - start) * 1000
-                logger.exception(
-                    "ERROR %s %s -> 500 in %.2fms",
-                    request.method,
-                    request.url.path,
-                    duration_ms,
-                )
-                raise exc
-
-            duration_ms = (time.perf_counter() - start) * 1000
-            logger.info(
-                "%s %s -> %s in %.2fms",
-                request.method,
-                request.url.path,
-                response.status_code,
-                duration_ms,
-            )
-            return response
-
-        return app
-
-
-def _ensure_backend_running(base_url: str, status_callback=None) -> None:
-    import requests
-    if status_callback:
-        status_callback("Verificando backend...", 10)
-    try:
-        requests.get(f"{base_url}/health", timeout=3)
-        if status_callback:
-            status_callback("Backend listo.", 100)
-        return
-    except requests.exceptions.RequestException:
-        pass
-
-    if status_callback:
-        status_callback("Iniciando backend...", 30)
-    host, port = _parse_host_port(base_url)
-    _log_startup(f"Backend solicitado. base_url={base_url} host={host} port={port}")
-    if _port_in_use(host, port):
-        _log_startup(f"Puerto en uso antes de iniciar backend: {host}:{port}")
-
-    if getattr(sys, "frozen", False):
-        _start_backend_inprocess(host, port)
-    else:
-        cmd = [sys.executable, "-m", "uvicorn", "main:app", "--host", host, "--port", str(port)]
-        kwargs = {"cwd": os.path.dirname(os.path.abspath(__file__))}
-        if os.name == "nt":
-            kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-        global _BACKEND_PROCESS
-        _BACKEND_PROCESS = subprocess.Popen(cmd, **kwargs)
-
-    for attempt in range(10):
-        if status_callback:
-            status_callback(f"Conectando al backend... ({attempt + 1}/10)", 40 + attempt * 5)
-        try:
-            requests.get(f"{base_url}/health", timeout=2)
-            if status_callback:
-                status_callback("Backend listo.", 100)
-            return
-        except requests.exceptions.RequestException:
-            time.sleep(0.5)
-
-    if getattr(sys, "frozen", False):
-        if status_callback:
-            status_callback("Reintentando backend...", 70)
-        _start_backend_subprocess(host, port)
-        for attempt in range(10):
-            if status_callback:
-                status_callback(f"Conectando al backend... ({attempt + 1}/10)", 70 + attempt * 3)
-            try:
-                requests.get(f"{base_url}/health", timeout=2)
-                if status_callback:
-                    status_callback("Backend listo.", 100)
-                return
-            except requests.exceptions.RequestException:
-                time.sleep(0.6)
-        if _BACKEND_PROCESS and _BACKEND_PROCESS.poll() is not None:
-            _log_startup(
-                "Backend subproceso termino con codigo "
-                f"{_BACKEND_PROCESS.returncode}. Log: {_backend_subprocess_log_path()}"
-            )
-
-    if _BACKEND_STARTUP_ERROR:
-        raise RuntimeError(
-            "No se pudo iniciar el backend. "
-            f"Detalle: {_BACKEND_STARTUP_ERROR}. "
-            f"Revisa el log: {_startup_log_path()}"
-        )
-    raise RuntimeError(
-        "No se pudo iniciar el backend. "
-        f"Revisa el log: {_startup_log_path()}"
-    )
-
-
-def _backend_log_config() -> dict:
-    return {
-        "version": 1,
-        "disable_existing_loggers": True,
-        "formatters": {
-            "default": {"class": "logging.Formatter", "format": "%(message)s"},
-            "access": {"class": "logging.Formatter", "format": "%(message)s"},
-        },
-        "handlers": {
-            "default": {"class": "logging.NullHandler", "formatter": "default"},
-            "access": {"class": "logging.NullHandler", "formatter": "access"},
-        },
-        "loggers": {
-            "uvicorn": {"handlers": ["default"], "level": "WARNING", "propagate": False},
-            "uvicorn.error": {"handlers": ["default"], "level": "WARNING", "propagate": False},
-            "uvicorn.access": {"handlers": ["access"], "level": "WARNING", "propagate": False},
-        },
-        "root": {"handlers": ["default"], "level": "WARNING"},
-    }
-
-
-def _start_backend_inprocess(host: str, port: int) -> None:
-    import uvicorn
-    global _BACKEND_THREAD, _BACKEND_SERVER
-    if _BACKEND_THREAD and _BACKEND_THREAD.is_alive():
-        return
-    app = _build_backend_app()
-    config = uvicorn.Config(
-        app,
-        host=host,
-        port=port,
-        log_level="warning",
-        log_config=_backend_log_config(),
-        access_log=False,
-        use_colors=False,
-    )
-    server = uvicorn.Server(config)
-    _BACKEND_SERVER = server
-    thread = threading.Thread(target=_run_backend_server, args=(server,), daemon=True)
-    _BACKEND_THREAD = thread
-    thread.start()
-
-
-def _start_backend_subprocess(host: str, port: int) -> None:
-    global _BACKEND_PROCESS
-    if _BACKEND_PROCESS and _BACKEND_PROCESS.poll() is None:
-        return
-    cmd = [sys.executable, "--backend", "--host", host, "--port", str(port)]
-    kwargs = {"cwd": os.path.dirname(os.path.abspath(__file__))}
-    if os.name == "nt":
-        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
-    log_path = _backend_subprocess_log_path()
-    _log_startup(f"Lanzando backend subproceso. Log={log_path}")
-    try:
-        fh = open(log_path, "a", encoding="utf-8", buffering=1)
-    except Exception:
-        fh = None
-    if fh:
-        kwargs["stdout"] = fh
-        kwargs["stderr"] = fh
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
-    kwargs["env"] = env
-    _BACKEND_PROCESS = subprocess.Popen(cmd, **kwargs)
-
-
-def _run_backend_server(server) -> None:
-    global _BACKEND_STARTUP_ERROR
-    try:
-        _log_startup("Backend embebido iniciado.")
-        server.run()
-    except Exception as exc:
-        _BACKEND_STARTUP_ERROR = exc
-        _log_startup("ERROR backend embebido:")
-        _log_startup(traceback.format_exc())
-
-
-def _run_backend_only(host: str, port: int) -> None:
-    import uvicorn
-    _log_startup(f"Backend subproceso iniciado. host={host} port={port}")
-    try:
-        app = _build_backend_app()
-        config = uvicorn.Config(
-            app,
-            host=host,
-            port=port,
-            log_level="info",
-            log_config=None,
-            access_log=False,
-            use_colors=False,
-        )
-        server = uvicorn.Server(config)
-        server.run()
-    except Exception:
-        _log_startup("ERROR backend subproceso:")
-        _log_startup(traceback.format_exc())
-        raise
-
-
-def _stop_backend() -> None:
-    global _BACKEND_PROCESS, _BACKEND_SERVER
-    if _BACKEND_PROCESS and _BACKEND_PROCESS.poll() is None:
-        try:
-            _BACKEND_PROCESS.terminate()
-        except Exception:
-            pass
-    if _BACKEND_SERVER:
-        try:
-            _BACKEND_SERVER.should_exit = True
-        except Exception:
-            pass
-
-    try:
-        host, port = _parse_host_port(_load_backend_url())
-        if sys.platform.startswith("win"):
-            cmd = f"for /f \"tokens=5\" %a in ('netstat -ano ^| findstr :{port}') do taskkill /PID %a /F"
-            subprocess.Popen(
-                ["cmd.exe", "/c", cmd],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-    except Exception:
-        pass
 
 
 def _prefetch_initial_data(api: "ApiClient", status_callback=None) -> None:
@@ -424,6 +110,21 @@ class ApiClient:
                 status_callback(f"Cargando {label}...", progress)
             self.get(path, params=params, use_cache=True)
 
+    def build_cache(self, items: list[tuple[str, dict | None, str]], status_callback=None) -> dict:
+        total = len(items)
+        new_cache: dict[tuple[str, str, tuple[tuple[str, str], ...] | None], dict] = {}
+        for index, (path, params, label) in enumerate(items, start=1):
+            if status_callback:
+                progress = int((index / max(total, 1)) * 100)
+                status_callback(f"Cargando {label}...", progress)
+            data = self._dispatch_get(path, params or {})
+            key = self._cache_key(path, params)
+            new_cache[key] = data
+        return new_cache
+
+    def replace_cache(self, new_cache: dict) -> None:
+        self._cache = new_cache
+
     def post(self, path: str, payload: dict | None = None, timeout: int | float = 10) -> dict:
         try:
             return self._dispatch_post(path, payload or {})
@@ -464,14 +165,6 @@ class ApiClient:
             return self._svc.obtener_entrada(params)
         if path == "/wizard/editar/excel/status":
             return self._svc.excel_status()
-        if path == "/wizard/facturas/preview":
-            return self._svc.facturas_preview(params)
-        if path == "/wizard/facturas/generar":
-            return self._svc.facturas_generar(params)
-        if path == "/wizard/facturas/crear":
-            return self._svc.facturas_crear(params)
-        if path == "/wizard/facturas/debug/actualizar":
-            return self._svc.facturas_debug_actualizar(params)
         raise RuntimeError(f"Endpoint no soportado: GET {path}")
 
     def _dispatch_post(self, path: str, payload: dict) -> dict:
@@ -501,14 +194,8 @@ class ApiClient:
             return self._svc.excel_flush()
         if path == "/wizard/editar/excel/rebuild":
             return self._svc.excel_rebuild()
-        if path == "/wizard/facturas/preview":
-            return self._svc.facturas_preview(payload)
-        if path == "/wizard/facturas/generar":
-            return self._svc.facturas_generar(payload)
         if path == "/wizard/facturas/crear":
-            return self._svc.facturas_crear(payload)
-        if path == "/wizard/facturas/debug/actualizar":
-            return self._svc.facturas_debug_actualizar(payload)
+            return self._svc.crear_factura(payload)
         raise RuntimeError(f"Endpoint no soportado: POST {path}")
 
 
@@ -546,13 +233,21 @@ class ScrollableFrame(ttk.Frame):
         self.canvas.unbind_all("<Button-5>")
 
     def _on_mousewheel(self, event) -> None:
-        if event.num == 4:
-            self.canvas.yview_scroll(-1, "units")
-        elif event.num == 5:
-            self.canvas.yview_scroll(1, "units")
-        else:
-            delta = int(-1 * (event.delta / 120))
-            self.canvas.yview_scroll(delta, "units")
+        try:
+            if not self.canvas.winfo_exists():
+                return
+        except tk.TclError:
+            return
+        try:
+            if event.num == 4:
+                self.canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                self.canvas.yview_scroll(1, "units")
+            else:
+                delta = int(-1 * (event.delta / 120))
+                self.canvas.yview_scroll(delta, "units")
+        except tk.TclError:
+            return
 
 
 class StartupSplash(tk.Toplevel):
@@ -722,6 +417,18 @@ class LoadingDialog(tk.Toplevel):
             self.progress["value"] = max(0, min(100, progress))
         self.update_idletasks()
         self.update()
+
+    def set_mode(self, determinate: bool) -> None:
+        if determinate == self._determinate:
+            return
+        if determinate:
+            self.progress.stop()
+            self.progress.config(mode="determinate", maximum=100)
+            self.progress["value"] = 0
+        else:
+            self.progress.config(mode="indeterminate")
+            self.progress.start(10)
+        self._determinate = determinate
 
 
 def set_widgets_state(container: tk.Widget, state: str) -> None:
@@ -1720,7 +1427,6 @@ class WizardApp:
         self._summary_after_id: str | None = None
         self.edit_entry_id: str | None = None
         self.edit_original_entry: dict | None = None
-        self._update_dialog: LoadingDialog | None = None
         self._version_var = tk.StringVar()
 
         self.root.title("SISTEMA DE GESTIÓN ODS - RECA")
@@ -1728,22 +1434,35 @@ class WizardApp:
 
         self.header = tk.Frame(self.root, bg=COLOR_PURPLE, height=70)
         self.header.pack(fill=tk.X)
-        self.header.grid_columnconfigure(0, weight=0)
-        self.header.grid_columnconfigure(1, weight=1)
-        self.header.grid_columnconfigure(2, weight=0)
+        self.header.grid_columnconfigure(0, weight=1)
+        self.header.grid_columnconfigure(1, weight=0)
+        self.header.grid_columnconfigure(2, weight=1)
         self.header_logo = _load_logo(subsample=8)
+        logo_width = 0
         if self.header_logo:
+            logo_width = self.header_logo.width()
             tk.Label(self.header, image=self.header_logo, bg=COLOR_PURPLE).grid(
                 row=0, column=0, padx=(16, 6), pady=8, sticky="w"
             )
+        title_frame = tk.Frame(self.header, bg=COLOR_PURPLE)
+        title_frame.grid(row=0, column=1, pady=10, sticky="n")
         tk.Label(
-            self.header,
-            text="SISTEMA DE GESTIÓN ODS - RECA",
-            font=("Arial", 22, "bold"),
+            title_frame,
+            text="SISTEMA DE GESTION ODS",
+            font=("Arial", 20, "bold"),
             bg=COLOR_PURPLE,
             fg="white",
-        ).grid(row=0, column=1, pady=10)
-        tk.Frame(self.header, bg=COLOR_PURPLE).grid(row=0, column=2, padx=16)
+        ).pack()
+        tk.Label(
+            title_frame,
+            text="RECA",
+            font=("Arial", 20, "bold"),
+            bg=COLOR_PURPLE,
+            fg="white",
+        ).pack()
+        spacer = tk.Frame(self.header, bg=COLOR_PURPLE, width=logo_width)
+        spacer.grid(row=0, column=2, padx=16, sticky="e")
+        spacer.grid_propagate(False)
 
         self.main_frame = ttk.Frame(self.root)
         self.main_frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
@@ -1751,28 +1470,30 @@ class WizardApp:
         self.footer = ttk.Frame(self.root)
         self.footer.pack(fill=tk.X, padx=12, pady=(0, 6), side=tk.BOTTOM)
         self._version_var.set("Version local: - | GitHub: -")
+        version_box = ttk.Frame(self.footer)
+        version_box.pack(side=tk.LEFT, anchor="w")
         ttk.Label(
-            self.footer,
+            version_box,
             textvariable=self._version_var,
             font=("Arial", 9),
             foreground="#666666",
-        ).pack(side=tk.LEFT)
+        ).pack(anchor="w")
+        tk.Button(
+            version_box,
+            text="Actualizar Versión de la Aplicación",
+            command=self._open_update_page,
+            bg="#4B8BBE",
+            fg="white",
+            font=("Arial", 10, "bold"),
+            padx=10,
+            pady=4,
+        ).pack(anchor="w", pady=(4, 0))
 
         self.show_initial_screen()
 
     def set_version_info(self, local_version: str, remote_version: str | None) -> None:
         remote_label = remote_version or "-"
         self._version_var.set(f"Version local: {local_version} | GitHub: {remote_label}")
-
-    def show_update_status(self, message: str | None) -> None:
-        if message:
-            if self._update_dialog is None:
-                self._update_dialog = LoadingDialog(self.root, "Actualizando...", determinate=False)
-                self.root.update_idletasks()
-            self._update_dialog.set_status(message)
-        elif self._update_dialog is not None:
-            self._update_dialog.close()
-            self._update_dialog = None
 
     def show_initial_screen(self) -> None:
         for child in self.main_frame.winfo_children():
@@ -1794,6 +1515,7 @@ class WizardApp:
             font=("Arial", 12, "bold"),
             padx=16,
             pady=8,
+            width=28,
         ).pack(pady=8)
 
         tk.Button(
@@ -1805,6 +1527,19 @@ class WizardApp:
             font=("Arial", 12, "bold"),
             padx=16,
             pady=8,
+            width=28,
+        ).pack(pady=8)
+
+        tk.Button(
+            self.main_frame,
+            text="Crear factura",
+            command=self._open_factura_dialog,
+            bg="#4B8BBE",
+            fg="white",
+            font=("Arial", 12, "bold"),
+            padx=16,
+            pady=8,
+            width=28,
         ).pack(pady=8)
 
         tk.Button(
@@ -1816,10 +1551,20 @@ class WizardApp:
             font=("Arial", 12, "bold"),
             padx=16,
             pady=8,
+            width=28,
         ).pack(pady=8)
 
-    def _not_ready(self) -> None:
-        messagebox.showinfo("Info", "Funcion de edicion aun no implementada")
+        tk.Button(
+            self.main_frame,
+            text="Actualizar Base de Datos",
+            command=self._refresh_cache_from_supabase,
+            bg="#2E86C1",
+            fg="white",
+            font=("Arial", 12, "bold"),
+            padx=16,
+            pady=8,
+            width=28,
+        ).pack(pady=8)
 
     def _rebuild_excel_from_supabase(self) -> None:
         confirm = messagebox.askyesno(
@@ -1852,6 +1597,114 @@ class WizardApp:
             f"Filas recreadas: {data.get('rows', 0)}\nBackup: {backup}",
         )
         self._update_queue_status()
+
+    def _open_factura_dialog(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Crear factura")
+        dialog.resizable(False, False)
+        dialog.configure(bg="white")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        container = ttk.Frame(dialog, padding=16)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        meses = [
+            "Enero",
+            "Febrero",
+            "Marzo",
+            "Abril",
+            "Mayo",
+            "Junio",
+            "Julio",
+            "Agosto",
+            "Septiembre",
+            "Octubre",
+            "Noviembre",
+            "Diciembre",
+        ]
+        mes_var = tk.StringVar()
+        ano_var = tk.StringVar()
+        tipo_var = tk.StringVar(value="No clausulada")
+
+        hoy = date.today()
+        if 1 <= hoy.month <= 12:
+            mes_var.set(meses[hoy.month - 1])
+        ano_var.set(str(hoy.year))
+
+        ttk.Label(container, text="Mes").grid(row=0, column=0, sticky="w", pady=4)
+        ttk.Combobox(container, textvariable=mes_var, values=meses, width=20, state="readonly").grid(
+            row=0, column=1, sticky="w", pady=4
+        )
+
+        ttk.Label(container, text="Año").grid(row=1, column=0, sticky="w", pady=4)
+        anos = [str(year) for year in range(2020, 2031)]
+        ttk.Combobox(container, textvariable=ano_var, values=anos, width=10, state="readonly").grid(
+            row=1, column=1, sticky="w", pady=4
+        )
+
+        ttk.Label(container, text="Tipo").grid(row=2, column=0, sticky="w", pady=4)
+        ttk.Combobox(
+            container,
+            textvariable=tipo_var,
+            values=["Clausulada", "No clausulada"],
+            width=20,
+            state="readonly",
+        ).grid(row=2, column=1, sticky="w", pady=4)
+
+        button_row = ttk.Frame(container)
+        button_row.grid(row=3, column=0, columnspan=2, pady=(12, 0), sticky="e")
+
+        def _confirmar():
+            mes_nombre = mes_var.get().strip()
+            ano_raw = ano_var.get().strip()
+            tipo_raw = tipo_var.get().strip().lower()
+            if mes_nombre not in meses:
+                messagebox.showerror("Error", "Selecciona un mes valido")
+                return
+            try:
+                ano = int(ano_raw)
+            except ValueError:
+                messagebox.showerror("Error", "Selecciona un año valido")
+                return
+            mes = meses.index(mes_nombre) + 1
+            dialog.destroy()
+            self._crear_factura(mes, ano, tipo_raw)
+
+        tk.Button(
+            button_row,
+            text="Cancelar",
+            command=dialog.destroy,
+            bg=COLOR_PURPLE,
+            fg="white",
+            padx=10,
+            pady=4,
+        ).pack(side=tk.RIGHT, padx=(8, 0))
+        tk.Button(
+            button_row,
+            text="Crear factura",
+            command=_confirmar,
+            bg=COLOR_TEAL,
+            fg="white",
+            padx=10,
+            pady=4,
+        ).pack(side=tk.RIGHT)
+
+    def _crear_factura(self, mes: int, ano: int, tipo: str) -> None:
+        loading = LoadingDialog(self.root, "Generando factura...")
+        self.root.update_idletasks()
+        try:
+            self.api.post(
+                "/wizard/facturas/crear",
+                {"mes": mes, "ano": ano, "tipo": tipo},
+                timeout=300,
+            )
+        except Exception as exc:
+            loading.close()
+            messagebox.showerror("Error", f"No se pudo crear la factura: {exc}")
+            return
+        loading.close()
+        messagebox.showinfo("Factura creada", "La factura se genero en el Excel.")
 
     def _set_window_size(self) -> None:
         self.root.update_idletasks()
@@ -2266,6 +2119,214 @@ class WizardApp:
                 pass
         self._update_queue_status()
 
+    def _refresh_cache_from_supabase(self) -> None:
+        dialog = LoadingDialog(self.root, "Actualizando base de datos...", determinate=True)
+        start_time = time.time()
+        timeout_sec = 60
+        result = {"cache": None, "error": None}
+
+        items = [
+            ("/wizard/seccion-1/orden-clausulada/opciones", None, "opciones de orden"),
+            ("/wizard/seccion-1/profesionales", None, "profesionales"),
+            ("/wizard/seccion-2/empresas", None, "empresas"),
+            ("/wizard/seccion-3/tarifas", None, "tarifas"),
+            ("/wizard/seccion-4/usuarios", None, "usuarios"),
+            ("/wizard/seccion-4/discapacidades", None, "discapacidades"),
+            ("/wizard/seccion-4/generos", None, "generos"),
+            ("/wizard/seccion-4/contratos", None, "contratos"),
+        ]
+
+        def _status(message: str, progress: int | None = None) -> None:
+            self.root.after(0, lambda: dialog.set_status(message, progress))
+
+        def _worker() -> None:
+            try:
+                _status("Conectando a Supabase...", 0)
+                new_cache = self.api.build_cache(items, status_callback=_status)
+                result["cache"] = new_cache
+            except Exception as exc:
+                result["error"] = str(exc)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        def _check_done() -> None:
+            if thread.is_alive():
+                if time.time() - start_time >= timeout_sec:
+                    dialog.close()
+                    messagebox.showerror(
+                        "Supabase no disponible",
+                        "Supabase no respondio en 60 segundos. Intentalo mas tarde.",
+                    )
+                    return
+                self.root.after(250, _check_done)
+                return
+            dialog.close()
+            if result["error"]:
+                messagebox.showerror(
+                    "Error",
+                    f"No se pudo actualizar la base de datos: {result['error']}",
+                )
+                return
+            if result["cache"] is not None:
+                self.api.replace_cache(result["cache"])
+                messagebox.showinfo("Base de datos actualizada", "Datos actualizados correctamente.")
+
+        self.root.after(250, _check_done)
+
+    def _open_update_page(self) -> None:
+        dialog = LoadingDialog(self.root, "Verificando actualizacion...", determinate=True)
+        self.root.update_idletasks()
+        result = {"error": None, "local": None, "remote": None, "assets": None}
+
+        def _worker():
+            try:
+                from app.updater import get_latest_release_assets
+                from app.version import get_version
+
+                local = get_version()
+                remote, assets = get_latest_release_assets()
+                result["local"] = local
+                result["remote"] = remote
+                result["assets"] = assets
+            except Exception as exc:
+                result["error"] = str(exc)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        def _check_done():
+            if thread.is_alive():
+                self.root.after(200, _check_done)
+                return
+            dialog.close()
+            if result["error"]:
+                messagebox.showerror("Actualizacion", f"No se pudo verificar: {result['error']}")
+                return
+            local = result["local"] or "0.0.0"
+            remote = result["remote"]
+            if remote:
+                self.set_version_info(local, remote)
+            if not remote:
+                messagebox.showerror("Actualizacion", "No se pudo obtener la version remota.")
+                return
+            from app.updater import is_update_available
+
+            if not is_update_available(local, remote):
+                messagebox.showinfo("Actualizacion", "Ya estas usando la ultima version.")
+                return
+            confirm = messagebox.askyesno(
+                "Actualizacion disponible",
+                f"Hay una nueva version disponible ({remote}).\n"
+                "Deseas actualizar ahora?",
+            )
+            if not confirm:
+                return
+            self._start_manual_update(result["assets"] or {})
+
+        self.root.after(200, _check_done)
+
+    def _start_manual_update(self, assets: dict) -> None:
+        dialog = LoadingDialog(self.root, "Descargando instalador...", determinate=True)
+        self.root.update_idletasks()
+        result = {"error": None, "path": None}
+
+        def _progress(message: str, value: int) -> None:
+            self.root.after(0, lambda: dialog.set_status(message, value))
+
+        def _worker():
+            try:
+                from app.updater import download_installer, run_installer
+
+                path = download_installer(assets, progress_callback=_progress)
+                result["path"] = path
+                self.root.after(0, lambda: dialog.set_mode(False))
+                self.root.after(0, lambda: dialog.set_status("Instalando actualizacion..."))
+                run_installer(path, wait=True)
+            except Exception as exc:
+                result["error"] = str(exc)
+
+        thread = threading.Thread(target=_worker, daemon=True)
+        thread.start()
+
+        def _check_done():
+            if thread.is_alive():
+                self.root.after(300, _check_done)
+                return
+            dialog.close()
+            if result["error"]:
+                messagebox.showerror("Actualizacion", f"No se pudo actualizar: {result['error']}")
+                return
+            self._show_restart_countdown()
+
+        self.root.after(300, _check_done)
+
+    def _show_restart_countdown(self, seconds: int = 5) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Actualizacion completada")
+        dialog.resizable(False, False)
+        dialog.configure(bg="white")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        container = tk.Frame(dialog, bg="white")
+        container.pack(fill=tk.BOTH, expand=True, padx=24, pady=20)
+
+        logo = _load_logo(subsample=7)
+        if logo:
+            tk.Label(container, image=logo, bg="white").pack(pady=(0, 8))
+            dialog.logo_image = logo
+
+        tk.Label(
+            container,
+            text="Instalacion terminada",
+            font=("Arial", 12, "bold"),
+            bg="white",
+            fg=COLOR_PURPLE,
+        ).pack(pady=(0, 6))
+
+        countdown_label = tk.Label(
+            container,
+            text="Reiniciando en 5 segundos...",
+            font=("Arial", 10),
+            bg="white",
+            fg=COLOR_TEAL,
+        )
+        countdown_label.pack()
+
+        dialog.update_idletasks()
+        self._center_dialog(dialog, 420, 200)
+
+        def _tick(remaining: int) -> None:
+            if remaining <= 0:
+                dialog.destroy()
+                self._restart_app()
+                return
+            countdown_label.config(text=f"Reiniciando en {remaining} segundos...")
+            dialog.after(1000, lambda: _tick(remaining - 1))
+
+        _tick(seconds)
+
+    def _restart_app(self) -> None:
+        try:
+            if getattr(sys, "frozen", False):
+                args = [sys.executable]
+            else:
+                script_path = os.path.abspath(__file__)
+                args = [sys.executable, script_path]
+            subprocess.Popen(args, close_fds=True)
+        except Exception:
+            pass
+        self.root.after(200, self.root.destroy)
+
+    def _center_dialog(self, dialog: tk.Toplevel, width: int, height: int) -> None:
+        dialog.update_idletasks()
+        screen_w = dialog.winfo_screenwidth()
+        screen_h = dialog.winfo_screenheight()
+        x = int((screen_w - width) / 2)
+        y = int((screen_h - height) / 2)
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+
     def _update_queue_status(self) -> None:
         try:
             data = self.api.get("/wizard/editar/excel/status").get("data", {})
@@ -2278,7 +2339,11 @@ class WizardApp:
             status = f"Cola Excel: {pendientes} pendiente(s)"
             if locked:
                 status += " (Excel en uso)"
-            resumen.queue_label.config(text=status)
+            try:
+                if resumen.queue_label.winfo_exists():
+                    resumen.queue_label.config(text=status)
+            except tk.TclError:
+                return
 
     def _load_section_data(self) -> None:
         self.seccion1.load_data()
@@ -2443,7 +2508,7 @@ class WizardApp:
         if response.get("excel_status") == "background":
             messagebox.showinfo(
                 "Servicio guardado",
-                "Servicio guardado. El Excel y la factura se actualizan en segundo plano.",
+                "Servicio guardado. El Excel se actualiza en segundo plano.",
             )
         elif response.get("excel_status") == "pendiente":
             messagebox.showwarning(
@@ -2522,7 +2587,7 @@ class WizardApp:
         if response.get("excel_status") == "background":
             messagebox.showinfo(
                 "Actualizado",
-                "Entrada actualizada. El Excel y la factura se actualizan en segundo plano.",
+                "Entrada actualizada. El Excel se actualiza en segundo plano.",
             )
         elif response.get("excel_status") == "pendiente":
             messagebox.showwarning(
@@ -2561,7 +2626,7 @@ class WizardApp:
         if response.get("excel_status") == "background":
             messagebox.showinfo(
                 "Eliminado",
-                "Entrada eliminada. El Excel y la factura se actualizan en segundo plano.",
+                "Entrada eliminada. El Excel se actualiza en segundo plano.",
             )
         elif response.get("excel_status") == "pendiente":
             messagebox.showwarning(
@@ -2577,19 +2642,6 @@ class WizardApp:
 
 
 def main() -> None:
-    if "--backend" in sys.argv:
-        host = "127.0.0.1"
-        port = "8123"
-        if "--host" in sys.argv:
-            idx = sys.argv.index("--host")
-            if idx + 1 < len(sys.argv):
-                host = sys.argv[idx + 1]
-        if "--port" in sys.argv:
-            idx = sys.argv.index("--port")
-            if idx + 1 < len(sys.argv):
-                port = sys.argv[idx + 1]
-        _run_backend_only(host, int(port))
-        return
     try:
         from app.storage import ensure_appdata_files
 

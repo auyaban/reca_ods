@@ -1,7 +1,6 @@
 from app.services.sections import (
     editar as editar_entrada,
     facturas,
-    initial,
     resumen_final,
     seccion1,
     seccion2,
@@ -11,10 +10,6 @@ from app.services.sections import (
     terminar,
 )
 from app.services.background import InlineBackgroundTasks
-
-
-def get_opciones_iniciales() -> dict:
-    return initial.get_opciones_iniciales()
 
 
 def get_orden_clausulada_opciones() -> dict:
@@ -100,11 +95,6 @@ def confirmar_seccion_5(payload: dict) -> dict:
     return seccion5.confirmar_seccion_5(req)
 
 
-def resumen_servicio(payload: dict) -> dict:
-    req = seccion5.ResumenServicioRequest(**payload)
-    return seccion5.resumen_servicio(req)
-
-
 def resumen_final_servicio(payload: dict) -> dict:
     req = resumen_final.ResumenFinalRequest(**payload)
     return resumen_final.resumen_final(req)
@@ -154,23 +144,9 @@ def excel_rebuild() -> dict:
     return editar_entrada.rebuild_excel()
 
 
-def facturas_preview(payload: dict) -> dict:
-    req = facturas.PreviewFacturaRequest(**payload)
-    return facturas.preview_factura(req)
-
-
-def facturas_generar(payload: dict) -> dict:
-    req = facturas.GenerarFacturaRequest(**payload)
-    return facturas.generar_factura(req)
-
-
-def facturas_crear(payload: dict) -> dict:
+def crear_factura(payload: dict) -> dict:
     req = facturas.CrearFacturaRequest(**payload)
     return facturas.crear_factura(req)
 
 
-def facturas_debug_actualizar(payload: dict) -> dict:
-    mes = int(payload.get("mes", 0))
-    ano = int(payload.get("ano", 0))
-    tipo = str(payload.get("tipo", "")).strip()
-    return facturas.debug_actualizar_factura(mes, ano, tipo)
+ 

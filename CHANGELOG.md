@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.5
+- Boton de crear factura con flujo manual (mes/ano/tipo) y eliminacion de triggers automaticos.
+- Actualizacion manual desde el GUI con instalador silencioso y reinicio automatico.
+- Ajustes de estabilidad en cola Excel y validaciones del GUI.
+
 ## 2.0.3
 - Actualizacion previa al GUI con barra propia y reinicio automatico.
 - Verificacion de version en GUI sin iniciar update en segundo plano.

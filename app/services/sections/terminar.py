@@ -6,7 +6,7 @@ import requests
 
 from app.models.payloads import TerminarServicioRequest, dump_ods_for_rpc
 from app.config import get_settings
-from app.excel_sync import append_row_and_update_factura, queue_action
+from app.excel_sync import append_row, queue_action
 from app.services.errors import ServiceError
 from app.supabase_client import get_supabase_client
 
@@ -120,31 +120,13 @@ def _apply_schema(ods_data: dict[str, Any]) -> dict[str, Any]:
     return filtered
 
 
-def _queue_factura_update(ods_data: dict, reason: str) -> None:
-    mes = int(ods_data.get("mes_servicio", 0) or 0)
-    ano = int(ods_data.get("año_servicio", 0) or 0)
-    if not mes or not ano:
-        return
-    orden = str(ods_data.get("orden_clausulada", "")).strip().lower()
-    tipo = "clausulada" if orden.startswith("s") or orden == "true" else "no clausulada"
-    queue_action(
-        "factura_update",
-        {},
-        None,
-        reason,
-        meta={"mes": mes, "ano": ano, "tipo": tipo},
-    )
-
-
 def _persist_excel_background(ods_data: dict) -> None:
     try:
-        append_row_and_update_factura(ods_data)
+        append_row(ods_data)
     except PermissionError:
         queue_action("append", ods_data, None, "archivo_abierto")
-        _queue_factura_update(ods_data, "archivo_abierto")
     except Exception:
         queue_action("append", ods_data, None, "error_guardado")
-        _queue_factura_update(ods_data, "error_guardado")
 
 
 def terminar_servicio(payload: TerminarServicioRequest, background_tasks) -> dict:

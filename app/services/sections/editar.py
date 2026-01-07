@@ -7,13 +7,12 @@ from pydantic import BaseModel, Field
 from app.config import get_settings
 from app.excel_sync import (
     clear_queue,
-    delete_row_and_update_factura,
+    delete_row,
     flush_queue,
     get_queue_status,
     queue_action,
     rebuild_excel_from_supabase,
     rebuild_excel_from_supabase_query,
-    update_row_and_update_factura,
 )
 from app.services.errors import ServiceError
 from app.supabase_client import get_supabase_client
@@ -230,34 +229,6 @@ def obtener_entrada(
     return {"data": response.data[0]}
 
 
-def _queue_factura_update(row: dict, reason: str) -> None:
-    mes = int(row.get("mes_servicio", 0) or 0)
-    ano_value = row.get("año_servicio", 0) or row.get("ano_servicio", 0)
-    ano = int(ano_value or 0)
-    if not mes or not ano:
-        return
-    orden = str(row.get("orden_clausulada", "")).strip().lower()
-    tipo = "clausulada" if orden.startswith("s") or orden == "true" else "no clausulada"
-    queue_action(
-        "factura_update",
-        {},
-        None,
-        reason,
-        meta={"mes": mes, "ano": ano, "tipo": tipo},
-    )
-
-
-def _update_excel_background(original: dict, merged: dict) -> None:
-    try:
-        update_row_and_update_factura(original, merged)
-    except PermissionError:
-        queue_action("update", merged, original, "archivo_abierto")
-        _queue_factura_update(merged, "archivo_abierto")
-    except Exception:
-        queue_action("update", merged, original, "error_guardado")
-        _queue_factura_update(merged, "error_guardado")
-
-
 def _rebuild_excel_now_or_queue() -> tuple[str, str | None]:
     try:
         rebuild_excel_from_supabase_query(create_backup=False)
@@ -270,24 +241,13 @@ def _rebuild_excel_now_or_queue() -> tuple[str, str | None]:
         return "error", str(exc)
 
 
-def _rebuild_excel_background() -> None:
-    try:
-        rebuild_excel_from_supabase_query(create_backup=False)
-    except PermissionError:
-        queue_action("rebuild", {}, None, "archivo_abierto")
-    except Exception:
-        queue_action("rebuild", {}, None, "error_guardado")
-
-
 def _delete_excel_background(original: dict) -> None:
     try:
-        delete_row_and_update_factura(original)
+        delete_row(original)
     except PermissionError:
         queue_action("delete", original, original, "archivo_abierto")
-        _queue_factura_update(original, "archivo_abierto")
     except Exception:
         queue_action("delete", original, original, "error_guardado")
-        _queue_factura_update(original, "error_guardado")
 
 
 def actualizar_entrada(payload: OdsActualizarRequest, background_tasks) -> dict:

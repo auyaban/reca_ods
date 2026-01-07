@@ -1,9 +1,8 @@
 from collections import defaultdict
 
-from fastapi import HTTPException
-
 from app.supabase_client import get_supabase_client
 from app.factura_models import FacturaItem
+from app.services.errors import ServiceError
 
 
 def calcular_items(mes: int, año: int, tipo: str) -> list[FacturaItem]:
@@ -22,11 +21,11 @@ def calcular_items(mes: int, año: int, tipo: str) -> list[FacturaItem]:
             .execute()
         )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Supabase error: {exc}") from exc
+        raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
     registros = ods.data or []
     if not registros:
-        raise HTTPException(status_code=404, detail="No se encontraron servicios para el periodo")
+        raise ServiceError("No se encontraron servicios para el periodo", status_code=404)
 
     filtrados = []
     for row in registros:
@@ -36,13 +35,13 @@ def calcular_items(mes: int, año: int, tipo: str) -> list[FacturaItem]:
             filtrados.append(row)
 
     if not filtrados:
-        raise HTTPException(status_code=404, detail="No hay servicios para el tipo solicitado")
+        raise ServiceError("No hay servicios para el tipo solicitado", status_code=404)
 
     codigos = sorted(
         {str(row.get("codigo_servicio", "")).strip() for row in filtrados if row.get("codigo_servicio")}
     )
     if not codigos:
-        raise HTTPException(status_code=422, detail="No hay codigos en el periodo")
+        raise ServiceError("No hay codigos en el periodo", status_code=422)
 
     try:
         tarifas = (
@@ -52,7 +51,7 @@ def calcular_items(mes: int, año: int, tipo: str) -> list[FacturaItem]:
             .execute()
         )
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Supabase error: {exc}") from exc
+        raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
     valor_por_codigo = {
         str(item.get("codigo_servicio")): float(item.get("valor_base") or 0)

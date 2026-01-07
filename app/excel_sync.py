@@ -8,8 +8,6 @@ import shutil
 
 from datetime import datetime
 
-from pathlib import Path
-
 from typing import Any
 
 
@@ -556,64 +554,6 @@ def update_factura_sheet(mes: int, ano: int, tipo: str) -> None:
 
 
 
-def update_facturas_from_service(ods_data: dict) -> None:
-
-    mes = int(ods_data.get("mes_servicio", 0) or 0)
-
-    ano = _get_year_value(ods_data)
-
-    if not mes or not ano:
-
-        _logger.info("Factura omitida. Mes/Ano vacio. Mes=%s Ano=%s", mes, ano)
-
-        return
-
-    orden = str(ods_data.get("orden_clausulada", "")).strip().lower()
-
-    tipo = "clausulada" if orden.startswith("s") or orden == "true" else "no clausulada"
-
-    try:
-
-        update_factura_sheet(mes, ano, tipo)
-
-    except PermissionError:
-
-        _logger.warning("Factura en cola por archivo abierto. Mes=%s Ano=%s Tipo=%s", mes, ano, tipo)
-
-        queue_action(
-
-            "factura_update",
-
-            {},
-
-            None,
-
-            "archivo_abierto",
-
-            meta={"mes": mes, "ano": ano, "tipo": tipo},
-
-        )
-
-    except Exception:
-
-        _logger.exception("Factura en cola por error. Mes=%s Ano=%s Tipo=%s", mes, ano, tipo)
-
-        queue_action(
-
-            "factura_update",
-
-            {},
-
-            None,
-
-            "error_guardado",
-
-            meta={"mes": mes, "ano": ano, "tipo": tipo},
-
-        )
-
-
-
 
 
 def _build_row_values(ods_data: dict, headers: list[str], normalized_headers: list[str]) -> list[Any]:
@@ -638,7 +578,7 @@ def _build_row_values(ods_data: dict, headers: list[str], normalized_headers: li
 
         if value is None and field in ("a\u00f1o_servicio", "ano_servicio"):
 
-            value = ods_data.get("ano_servicio")
+            value = ods_data.get("año_servicio") or ods_data.get("ano_servicio")
 
         if field == "orden_clausulada":
 
@@ -679,54 +619,6 @@ def append_row(ods_data: dict) -> None:
         for col_idx, value in enumerate(row_values, start=1):
 
             ws.cell(row=target_row, column=col_idx, value=value)
-
-    _safe_save_workbook(wb)
-
-
-
-
-
-def append_row_and_update_factura(ods_data: dict) -> None:
-
-    wb, targets = _load_excel()
-
-    for ws, headers, normalized_headers in targets:
-
-        row_values = _build_row_values(ods_data, headers, normalized_headers)
-
-        target_row = None
-
-        for row_idx in range(2, ws.max_row + 2):
-
-            cells = ws[row_idx]
-
-            if all(cell.value in (None, "") for cell in cells):
-
-                target_row = row_idx
-
-                break
-
-        if target_row is None:
-
-            target_row = ws.max_row + 1
-
-        for col_idx, value in enumerate(row_values, start=1):
-
-            ws.cell(row=target_row, column=col_idx, value=value)
-
-    mes = int(ods_data.get("mes_servicio", 0) or 0)
-
-    ano = _get_year_value(ods_data)
-
-    if mes and ano:
-
-        orden = str(ods_data.get("orden_clausulada", "")).strip().lower()
-
-        tipo = "clausulada" if orden.startswith("s") or orden == "true" else "no clausulada"
-
-        _render_factura_sheet(wb, mes, ano, tipo)
-
-
 
     _safe_save_workbook(wb)
 
@@ -818,118 +710,6 @@ def delete_row(original: dict) -> None:
 
 
 
-def update_row_and_update_factura(original: dict, ods_data: dict) -> None:
-
-    wb, targets = _load_excel()
-
-    found_any = False
-
-    for ws, headers, normalized_headers in targets:
-
-        target_row = _find_target_row(ws, original, headers, normalized_headers)
-
-        row_values = _build_row_values(ods_data, headers, normalized_headers)
-
-        if target_row is None:
-
-            _logger.warning("Fila no encontrada en hoja %s; agregando nueva.", ws.title)
-
-            target_row = None
-
-            for row_idx in range(2, ws.max_row + 2):
-
-                cells = ws[row_idx]
-
-                if all(cell.value in (None, "") for cell in cells):
-
-                    target_row = row_idx
-
-                    break
-
-            if target_row is None:
-
-                target_row = ws.max_row + 1
-
-        else:
-
-            found_any = True
-
-        for col_idx, value in enumerate(row_values, start=1):
-
-            ws.cell(row=target_row, column=col_idx, value=value)
-
-        found_any = True
-
-    if not found_any:
-
-        raise RuntimeError("No se encontro la fila en Excel para actualizar")
-
-
-
-    mes = int(ods_data.get("mes_servicio", 0) or 0)
-
-    ano = _get_year_value(ods_data)
-
-    if mes and ano:
-
-        orden = str(ods_data.get("orden_clausulada", "")).strip().lower()
-
-        tipo = "clausulada" if orden.startswith("s") or orden == "true" else "no clausulada"
-
-        _render_factura_sheet(wb, mes, ano, tipo)
-
-
-
-    _safe_save_workbook(wb)
-
-
-
-
-
-def delete_row_and_update_factura(original: dict) -> None:
-
-    wb, targets = _load_excel()
-
-    found_any = False
-
-    for ws, headers, normalized_headers in targets:
-
-        target_row = _find_target_row(ws, original, headers, normalized_headers)
-
-        if target_row is None:
-
-            continue
-
-        for col_idx in range(1, len(headers) + 1):
-
-            ws.cell(row=target_row, column=col_idx, value=None)
-
-        found_any = True
-
-    if not found_any:
-
-        raise RuntimeError("No se encontro la fila en Excel para eliminar")
-
-
-
-    mes = int(original.get("mes_servicio", 0) or 0)
-
-    ano = _get_year_value(original)
-
-    if mes and ano:
-
-        orden = str(original.get("orden_clausulada", "")).strip().lower()
-
-        tipo = "clausulada" if orden.startswith("s") or orden == "true" else "no clausulada"
-
-        _render_factura_sheet(wb, mes, ano, tipo)
-
-
-
-    _safe_save_workbook(wb)
-
-
-
 
 
 def rebuild_excel_from_supabase(rows: list[dict], create_backup: bool = True) -> dict:
@@ -986,49 +766,9 @@ def rebuild_excel_from_supabase(rows: list[dict], create_backup: bool = True) ->
 
     _safe_save_workbook(wb)
 
-    _update_facturas_from_rows(rows)
-
     _logger.info("Rebuild Excel finalizado. Filas=%s", len(rows))
 
     return {"rows": len(rows), "backup": str(backup_path) if backup_path else ""}
-
-
-
-
-
-def _update_facturas_from_rows(rows: list[dict]) -> None:
-
-    combos = set()
-
-    for row in rows:
-
-        mes = int(row.get("mes_servicio", 0) or 0)
-
-        ano = _get_year_value(row)
-
-        if not mes or not ano:
-
-            continue
-
-        orden = str(row.get("orden_clausulada", "")).strip().lower()
-
-        tipo = "clausulada" if orden.startswith("s") or orden == "true" else "no clausulada"
-
-        combos.add((mes, ano, tipo))
-
-    for mes, ano, tipo in sorted(combos):
-
-        try:
-
-            update_factura_sheet(mes, ano, tipo)
-
-        except Exception:
-
-            _logger.exception(
-
-                "Factura omitida en rebuild. Mes=%s Ano=%s Tipo=%s", mes, ano, tipo
-
-            )
 
 
 
@@ -1223,20 +963,6 @@ def flush_queue() -> dict:
             elif action == "delete":
 
                 delete_row(original)
-
-            elif action == "factura_update":
-
-                meta = record.get("meta", {})
-
-                update_factura_sheet(
-
-                    int(meta.get("mes", 0) or 0),
-
-                    int(meta.get("ano", 0) or 0),
-
-                    str(meta.get("tipo", "")),
-
-                )
 
             elif action == "rebuild":
 
