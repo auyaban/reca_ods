@@ -13,6 +13,25 @@ REPO_OWNER = "auyaban"
 REPO_NAME = "reca_ods"
 INSTALLER_ASSET = "RECA_ODS_Setup.exe"
 HASH_ASSET = "RECA_ODS_Setup.exe.sha256"
+APPDATA_DIRNAME = "Sistema de Gestión ODS RECA"
+
+
+def _update_log_path() -> Path:
+    base = os.getenv("APPDATA")
+    if base:
+        log_dir = Path(base) / APPDATA_DIRNAME / "logs"
+    else:
+        log_dir = Path.home() / "AppData" / "Roaming" / APPDATA_DIRNAME / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / "updater.log"
+
+
+def _log_update(message: str) -> None:
+    try:
+        with _update_log_path().open("a", encoding="utf-8") as handle:
+            handle.write(message.rstrip() + "\n")
+    except Exception:
+        pass
 
 
 def _parse_version(value: str) -> tuple[int, int, int]:
@@ -56,6 +75,7 @@ def _get_latest_release() -> tuple[str | None, dict]:
     api_url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest"
     response = requests.get(api_url, timeout=15)
     if response.status_code >= 400:
+        _log_update(f"ERROR obtener release: status={response.status_code}")
         return None, {}
     data = response.json()
     remote_version = str(data.get("tag_name", "")).lstrip("v")
@@ -70,15 +90,19 @@ def get_latest_version() -> str | None:
 
 def check_and_update(status_callback=None, progress_callback=None, version_callback=None) -> bool:
     local_version = get_version()
+    _log_update(f"Version local={local_version}")
     remote_version, assets = _get_latest_release()
+    _log_update(f"Version remota={remote_version}")
     if version_callback:
         version_callback(local_version, remote_version)
     if not remote_version or not _is_newer(remote_version, local_version):
+        _log_update("Sin actualizacion.")
         return False
 
     installer_url = assets.get(INSTALLER_ASSET)
     hash_url = assets.get(HASH_ASSET)
     if not installer_url or not hash_url:
+        _log_update("ERROR: assets faltantes en release.")
         return False
 
     if status_callback:
@@ -87,6 +111,7 @@ def check_and_update(status_callback=None, progress_callback=None, version_callb
         progress_callback(0)
 
     temp_dir = Path(tempfile.mkdtemp(prefix="reca_ods_update_"))
+    _log_update(f"Descargando en: {temp_dir}")
     installer_path = temp_dir / INSTALLER_ASSET
     hash_path = temp_dir / HASH_ASSET
 
@@ -98,6 +123,7 @@ def check_and_update(status_callback=None, progress_callback=None, version_callb
     expected = hash_path.read_text(encoding="utf-8").strip().split()[0]
     actual = _sha256(installer_path)
     if expected.lower() != actual.lower():
+        _log_update("ERROR: hash no coincide.")
         return False
 
     if status_callback:
@@ -105,15 +131,20 @@ def check_and_update(status_callback=None, progress_callback=None, version_callb
     if progress_callback:
         progress_callback(None)
 
+    installer_log = _update_log_path().with_name("installer.log")
     args = [
         str(installer_path),
-        "/VERYSILENT",
-        "/SUPPRESSMSGBOXES",
+        "/SILENT",
         "/NORESTART",
+        "/CLOSEAPPLICATIONS",
+        "/RESTARTAPPLICATIONS",
         "/SP-",
+        f"/LOG={installer_log}",
     ]
+    _log_update(f"Ejecutando instalador: {' '.join(args)}")
     result = subprocess.run(args, cwd=str(temp_dir), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if result.returncode != 0:
+        _log_update(f"ERROR instalador. codigo={result.returncode}")
         return False
 
     if status_callback:

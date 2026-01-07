@@ -4,6 +4,7 @@ import time
 import subprocess
 import tkinter as tk
 from tkinter import ttk
+from pathlib import Path
 
 
 class Splash(tk.Toplevel):
@@ -108,6 +109,15 @@ class Splash(tk.Toplevel):
         self.destroy()
 
 
+def _find_installed_exe() -> str:
+    base = os.getenv("LOCALAPPDATA")
+    if base:
+        candidate = Path(base) / "Programs" / "Sistema de Gestión ODS RECA" / "RECA_ODS.exe"
+        if candidate.exists():
+            return str(candidate)
+    return sys.executable
+
+
 def main() -> None:
     try:
         from app.storage import ensure_appdata_files
@@ -151,7 +161,8 @@ def main() -> None:
         time.sleep(0.6)
         splash.close()
         root.destroy()
-        subprocess.Popen([sys.executable], cwd=os.path.dirname(__file__))
+        target = _find_installed_exe()
+        subprocess.Popen([target, "--run-gui"], cwd=os.path.dirname(__file__))
         return
 
     cmd = [sys.executable, "--run-gui"]
