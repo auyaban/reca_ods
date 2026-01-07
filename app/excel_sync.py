@@ -32,6 +32,9 @@ _EXCEL_PATH = _DATA_ROOT / "ODS 2026.xlsx"
 
 _EXCEL_QUEUE = _DATA_ROOT / "ODS 2026 pendiente.jsonl"
 
+_ODS_SHEET_GENERAL = "ODS General"
+_ODS_SHEET_FILTRADA = "ODS Filtrada"
+
 
 
 _LOG_FILE = app_data_dir() / "logs" / "excel.log"
@@ -264,6 +267,35 @@ def _find_target_row(ws, original: dict, headers: list[str], normalized_headers:
 
 
 
+
+def _prepare_sheet(ws, get_column_letter):
+    headers = [cell.value or "" for cell in ws[1]]
+    normalized_headers = [_normalize_header(str(h)) for h in headers]
+    if "id" not in normalized_headers:
+        new_col = len(headers) + 1
+        ws.cell(row=1, column=new_col, value="id")
+        headers.append("id")
+        normalized_headers.append("id")
+        ws.column_dimensions[get_column_letter(new_col)].hidden = True
+    return headers, normalized_headers
+
+
+def _get_target_sheets(wb, get_column_letter):
+    targets = []
+    lower_map = {name.lower(): name for name in wb.sheetnames}
+    for name in (_ODS_SHEET_GENERAL, _ODS_SHEET_FILTRADA):
+        actual_name = lower_map.get(name.lower())
+        if actual_name:
+            ws = wb[actual_name]
+            headers, normalized_headers = _prepare_sheet(ws, get_column_letter)
+            targets.append((ws, headers, normalized_headers))
+    if not targets:
+        ws = wb.active
+        headers, normalized_headers = _prepare_sheet(ws, get_column_letter)
+        targets.append((ws, headers, normalized_headers))
+    return targets
+
+
 def _load_excel():
 
     ensure_appdata_files()
@@ -292,28 +324,8 @@ def _load_excel():
 
     wb = openpyxl.load_workbook(_EXCEL_PATH)
 
-    ws = wb.active
-
-    headers = [cell.value or "" for cell in ws[1]]
-
-    normalized_headers = [_normalize_header(str(h)) for h in headers]
-
-    if "id" not in normalized_headers:
-
-        new_col = len(headers) + 1
-
-        ws.cell(row=1, column=new_col, value="id")
-
-        headers.append("id")
-
-        normalized_headers.append("id")
-
-        ws.column_dimensions[get_column_letter(new_col)].hidden = True
-
-    return wb, ws, headers, normalized_headers
-
-
-
+    targets = _get_target_sheets(wb, get_column_letter)
+    return wb, targets
 
 
 def _safe_save_workbook(wb) -> None:
@@ -642,35 +654,31 @@ def _build_row_values(ods_data: dict, headers: list[str], normalized_headers: li
 
 def append_row(ods_data: dict) -> None:
 
-    wb, ws, headers, normalized_headers = _load_excel()
+    wb, targets = _load_excel()
 
-    row_values = _build_row_values(ods_data, headers, normalized_headers)
+    for ws, headers, normalized_headers in targets:
 
+        row_values = _build_row_values(ods_data, headers, normalized_headers)
 
+        target_row = None
 
-    target_row = None
+        for row_idx in range(2, ws.max_row + 2):
 
-    for row_idx in range(2, ws.max_row + 2):
+            cells = ws[row_idx]
 
-        cells = ws[row_idx]
+            if all(cell.value in (None, "") for cell in cells):
 
-        if all(cell.value in (None, "") for cell in cells):
+                target_row = row_idx
 
-            target_row = row_idx
+                break
 
-            break
+        if target_row is None:
 
-    if target_row is None:
+            target_row = ws.max_row + 1
 
-        target_row = ws.max_row + 1
+        for col_idx, value in enumerate(row_values, start=1):
 
-
-
-    for col_idx, value in enumerate(row_values, start=1):
-
-        ws.cell(row=target_row, column=col_idx, value=value)
-
-
+            ws.cell(row=target_row, column=col_idx, value=value)
 
     _safe_save_workbook(wb)
 
@@ -680,35 +688,31 @@ def append_row(ods_data: dict) -> None:
 
 def append_row_and_update_factura(ods_data: dict) -> None:
 
-    wb, ws, headers, normalized_headers = _load_excel()
+    wb, targets = _load_excel()
 
-    row_values = _build_row_values(ods_data, headers, normalized_headers)
+    for ws, headers, normalized_headers in targets:
 
+        row_values = _build_row_values(ods_data, headers, normalized_headers)
 
+        target_row = None
 
-    target_row = None
+        for row_idx in range(2, ws.max_row + 2):
 
-    for row_idx in range(2, ws.max_row + 2):
+            cells = ws[row_idx]
 
-        cells = ws[row_idx]
+            if all(cell.value in (None, "") for cell in cells):
 
-        if all(cell.value in (None, "") for cell in cells):
+                target_row = row_idx
 
-            target_row = row_idx
+                break
 
-            break
+        if target_row is None:
 
-    if target_row is None:
+            target_row = ws.max_row + 1
 
-        target_row = ws.max_row + 1
+        for col_idx, value in enumerate(row_values, start=1):
 
-
-
-    for col_idx, value in enumerate(row_values, start=1):
-
-        ws.cell(row=target_row, column=col_idx, value=value)
-
-
+            ws.cell(row=target_row, column=col_idx, value=value)
 
     mes = int(ods_data.get("mes_servicio", 0) or 0)
 
@@ -732,21 +736,49 @@ def append_row_and_update_factura(ods_data: dict) -> None:
 
 def update_row(original: dict, ods_data: dict) -> None:
 
-    wb, ws, headers, normalized_headers = _load_excel()
+    wb, targets = _load_excel()
 
-    target_row = _find_target_row(ws, original, headers, normalized_headers)
+    found_any = False
 
-    if target_row is None:
+    for ws, headers, normalized_headers in targets:
+
+        target_row = _find_target_row(ws, original, headers, normalized_headers)
+
+        row_values = _build_row_values(ods_data, headers, normalized_headers)
+
+        if target_row is None:
+
+            _logger.warning("Fila no encontrada en hoja %s; agregando nueva.", ws.title)
+
+            target_row = None
+
+            for row_idx in range(2, ws.max_row + 2):
+
+                cells = ws[row_idx]
+
+                if all(cell.value in (None, "") for cell in cells):
+
+                    target_row = row_idx
+
+                    break
+
+            if target_row is None:
+
+                target_row = ws.max_row + 1
+
+        else:
+
+            found_any = True
+
+        for col_idx, value in enumerate(row_values, start=1):
+
+            ws.cell(row=target_row, column=col_idx, value=value)
+
+        found_any = True
+
+    if not found_any:
 
         raise RuntimeError("No se encontro la fila en Excel para actualizar")
-
-
-
-    row_values = _build_row_values(ods_data, headers, normalized_headers)
-
-    for col_idx, value in enumerate(row_values, start=1):
-
-        ws.cell(row=target_row, column=col_idx, value=value)
 
 
 
@@ -758,21 +790,27 @@ def update_row(original: dict, ods_data: dict) -> None:
 
 def delete_row(original: dict) -> None:
 
-    wb, ws, headers, normalized_headers = _load_excel()
+    wb, targets = _load_excel()
 
-    target_row = _find_target_row(ws, original, headers, normalized_headers)
+    found_any = False
 
-    if target_row is None:
+    for ws, headers, normalized_headers in targets:
+
+        target_row = _find_target_row(ws, original, headers, normalized_headers)
+
+        if target_row is None:
+
+            continue
+
+        for col_idx in range(1, len(headers) + 1):
+
+            ws.cell(row=target_row, column=col_idx, value=None)
+
+        found_any = True
+
+    if not found_any:
 
         raise RuntimeError("No se encontro la fila en Excel para eliminar")
-
-
-
-    for col_idx in range(1, len(headers) + 1):
-
-        ws.cell(row=target_row, column=col_idx, value=None)
-
-
 
     _safe_save_workbook(wb)
 
@@ -782,21 +820,49 @@ def delete_row(original: dict) -> None:
 
 def update_row_and_update_factura(original: dict, ods_data: dict) -> None:
 
-    wb, ws, headers, normalized_headers = _load_excel()
+    wb, targets = _load_excel()
 
-    target_row = _find_target_row(ws, original, headers, normalized_headers)
+    found_any = False
 
-    if target_row is None:
+    for ws, headers, normalized_headers in targets:
+
+        target_row = _find_target_row(ws, original, headers, normalized_headers)
+
+        row_values = _build_row_values(ods_data, headers, normalized_headers)
+
+        if target_row is None:
+
+            _logger.warning("Fila no encontrada en hoja %s; agregando nueva.", ws.title)
+
+            target_row = None
+
+            for row_idx in range(2, ws.max_row + 2):
+
+                cells = ws[row_idx]
+
+                if all(cell.value in (None, "") for cell in cells):
+
+                    target_row = row_idx
+
+                    break
+
+            if target_row is None:
+
+                target_row = ws.max_row + 1
+
+        else:
+
+            found_any = True
+
+        for col_idx, value in enumerate(row_values, start=1):
+
+            ws.cell(row=target_row, column=col_idx, value=value)
+
+        found_any = True
+
+    if not found_any:
 
         raise RuntimeError("No se encontro la fila en Excel para actualizar")
-
-
-
-    row_values = _build_row_values(ods_data, headers, normalized_headers)
-
-    for col_idx, value in enumerate(row_values, start=1):
-
-        ws.cell(row=target_row, column=col_idx, value=value)
 
 
 
@@ -822,19 +888,27 @@ def update_row_and_update_factura(original: dict, ods_data: dict) -> None:
 
 def delete_row_and_update_factura(original: dict) -> None:
 
-    wb, ws, headers, normalized_headers = _load_excel()
+    wb, targets = _load_excel()
 
-    target_row = _find_target_row(ws, original, headers, normalized_headers)
+    found_any = False
 
-    if target_row is None:
+    for ws, headers, normalized_headers in targets:
+
+        target_row = _find_target_row(ws, original, headers, normalized_headers)
+
+        if target_row is None:
+
+            continue
+
+        for col_idx in range(1, len(headers) + 1):
+
+            ws.cell(row=target_row, column=col_idx, value=None)
+
+        found_any = True
+
+    if not found_any:
 
         raise RuntimeError("No se encontro la fila en Excel para eliminar")
-
-
-
-    for col_idx in range(1, len(headers) + 1):
-
-        ws.cell(row=target_row, column=col_idx, value=None)
 
 
 
@@ -894,47 +968,19 @@ def rebuild_excel_from_supabase(rows: list[dict], create_backup: bool = True) ->
 
     wb = openpyxl.load_workbook(template_path)
 
-    ws = wb.active
+    targets = _get_target_sheets(wb, get_column_letter)
 
+    for ws, headers, normalized_headers in targets:
+        for row_idx in range(2, ws.max_row + 1):
+            for col_idx in range(1, len(headers) + 1):
+                ws.cell(row=row_idx, column=col_idx, value=None)
 
-
-    headers = [cell.value or "" for cell in ws[1]]
-
-    normalized_headers = [_normalize_header(str(h)) for h in headers]
-
-    if "id" not in normalized_headers:
-
-        new_col = len(headers) + 1
-
-        ws.cell(row=1, column=new_col, value="id")
-
-        headers.append("id")
-
-        normalized_headers.append("id")
-
-        ws.column_dimensions[get_column_letter(new_col)].hidden = True
-
-
-
-    for row_idx in range(2, ws.max_row + 1):
-
-        for col_idx in range(1, len(headers) + 1):
-
-            ws.cell(row=row_idx, column=col_idx, value=None)
-
-
-
-    target_row = 2
-
-    for row in rows:
-
-        row_values = _build_row_values(row, headers, normalized_headers)
-
-        for col_idx, value in enumerate(row_values, start=1):
-
-            ws.cell(row=target_row, column=col_idx, value=value)
-
-        target_row += 1
+        target_row = 2
+        for row in rows:
+            row_values = _build_row_values(row, headers, normalized_headers)
+            for col_idx, value in enumerate(row_values, start=1):
+                ws.cell(row=target_row, column=col_idx, value=value)
+            target_row += 1
 
 
 

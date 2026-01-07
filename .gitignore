@@ -8,6 +8,7 @@ installer_config.iss
 *.log
 *.pyc
 *.sha256
+*.7z
 Excel/ods_2026_pendiente.jsonl
 logs/
 \.env
