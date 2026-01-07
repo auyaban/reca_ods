@@ -13,7 +13,6 @@ DISCAPACIDADES = {
     "n/a": "N/A",
 }
 
-
 GENEROS = {
     "hombre": "Hombre",
     "mujer": "Mujer",
@@ -25,11 +24,26 @@ TIPOS_CONTRATO = ["Laboral", "Contrato Aprendiz Especial"]
 
 def _normalize_key(value: str) -> str:
     clean = " ".join(value.strip().lower().split())
-    clean = clean.replace("múltiple", "multiple").replace("física", "fisica")
+    clean = clean.replace("mカltiple", "multiple").replace("fヴsica", "fisica")
     import unicodedata
+
     clean = "".join(ch for ch in unicodedata.normalize("NFKD", clean) if not unicodedata.combining(ch))
     clean = "".join(ch for ch in clean if ch.isalnum() or ch == "/")
     return clean
+
+
+def get_usuarios_reca() -> dict:
+    client = get_supabase_client()
+    try:
+        response = (
+            client.table("usuarios_reca")
+            .select("nombre_usuario,cedula_usuario,discapacidad_usuario,genero_usuario")
+            .order("cedula_usuario")
+            .execute()
+        )
+    except Exception as exc:
+        raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
+
     return {"data": response.data}
 
 
@@ -38,9 +52,7 @@ def get_usuario_por_cedula(cedula: str) -> dict:
     try:
         response = (
             client.table("usuarios_reca")
-            .select(
-                "nombre_usuario,cedula_usuario,discapacidad_usuario,genero_usuario"
-            )
+            .select("nombre_usuario,cedula_usuario,discapacidad_usuario,genero_usuario")
             .eq("cedula_usuario", cedula)
             .limit(1)
             .execute()

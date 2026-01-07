@@ -1,5 +1,8 @@
 # Changelog
 
+## 2.0.2
+- Hotfix: restaura `get_usuarios_reca` y corrige caracteres corruptos en Seccion 4.
+
 ## 2.0.1
 - Correcciones de caracteres/acentos en textos de opciones (Sí, Inclusión, Múltiple, Física).
 - Normalización adicional de claves corruptas para `año_servicio`.
