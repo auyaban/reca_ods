@@ -1,5 +1,8 @@
 # Changelog
 
+## 2.0.6
+- Busqueda por nombre de empresa muestra todos los nombres aunque compartan NIT.
+
 ## 2.0.5
 - Boton de crear factura con flujo manual (mes/ano/tipo) y eliminacion de triggers automaticos.
 - Actualizacion manual desde el GUI con instalador silencioso y reinicio automatico.

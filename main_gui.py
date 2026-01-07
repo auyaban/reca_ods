@@ -622,7 +622,11 @@ class Seccion2Frame(BaseSection):
         self.asesor_var = tk.StringVar()
         self.sede_var = tk.StringVar()
         self._nits: list[str] = []
+        self._nombres: list[str] = []
         self._empresas_by_nit: dict[str, dict] = {}
+        self._empresas_by_nombre: dict[str, list[dict]] = {}
+        self._empresas: list[dict] = []
+        self._is_updating = False
 
         ttk.Label(self.body, text="NIT Empresa").grid(row=0, column=0, sticky="w")
         self.nit_combo = ttk.Combobox(self.body, textvariable=self.nit_var, state="normal", width=30)
@@ -634,9 +638,13 @@ class Seccion2Frame(BaseSection):
         configure_combobox(self.nit_combo)
 
         ttk.Label(self.body, text="Nombre Empresa").grid(row=1, column=0, sticky="w")
-        ttk.Entry(self.body, textvariable=self.nombre_var, state="readonly", width=50).grid(
-            row=1, column=1, sticky="w"
-        )
+        self.nombre_combo = ttk.Combobox(self.body, textvariable=self.nombre_var, state="normal", width=50)
+        self.nombre_combo.grid(row=1, column=1, sticky="w")
+        self.nombre_combo.bind("<<ComboboxSelected>>", self._on_nombre_selected)
+        self.nombre_combo.bind("<KeyRelease>", self._on_nombre_typed)
+        self.nombre_combo.bind("<Return>", self._on_nombre_confirm)
+        self.nombre_combo.bind("<FocusOut>", self._on_nombre_confirm)
+        configure_combobox(self.nombre_combo)
 
         ttk.Label(self.body, text="Caja Compensacion").grid(row=2, column=0, sticky="w")
         ttk.Entry(self.body, textvariable=self.caja_var, state="readonly", width=40).grid(
@@ -656,18 +664,32 @@ class Seccion2Frame(BaseSection):
     def load_data(self) -> None:
         data = self.api.get_cached("/wizard/seccion-2/empresas")
         self._empresas_by_nit = {}
-        for item in data["data"]:
+        self._empresas_by_nombre = {}
+        self._empresas = list(data["data"] or [])
+        for item in self._empresas:
             nit = item.get("nit_empresa")
             if nit is None:
                 continue
-            self._empresas_by_nit[str(nit)] = item
+            nit_key = str(nit)
+            self._empresas_by_nit[nit_key] = item
+            nombre = (item.get("nombre_empresa") or "").strip()
+            if nombre:
+                key = self._normalize_nombre(nombre)
+                self._empresas_by_nombre.setdefault(key, []).append(item)
         nits = list(self._empresas_by_nit.keys())
         self._nits = sorted(nits, key=lambda value: int(re.sub(r"\D", "", value) or 0))
         self.nit_combo.configure(values=self._nits)
         self.nit_combo._all_values = self._nits
+        nombres = [item.get("nombre_empresa", "").strip() for item in self._empresas if item.get("nombre_empresa")]
+        self._nombres = sorted(nombres, key=lambda value: value.lower())
+        self.nombre_combo.configure(values=self._nombres)
+        self.nombre_combo._all_values = self._nombres
         if self._nits:
             self.nit_combo.set(self._nits[0])
             self._fetch_empresa(self._nits[0])
+
+    def _normalize_nombre(self, nombre: str) -> str:
+        return " ".join(nombre.strip().lower().split())
 
     def _on_nit_selected(self, _event) -> None:
         self._fetch_empresa(self.nit_var.get())
@@ -685,9 +707,28 @@ class Seccion2Frame(BaseSection):
         if nit:
             self._fetch_empresa(nit)
 
+    def _on_nombre_selected(self, _event) -> None:
+        self._fetch_empresa_por_nombre(self.nombre_var.get())
+
+    def _on_nombre_typed(self, _event) -> None:
+        value = self._normalize_nombre(self.nombre_var.get())
+        if not value:
+            self.nombre_combo.configure(values=self._nombres)
+            return
+        filtered = [nombre for nombre in self._nombres if value in self._normalize_nombre(nombre)]
+        self.nombre_combo.configure(values=filtered)
+
+    def _on_nombre_confirm(self, _event) -> None:
+        nombre = self.nombre_var.get().strip()
+        if nombre:
+            self._fetch_empresa_por_nombre(nombre)
+
     def _fetch_empresa(self, nit: str) -> None:
         if not nit:
             return
+        if self._is_updating:
+            return
+        self._is_updating = True
         empresa = self._empresas_by_nit.get(nit)
         if not empresa:
             data = self.api.get_cached("/wizard/seccion-2/empresa", params={"nit": nit})
@@ -696,19 +737,59 @@ class Seccion2Frame(BaseSection):
                 self.caja_var.set("")
                 self.asesor_var.set("")
                 self.sede_var.set("")
+                self._is_updating = False
                 return
             empresa = data["data"][0]
             self._empresas_by_nit[nit] = empresa
+            nombre = (empresa.get("nombre_empresa") or "").strip()
+            if nombre:
+                key = self._normalize_nombre(nombre)
+                self._empresas_by_nombre.setdefault(key, []).append(empresa)
         if not empresa:
             self.nombre_var.set("")
             self.caja_var.set("")
             self.asesor_var.set("")
             self.sede_var.set("")
+            self._is_updating = False
             return
         self.nombre_var.set(empresa.get("nombre_empresa", ""))
         self.caja_var.set(empresa.get("caja_compensacion", ""))
         self.asesor_var.set(empresa.get("asesor", ""))
         self.sede_var.set(empresa.get("sede_empresa", ""))
+        nit_value = str(empresa.get("nit_empresa", "")).strip()
+        if nit_value:
+            self.nit_var.set(nit_value)
+        self._is_updating = False
+
+    def _fetch_empresa_por_nombre(self, nombre: str) -> None:
+        if not nombre:
+            return
+        if self._is_updating:
+            return
+        self._is_updating = True
+        key = self._normalize_nombre(nombre)
+        matches = self._empresas_by_nombre.get(key) or []
+        empresa = matches[0] if matches else None
+        if not empresa:
+            for item in self._empresas:
+                if self._normalize_nombre(item.get("nombre_empresa", "")) == key:
+                    empresa = item
+                    break
+        if not empresa:
+            self.nombre_var.set("")
+            self.caja_var.set("")
+            self.asesor_var.set("")
+            self.sede_var.set("")
+            self._is_updating = False
+            return
+        self.nombre_var.set(empresa.get("nombre_empresa", ""))
+        self.caja_var.set(empresa.get("caja_compensacion", ""))
+        self.asesor_var.set(empresa.get("asesor", ""))
+        self.sede_var.set(empresa.get("sede_empresa", ""))
+        nit_value = str(empresa.get("nit_empresa", "")).strip()
+        if nit_value:
+            self.nit_var.set(nit_value)
+        self._is_updating = False
 
     def get_payload(self) -> dict:
         return {
