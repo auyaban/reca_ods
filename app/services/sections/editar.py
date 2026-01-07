@@ -232,7 +232,7 @@ def obtener_entrada(
 
 def _queue_factura_update(row: dict, reason: str) -> None:
     mes = int(row.get("mes_servicio", 0) or 0)
-    ano_value = row.get("aヵo_servicio", 0) or row.get("ano_servicio", 0)
+    ano_value = row.get("año_servicio", 0) or row.get("ano_servicio", 0)
     ano = int(ano_value or 0)
     if not mes or not ano:
         return

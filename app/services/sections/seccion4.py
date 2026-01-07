@@ -5,13 +5,14 @@ from app.supabase_client import get_supabase_client
 
 DISCAPACIDADES = {
     "intelectual": "Intelectual",
-    "multiple": "M푤ltiple",
-    "fisica": "F헴sica",
+    "multiple": "Múltiple",
+    "fisica": "Física",
     "visual": "Visual",
     "auditiva": "Auditiva",
     "psicosocial": "Psicosocial",
     "n/a": "N/A",
 }
+
 
 GENEROS = {
     "hombre": "Hombre",
@@ -23,29 +24,12 @@ TIPOS_CONTRATO = ["Laboral", "Contrato Aprendiz Especial"]
 
 
 def _normalize_key(value: str) -> str:
-    clean = value.strip().lower()
-    return (
-        clean.replace("푿", "a")
-        .replace("퓔", "e")
-        .replace("헴", "i")
-        .replace("형", "o")
-        .replace("푤", "u")
-    )
-
-
-def get_usuarios_reca() -> dict:
-    client = get_supabase_client()
-    try:
-        response = (
-            client.table("usuarios_reca")
-            .select(
-                "cedula_usuario,nombre_usuario,discapacidad_usuario,genero_usuario"
-            )
-            .execute()
-        )
-    except Exception as exc:
-        raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
-
+    clean = " ".join(value.strip().lower().split())
+    clean = clean.replace("múltiple", "multiple").replace("física", "fisica")
+    import unicodedata
+    clean = "".join(ch for ch in unicodedata.normalize("NFKD", clean) if not unicodedata.combining(ch))
+    clean = "".join(ch for ch in clean if ch.isalnum() or ch == "/")
+    return clean
     return {"data": response.data}
 
 

@@ -122,8 +122,8 @@ def _apply_schema(ods_data: dict[str, Any]) -> dict[str, Any]:
 
 def _queue_factura_update(ods_data: dict, reason: str) -> None:
     mes = int(ods_data.get("mes_servicio", 0) or 0)
-    aヵo = int(ods_data.get("aヵo_servicio", 0) or 0)
-    if not mes or not aヵo:
+    ano = int(ods_data.get("año_servicio", 0) or 0)
+    if not mes or not ano:
         return
     orden = str(ods_data.get("orden_clausulada", "")).strip().lower()
     tipo = "clausulada" if orden.startswith("s") or orden == "true" else "no clausulada"
@@ -132,7 +132,7 @@ def _queue_factura_update(ods_data: dict, reason: str) -> None:
         {},
         None,
         reason,
-        meta={"mes": mes, "aヵo": aヵo, "tipo": tipo},
+        meta={"mes": mes, "ano": ano, "tipo": tipo},
     )
 
 

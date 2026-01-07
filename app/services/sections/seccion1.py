@@ -4,16 +4,17 @@ from app.services.errors import ServiceError
 from app.supabase_client import get_supabase_client
 
 _PROGRAMAS = {
-    "inclusion laboral": "InclusiИn Laboral",
-    "inclusiИn laboral": "InclusiИn Laboral",
+    "inclusion laboral": "Inclusión Laboral",
+    "inclusión laboral": "Inclusión Laboral",
     "interprete": "Interprete",
-    "intゼrprete": "Interprete",
+    "intérprete": "Interprete",
 }
+
 
 
 def get_orden_clausulada_opciones() -> dict:
     opciones = [
-        {"id": "si", "label": "Sヴ"},
+        {"id": "si", "label": "Sí"},
         {"id": "no", "label": "No"},
     ]
     return {"data": opciones}
@@ -28,7 +29,7 @@ def get_profesionales(programa: str | None = None) -> dict:
         profesionales = profesionales_query.execute().data or []
 
         interpretes = []
-        if not programa or programa.lower().strip() in {"interprete", "intゼrprete"}:
+        if not programa or programa.lower().strip() in {"interprete", "intérprete"}:
             interpretes = (
                 client.table("interpretes")
                 .select("nombre")

@@ -10,6 +10,19 @@ class UsuarioNuevo(BaseModel):
     discapacidad_usuario: str
     genero_usuario: str
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalizar_textos(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        normalized = {}
+        for key, value in data.items():
+            if isinstance(value, str):
+                normalized[key] = " ".join(value.strip().split())
+            else:
+                normalized[key] = value
+        return normalized
+
 
 class OdsPayload(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -46,6 +59,27 @@ class OdsPayload(BaseModel):
     seguimiento_servicio: str | None = None
     mes_servicio: int
     ano_servicio: int = Field(alias="año_servicio")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalizar_keys_textos(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        normalized = {}
+        alt_ano_keys = {
+            "ano_servicio",
+            "año_servicio",
+            "a?o_servicio",
+            "a�o_servicio",
+            "aÃ±o_servicio",
+        }
+        for key, value in data.items():
+            if key in alt_ano_keys:
+                key = "año_servicio"
+            if isinstance(value, str):
+                value = " ".join(value.strip().split())
+            normalized[key] = value
+        return normalized
 
     @field_validator("fecha_servicio")
     @classmethod

@@ -20,14 +20,14 @@ class CrearFacturaRequest(BaseModel):
 
 class GenerarFacturaRequest(BaseModel):
     mes: int
-    aヵo: int = Field(alias="ano")
+    ano: int = Field(alias="ano")
     tipo: str  # "clausulada" o "no_clausulada"
     nombre_archivo: str | None = None
 
 
 class PreviewFacturaRequest(BaseModel):
     mes: int
-    aヵo: int = Field(alias="ano")
+    ano: int = Field(alias="ano")
     tipo: str
 
 
@@ -106,11 +106,11 @@ def preview_factura(payload: PreviewFacturaRequest) -> dict:
     if tipo not in {"clausulada", "no_clausulada", "no clausulada", "no-clausulada"}:
         raise ServiceError("tipo de factura invalido", status_code=422)
 
-    items = calcular_items(payload.mes, payload.aヵo, payload.tipo)
+    items = calcular_items(payload.mes, payload.ano, payload.tipo)
     try:
         from app.excel_sync import update_factura_sheet
 
-        update_factura_sheet(payload.mes, payload.aヵo, payload.tipo)
+        update_factura_sheet(payload.mes, payload.ano, payload.tipo)
     except Exception:
         pass
     total_sum = sum(item.total for item in items)
@@ -134,7 +134,7 @@ def generar_factura(payload: GenerarFacturaRequest) -> dict:
     if tipo not in {"clausulada", "no_clausulada", "no clausulada", "no-clausulada"}:
         raise ServiceError("tipo de factura invalido", status_code=422)
 
-    items = calcular_items(payload.mes, payload.aヵo, payload.tipo)
+    items = calcular_items(payload.mes, payload.ano, payload.tipo)
     crear_payload = CrearFacturaRequest(tipo=payload.tipo, items=items, nombre_archivo=payload.nombre_archivo)
     return crear_factura(crear_payload)
 

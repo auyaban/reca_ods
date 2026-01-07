@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.1
+- Correcciones de caracteres/acentos en textos de opciones (Sí, Inclusión, Múltiple, Física).
+- Normalización adicional de claves corruptas para `año_servicio`.
+
 ## 2.0.0
 - Nuevo flujo sin backend embebido: la app usa servicios locales para Supabase, Excel y validaciones.
 - Refactor por secciones a `app/services/*` y simplificacion de rutas.

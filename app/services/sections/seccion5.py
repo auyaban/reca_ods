@@ -28,7 +28,7 @@ def confirmar_seccion_5(payload: Seccion5ConfirmarRequest) -> dict:
         "observacion_agencia": (payload.observacion_agencia or "").strip() or None,
         "seguimiento_servicio": (payload.seguimiento_servicio or "").strip() or None,
         "mes_servicio": fecha.month,
-        "aヵo_servicio": fecha.year,
+        "año_servicio": fecha.year,
     }
     return {"data": data}
 
