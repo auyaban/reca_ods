@@ -161,6 +161,8 @@ class ApiClient:
             return self._svc.get_tipos_contrato()
         if path == "/wizard/editar/buscar":
             return self._svc.buscar_entradas(params)
+        if path == "/wizard/monitor/entradas":
+            return self._svc.listar_entradas_monitor(params)
         if path == "/wizard/editar/entrada":
             return self._svc.obtener_entrada(params)
         if path == "/wizard/editar/excel/status":
@@ -531,15 +533,15 @@ class Seccion1Frame(BaseSection):
         orden_labels = [item["label"] for item in orden_data["data"]]
         self.orden_combo.configure(values=orden_labels)
         self.orden_combo._all_values = orden_labels
-        if orden_labels:
-            self.orden_combo.set(orden_labels[0])
 
         prof_data = self.api.get_cached("/wizard/seccion-1/profesionales")
         prof_labels = [item["nombre_profesional"] for item in prof_data["data"]]
         self.prof_combo.configure(values=prof_labels)
         self.prof_combo._all_values = prof_labels
-        if prof_labels:
-            self.prof_combo.set(prof_labels[0])
+
+    def reset_for_new_entry(self) -> None:
+        self.orden_var.set("")
+        self.prof_var.set("")
 
     def get_payload(self) -> dict:
         orden = self.orden_var.get().strip().lower()
@@ -684,9 +686,15 @@ class Seccion2Frame(BaseSection):
         self._nombres = sorted(nombres, key=lambda value: value.lower())
         self.nombre_combo.configure(values=self._nombres)
         self.nombre_combo._all_values = self._nombres
-        if self._nits:
-            self.nit_combo.set(self._nits[0])
-            self._fetch_empresa(self._nits[0])
+
+    def reset_for_new_entry(self) -> None:
+        self.nit_var.set("")
+        self.nombre_var.set("")
+        self.caja_var.set("")
+        self.asesor_var.set("")
+        self.sede_var.set("")
+        self.nit_combo.configure(values=self._nits)
+        self.nombre_combo.configure(values=self._nombres)
 
     def _normalize_nombre(self, nombre: str) -> str:
         return " ".join(nombre.strip().lower().split())
@@ -936,9 +944,28 @@ class Seccion3Frame(BaseSection):
         self._codigos = list(self._tarifas_by_codigo.keys())
         self.codigo_combo.configure(values=self._codigos)
         self.codigo_combo._all_values = self._codigos
-        if self._codigos:
-            self.codigo_combo.set(self._codigos[0])
-            self._fetch_tarifa(self._codigos[0])
+
+    def reset_for_new_entry(self) -> None:
+        self.fecha_var.set("")
+        try:
+            if hasattr(self.fecha_widget, "delete"):
+                self.fecha_widget.delete(0, "end")
+        except tk.TclError:
+            pass
+        self.codigo_var.set("")
+        self.codigo_combo.configure(values=self._codigos)
+        self.referencia_var.set("")
+        self.descripcion_var.set("")
+        self.modalidad_var.set("")
+        self.valor_base_var.set("")
+        self.valor_base_display_var.set("")
+        self.interpretacion_var.set(False)
+        self._toggle_interprete()
+        self.horas_var.set("")
+        self.minutos_var.set("")
+        self.horas_decimal_var.set("")
+        self.total_calculado_var.set("")
+        self._last_codigo = None
 
     def _on_codigo_selected(self, _event) -> None:
         self._fetch_tarifa(self.codigo_var.get())
@@ -1228,6 +1255,10 @@ class Seccion4Frame(BaseSection):
             row.destroy()
         self.rows = []
 
+    def reset_for_new_entry(self) -> None:
+        self.clear_rows()
+        self._add_row()
+
     def set_data(self, data: dict) -> None:
         def split_field(value: str) -> list[str]:
             if not value:
@@ -1435,6 +1466,12 @@ class Seccion5Frame(BaseSection):
         self.seguimiento_text.delete("1.0", tk.END)
         self.seguimiento_text.insert("1.0", data.get("seguimiento_servicio", "") or "")
 
+    def reset_for_new_entry(self) -> None:
+        self.fecha_servicio = ""
+        self.obs_text.delete("1.0", tk.END)
+        self.obs_agencia_text.delete("1.0", tk.END)
+        self.seguimiento_text.delete("1.0", tk.END)
+
 
 class ResumenFrame(ttk.Frame):
     def __init__(self, parent, on_terminar, on_retry_queue=None, show_terminar: bool = True):
@@ -1500,6 +1537,414 @@ class ResumenFrame(ttk.Frame):
                 else:
                     value = format_currency(value)
             var.set(value)
+
+
+class LiveMonitorPanel(tk.Toplevel):
+    COLUMNS = [
+        ("id", "ID", 70),
+        ("nombre_profesional", "PROFESIONAL", 160),
+        ("codigo_servicio", "NUEVO CODIGO", 110),
+        ("nombre_empresa", "EMPRESA", 180),
+        ("nit_empresa", "NIT", 100),
+        ("caja_compensacion", "CCF", 100),
+        ("fecha_servicio", "FECHA", 110),
+        ("referencia_servicio", "REFERENCIA", 120),
+        ("descripcion_servicio", "NOMBRE", 160),
+        ("nombre_usuario", "OFERENTES", 140),
+        ("cedula_usuario", "CEDULA", 110),
+        ("discapacidad_usuario", "TIPO DISCAPACIDAD", 140),
+        ("fecha_ingreso", "FECHA INGRESO", 120),
+        ("valor_virtual", "VALOR SERVICIO VIRTUAL", 140),
+        ("valor_bogota", "VALOR SERVICIO BOGOTA", 140),
+        ("valor_otro", "VALOR FUERA DE BOGOTA", 155),
+        ("todas_modalidades", "TODAS LAS MODALIDADES", 165),
+        ("horas_interprete", "TOTAL HORAS", 100),
+        ("valor_interprete", "VALOR A PAGAR", 130),
+        ("valor_total", "TOTAL VALOR SERVICIO", 155),
+        ("observaciones", "OBSERVACIONES", 140),
+        ("asesor_empresa", "ASESOR", 120),
+        ("sede_empresa", "SEDE", 120),
+        ("modalidad_servicio", "MODALIDAD", 130),
+        ("observacion_agencia", "OBSERVACION AGENCIA", 165),
+    ]
+    EDITABLE_KEYS = {key for key, _title, _width in COLUMNS if key != "id"}
+    DATE_KEYS = {"fecha_servicio", "fecha_ingreso"}
+    MONEY_KEYS = {
+        "valor_virtual",
+        "valor_bogota",
+        "valor_otro",
+        "todas_modalidades",
+        "valor_interprete",
+        "valor_total",
+    }
+    INT_KEYS = {"horas_interprete"}
+
+    def __init__(self, root: tk.Tk, api: ApiClient):
+        super().__init__(root)
+        self.root = root
+        self.api = api
+        self.title("Monitor en tiempo real")
+        self.geometry("1280x640")
+        self.configure(bg="white")
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        self._rows_by_id: dict[str, dict] = {}
+        self._syncing = False
+
+        top = ttk.Frame(self, padding=(10, 8))
+        top.pack(fill=tk.X)
+        ttk.Label(
+            top,
+            text="Monitor editable (doble clic para editar, pendiente en amarillo)",
+            font=("Arial", 11, "bold"),
+        ).pack(side=tk.LEFT)
+
+        self.pending_var = tk.StringVar(value="Cambios pendientes: 0")
+        ttk.Label(top, textvariable=self.pending_var, foreground=COLOR_PURPLE).pack(side=tk.LEFT, padx=(14, 0))
+
+        btns = ttk.Frame(top)
+        btns.pack(side=tk.RIGHT)
+        tk.Button(btns, text="Refrescar", command=self.force_refresh, bg="#2E86C1", fg="white", padx=10, pady=3).pack(
+            side=tk.LEFT, padx=(0, 6)
+        )
+        tk.Button(
+            btns,
+            text="Descartar cambios",
+            command=self.discard_changes,
+            bg=COLOR_PURPLE,
+            fg="white",
+            padx=10,
+            pady=3,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        tk.Button(
+            btns,
+            text="Guardar cambios",
+            command=self.save_changes,
+            bg=COLOR_TEAL,
+            fg="white",
+            padx=10,
+            pady=3,
+        ).pack(side=tk.LEFT)
+
+        table_wrap = ttk.Frame(self)
+        table_wrap.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+
+        self.table_canvas = tk.Canvas(table_wrap, highlightthickness=0, bg="white")
+        self.table_x_scroll = ttk.Scrollbar(table_wrap, orient="horizontal", command=self.table_canvas.xview)
+        self.table_y_scroll = ttk.Scrollbar(table_wrap, orient="vertical", command=self.table_canvas.yview)
+        self.table_canvas.configure(
+            xscrollcommand=self.table_x_scroll.set,
+            yscrollcommand=self.table_y_scroll.set,
+        )
+        self.table_canvas.grid(row=0, column=0, sticky="nsew")
+        self.table_y_scroll.grid(row=0, column=1, sticky="ns")
+        self.table_x_scroll.grid(row=1, column=0, sticky="ew")
+        table_wrap.grid_rowconfigure(0, weight=1)
+        table_wrap.grid_columnconfigure(0, weight=1)
+
+        self.table_content = ttk.Frame(self.table_canvas)
+        self.table_canvas.create_window((0, 0), window=self.table_content, anchor="nw")
+        self.table_content.bind(
+            "<Configure>",
+            lambda _e: self.table_canvas.configure(scrollregion=self.table_canvas.bbox("all")),
+        )
+
+        header = ttk.Frame(self.table_content)
+        for col, title, width in self.COLUMNS:
+            ttk.Label(header, text=title, width=max(8, int(width / 10)), anchor="w").pack(side=tk.LEFT, padx=(0, 4))
+        header.pack(fill=tk.X)
+
+        self.rows_container = ttk.Frame(self.table_content)
+        self.rows_container.pack(fill=tk.X, expand=True)
+
+        self._initial_load()
+
+    def _on_close(self) -> None:
+        self.destroy()
+
+    def _initial_load(self) -> None:
+        self.force_refresh()
+
+    def _fetch_rows(self) -> list[dict]:
+        data = self.api.get("/wizard/monitor/entradas", params={"limit": 200})
+        return list(data.get("data", []) or [])
+
+    def force_refresh(self, silent: bool = False) -> None:
+        if self._syncing:
+            return
+        self._syncing = True
+        try:
+            rows = self._fetch_rows()
+            self._merge_rows(rows)
+            self._update_pending_label()
+        except Exception as exc:
+            if not silent:
+                messagebox.showerror("Monitor", f"No se pudo refrescar: {exc}")
+        finally:
+            self._syncing = False
+
+    def _add_row_widget(self, data: dict) -> None:
+        row_id = str(data.get("id", "")).strip()
+        if not row_id:
+            return
+        row_frame = ttk.Frame(self.rows_container)
+        row_frame.pack(fill=tk.X, pady=1)
+
+        row_state = {
+            "id": row_id,
+            "frame": row_frame,
+            "orig": {},
+            "vars": {},
+            "entries": {},
+            "dirty": set(),
+            "suspend_trace": False,
+        }
+        self._rows_by_id[row_id] = row_state
+
+        for key, _title, width in self.COLUMNS:
+            if key == "id":
+                lbl = ttk.Label(row_frame, text=row_id, width=max(8, int(width / 10)), anchor="w")
+                lbl.pack(side=tk.LEFT, padx=(0, 4))
+                continue
+            var = tk.StringVar()
+            entry = tk.Entry(row_frame, textvariable=var, width=max(8, int(width / 10)), relief="solid", bd=1)
+            entry.pack(side=tk.LEFT, padx=(0, 4))
+            entry.configure(state="readonly", readonlybackground="white")
+            if key in self.EDITABLE_KEYS:
+                entry.bind("<Double-1>", lambda _e, k=key, st=row_state: self._open_cell_editor(st, k))
+            row_state["vars"][key] = var
+            row_state["entries"][key] = entry
+
+            def _on_var_change(*_args, key_name=key, state=row_state):
+                if state.get("suspend_trace"):
+                    return
+                self._mark_dirty_state(state, key_name)
+
+            var.trace_add("write", _on_var_change)
+
+        self._set_row_data(row_state, data, set_as_original=True)
+
+    def _set_row_data(self, row_state: dict, data: dict, set_as_original: bool = False) -> None:
+        row_state["suspend_trace"] = True
+        for key, _title, _width in self.COLUMNS:
+            if key == "id":
+                continue
+            value = self._display_value(key, data.get(key))
+            if key in row_state["vars"]:
+                row_state["vars"][key].set(value)
+            if set_as_original:
+                row_state["orig"][key] = value
+        row_state["suspend_trace"] = False
+        if set_as_original:
+            row_state["dirty"].clear()
+            self._refresh_row_colors(row_state)
+
+    def _mark_dirty_state(self, row_state: dict, key: str) -> None:
+        if key not in row_state["vars"]:
+            return
+        current = row_state["vars"][key].get()
+        original = row_state["orig"].get(key, "")
+        if current != original:
+            row_state["dirty"].add(key)
+        else:
+            row_state["dirty"].discard(key)
+        self._refresh_row_colors(row_state)
+        self._update_pending_label()
+
+    def _refresh_row_colors(self, row_state: dict) -> None:
+        for key, entry in row_state["entries"].items():
+            try:
+                if key in row_state["dirty"]:
+                    entry.configure(readonlybackground="#FFF59D")
+                else:
+                    entry.configure(readonlybackground="white")
+            except tk.TclError:
+                continue
+
+    def _display_value(self, key: str, value) -> str:
+        if value in (None, ""):
+            return ""
+        if key in self.MONEY_KEYS:
+            try:
+                return format_currency(float(value))
+            except Exception:
+                return str(value)
+        if key in self.INT_KEYS:
+            try:
+                return str(int(float(value)))
+            except Exception:
+                return str(value)
+        return str(value)
+
+    def _parse_money(self, text: str) -> float:
+        clean = str(text).replace("$", "").replace(",", "").strip()
+        if not clean:
+            return 0.0
+        return float(clean)
+
+    def _parse_for_save(self, key: str, text: str):
+        if key in self.MONEY_KEYS:
+            return self._parse_money(text)
+        if key in self.INT_KEYS:
+            clean = str(text).strip()
+            if not clean:
+                return 0
+            return int(float(clean))
+        return text.strip()
+
+    def _open_cell_editor(self, row_state: dict, key: str) -> None:
+        if key not in self.EDITABLE_KEYS:
+            return
+        current = row_state["vars"][key].get()
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Editar {key}")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        frame = ttk.Frame(dialog, padding=12)
+        frame.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(frame, text=f"Campo: {key}", font=("Arial", 10, "bold")).pack(anchor="w", pady=(0, 8))
+
+        editor_var = tk.StringVar(value=current)
+        editor_widget = None
+        if key in self.DATE_KEYS:
+            DateEntry = _get_date_entry()
+            if DateEntry:
+                editor_widget = DateEntry(frame, date_pattern="yyyy-mm-dd", textvariable=editor_var, width=18)
+            else:
+                editor_widget = ttk.Entry(frame, textvariable=editor_var, width=28)
+        else:
+            editor_widget = ttk.Entry(frame, textvariable=editor_var, width=36)
+        editor_widget.pack(anchor="w")
+
+        def _apply():
+            raw = editor_var.get().strip()
+            if key in self.DATE_KEYS and raw:
+                if not re.match(r"^\d{4}-\d{2}-\d{2}$", raw):
+                    messagebox.showerror("Monitor", "La fecha debe estar en formato YYYY-MM-DD.")
+                    return
+            if key in self.MONEY_KEYS and raw:
+                try:
+                    raw = self._display_value(key, self._parse_money(raw))
+                except Exception:
+                    messagebox.showerror("Monitor", "Valor monetario invalido.")
+                    return
+            if key in self.INT_KEYS and raw:
+                try:
+                    raw = str(int(float(raw)))
+                except Exception:
+                    messagebox.showerror("Monitor", "El valor debe ser numerico entero.")
+                    return
+            row_state["vars"][key].set(raw)
+            dialog.destroy()
+
+        btns = ttk.Frame(frame)
+        btns.pack(anchor="e", pady=(10, 0))
+        tk.Button(btns, text="Cancelar", command=dialog.destroy, bg=COLOR_PURPLE, fg="white", padx=8, pady=3).pack(
+            side=tk.RIGHT, padx=(8, 0)
+        )
+        tk.Button(btns, text="Aplicar", command=_apply, bg=COLOR_TEAL, fg="white", padx=8, pady=3).pack(side=tk.RIGHT)
+
+    def _merge_rows(self, rows: list[dict]) -> None:
+        seen_ids = set()
+        for row in rows:
+            row_id = str(row.get("id", "")).strip()
+            if not row_id:
+                continue
+            seen_ids.add(row_id)
+            if row_id not in self._rows_by_id:
+                self._add_row_widget(row)
+                continue
+            state = self._rows_by_id[row_id]
+            for key, _title, _width in self.COLUMNS:
+                if key == "id" or key not in state["vars"]:
+                    continue
+                incoming = self._display_value(key, row.get(key))
+                if key in state["dirty"]:
+                    continue
+                state["orig"][key] = incoming
+                state["suspend_trace"] = True
+                state["vars"][key].set(incoming)
+                state["suspend_trace"] = False
+            self._refresh_row_colors(state)
+
+        existing_ids = list(self._rows_by_id.keys())
+        for row_id in existing_ids:
+            if row_id in seen_ids:
+                continue
+            state = self._rows_by_id[row_id]
+            if state["dirty"]:
+                continue
+            try:
+                state["frame"].destroy()
+            except tk.TclError:
+                pass
+            self._rows_by_id.pop(row_id, None)
+
+    def _update_pending_label(self) -> None:
+        dirty_cells = 0
+        dirty_rows = 0
+        for state in self._rows_by_id.values():
+            if state["dirty"]:
+                dirty_rows += 1
+                dirty_cells += len(state["dirty"])
+        self.pending_var.set(f"Cambios pendientes: {dirty_cells} celda(s) en {dirty_rows} fila(s)")
+
+    def discard_changes(self) -> None:
+        for state in self._rows_by_id.values():
+            if not state["dirty"]:
+                continue
+            for key in list(state["dirty"]):
+                original = state["orig"].get(key, "")
+                state["vars"][key].set(original)
+            state["dirty"].clear()
+            self._refresh_row_colors(state)
+        self._update_pending_label()
+
+    def has_pending_changes(self) -> bool:
+        return any(state["dirty"] for state in self._rows_by_id.values())
+
+    def save_changes(self) -> None:
+        pending = [state for state in self._rows_by_id.values() if state["dirty"]]
+        if not pending:
+            messagebox.showinfo("Monitor", "No hay cambios pendientes.")
+            return
+
+        ok = 0
+        errors = []
+        for state in pending:
+            row_id = state["id"]
+            datos = {}
+            for key in state["dirty"]:
+                try:
+                    datos[key] = self._parse_for_save(key, state["vars"][key].get())
+                except Exception:
+                    errors.append(f"ID {row_id}: valor invalido en {key}")
+                    continue
+            if not datos:
+                continue
+            payload = {"filtro": {"id": row_id}, "datos": datos}
+            try:
+                self.api.post("/wizard/editar/actualizar", payload, timeout=120)
+                for key in list(state["dirty"]):
+                    state["orig"][key] = state["vars"][key].get()
+                state["dirty"].clear()
+                self._refresh_row_colors(state)
+                ok += 1
+            except Exception as exc:
+                errors.append(f"ID {row_id}: {exc}")
+
+        self._update_pending_label()
+        if errors:
+            preview = "\n".join(errors[:5])
+            more = "\n..." if len(errors) > 5 else ""
+            messagebox.showwarning(
+                "Monitor",
+                f"Guardadas {ok} fila(s). Fallaron {len(errors)}.\n{preview}{more}",
+            )
+        else:
+            messagebox.showinfo("Monitor", f"Guardadas {ok} fila(s) correctamente.")
 class WizardApp:
     def __init__(self, root: tk.Tk, api: ApiClient):
         self.root = root
@@ -1509,6 +1954,7 @@ class WizardApp:
         self.edit_entry_id: str | None = None
         self.edit_original_entry: dict | None = None
         self._version_var = tk.StringVar()
+        self.monitor_panel: LiveMonitorPanel | None = None
 
         self.root.title("SISTEMA DE GESTIÓN ODS - RECA")
         self._set_window_size()
@@ -1646,6 +2092,34 @@ class WizardApp:
             pady=8,
             width=28,
         ).pack(pady=8)
+
+        tk.Button(
+            self.main_frame,
+            text="Abrir monitor en tiempo real",
+            command=self._open_live_monitor,
+            bg="#5D6D7E",
+            fg="white",
+            font=("Arial", 12, "bold"),
+            padx=16,
+            pady=8,
+            width=28,
+        ).pack(pady=8)
+
+    def _open_live_monitor(self) -> None:
+        if self.monitor_panel and self.monitor_panel.winfo_exists():
+            self.monitor_panel.lift()
+            self.monitor_panel.focus_force()
+            return
+        self.monitor_panel = LiveMonitorPanel(self.root, self.api)
+
+    def _notify_monitor_refresh(self) -> None:
+        panel = self.monitor_panel
+        if not panel or not panel.winfo_exists():
+            return
+        try:
+            panel.force_refresh(silent=True)
+        except Exception:
+            return
 
     def _rebuild_excel_from_supabase(self) -> None:
         confirm = messagebox.askyesno(
@@ -2044,6 +2518,7 @@ class WizardApp:
 
     def start_new_service(self) -> None:
         try:
+            self.state.reset_service()
             for child in self.main_frame.winfo_children():
                 child.destroy()
 
@@ -2086,6 +2561,7 @@ class WizardApp:
             self.resumen.grid(row=6, column=0, sticky="ew", pady=8)
 
             self._load_section_data()
+            self._reset_for_new_entry()
             self._lock_sections()
             self._bind_summary_updates()
             self._refresh_summary()
@@ -2432,6 +2908,13 @@ class WizardApp:
         self.seccion3.load_data()
         self.seccion4.load_data()
 
+    def _reset_for_new_entry(self) -> None:
+        self.seccion1.reset_for_new_entry()
+        self.seccion2.reset_for_new_entry()
+        self.seccion3.reset_for_new_entry()
+        self.seccion4.reset_for_new_entry()
+        self.seccion5.reset_for_new_entry()
+
     def _lock_sections(self) -> None:
         self.seccion1.set_enabled(True)
         self.seccion2.set_enabled(True)
@@ -2601,6 +3084,7 @@ class WizardApp:
                 "Aviso",
                 f"No se pudo actualizar el Excel: {response.get('excel_error')}",
             )
+        self._notify_monitor_refresh()
         self.show_initial_screen()
 
         add_another = messagebox.askyesno(
@@ -2680,6 +3164,7 @@ class WizardApp:
                 "Aviso",
                 f"No se pudo actualizar el Excel: {response.get('excel_error')}",
             )
+        self._notify_monitor_refresh()
 
     def eliminar_entrada(self) -> None:
         if not self.edit_entry_id:
@@ -2719,6 +3204,7 @@ class WizardApp:
                 "Aviso",
                 f"No se pudo actualizar el Excel: {response.get('excel_error')}",
             )
+        self._notify_monitor_refresh()
         self.show_initial_screen()
 
 

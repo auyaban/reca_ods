@@ -112,6 +112,11 @@ def buscar_entradas(params: dict) -> dict:
     return editar_entrada.buscar_entradas(**params)
 
 
+def listar_entradas_monitor(params: dict | None = None) -> dict:
+    params = params or {}
+    return editar_entrada.listar_entradas_monitor(limit=params.get("limit", 200))
+
+
 def obtener_entrada(params: dict) -> dict:
     return editar_entrada.obtener_entrada(**params)
 

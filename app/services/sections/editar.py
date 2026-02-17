@@ -195,6 +195,32 @@ def buscar_entradas(
     return {"data": response.data}
 
 
+def listar_entradas_monitor(limit: int = 200):
+    client = get_supabase_client()
+    try:
+        safe_limit = max(1, min(int(limit), 500))
+    except Exception:
+        safe_limit = 200
+    try:
+        response = (
+            client.table("ods")
+            .select(
+                "id,nombre_profesional,codigo_servicio,nombre_empresa,nit_empresa,"
+                "caja_compensacion,fecha_servicio,referencia_servicio,descripcion_servicio,"
+                "nombre_usuario,cedula_usuario,discapacidad_usuario,fecha_ingreso,"
+                "valor_virtual,valor_bogota,valor_otro,todas_modalidades,horas_interprete,"
+                "valor_interprete,valor_total,observaciones,asesor_empresa,sede_empresa,"
+                "modalidad_servicio,observacion_agencia"
+            )
+            .order("id", desc=True)
+            .limit(safe_limit)
+            .execute()
+        )
+    except Exception as exc:
+        raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
+    return {"data": response.data}
+
+
 def obtener_entrada(
     id: str | None = None,
     nombre_profesional: str | None = None,
