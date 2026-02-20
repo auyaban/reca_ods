@@ -2241,6 +2241,9 @@ class WizardApp:
         self._summary_after_id: str | None = None
         self._version_var = tk.StringVar()
         self.monitor_panel: LiveMonitorPanel | None = None
+        self._screen_w = self.root.winfo_screenwidth()
+        self._screen_h = self.root.winfo_screenheight()
+        self._ui_scale = max(0.78, min(1.0, self._screen_h / 900.0))
 
         self.root.title("SISTEMA DE GESTIÓN ODS - RECA")
         self._set_window_size()
@@ -2262,14 +2265,14 @@ class WizardApp:
         tk.Label(
             title_frame,
             text="SISTEMA DE GESTION ODS",
-            font=("Arial", 20, "bold"),
+            font=("Arial", self._scaled_font(20, 16), "bold"),
             bg=COLOR_PURPLE,
             fg="white",
         ).pack()
         tk.Label(
             title_frame,
             text="RECA",
-            font=("Arial", 20, "bold"),
+            font=("Arial", self._scaled_font(20, 16), "bold"),
             bg=COLOR_PURPLE,
             fg="white",
         ).pack()
@@ -2297,7 +2300,7 @@ class WizardApp:
             command=self._open_update_page,
             bg="#4B8BBE",
             fg="white",
-            font=("Arial", 10, "bold"),
+            font=("Arial", self._scaled_font(10, 9), "bold"),
             padx=10,
             pady=4,
         ).pack(anchor="w", pady=(4, 0))
@@ -2312,72 +2315,85 @@ class WizardApp:
         for child in self.main_frame.winfo_children():
             child.destroy()
 
+        scroll = ScrollableFrame(self.main_frame)
+        scroll.pack(fill=tk.BOTH, expand=True)
+
+        content = ttk.Frame(scroll.content)
+        content.pack(fill=tk.BOTH, expand=True)
+        content.grid_columnconfigure(0, weight=1)
+
+        button_col = ttk.Frame(content)
+        button_col.grid(row=0, column=0, pady=8)
+
         ttk.Label(
-            self.main_frame,
+            button_col,
             text="Seleccione una opcion para iniciar",
-            font=("Arial", 14, "bold"),
+            font=("Arial", self._scaled_font(14, 11), "bold"),
             foreground=COLOR_PURPLE,
         ).pack(pady=20)
 
         tk.Button(
-            self.main_frame,
+            button_col,
             text="Crear nueva entrada",
             command=self.start_new_service,
             bg=COLOR_TEAL,
             fg="white",
-            font=("Arial", 12, "bold"),
+            font=("Arial", self._scaled_font(12, 10), "bold"),
             padx=16,
             pady=8,
             width=28,
         ).pack(pady=8)
 
         tk.Button(
-            self.main_frame,
+            button_col,
             text="Crear factura",
             command=self._open_factura_dialog,
             bg="#4B8BBE",
             fg="white",
-            font=("Arial", 12, "bold"),
+            font=("Arial", self._scaled_font(12, 10), "bold"),
             padx=16,
             pady=8,
             width=28,
         ).pack(pady=8)
 
         tk.Button(
-            self.main_frame,
+            button_col,
             text="Reconstruir Excel desde Supabase",
             command=self._rebuild_excel_from_supabase,
             bg="#C0392B",
             fg="white",
-            font=("Arial", 12, "bold"),
+            font=("Arial", self._scaled_font(12, 10), "bold"),
             padx=16,
             pady=8,
             width=28,
         ).pack(pady=8)
 
         tk.Button(
-            self.main_frame,
+            button_col,
             text="Actualizar Base de Datos",
             command=self._refresh_cache_from_supabase,
             bg="#2E86C1",
             fg="white",
-            font=("Arial", 12, "bold"),
+            font=("Arial", self._scaled_font(12, 10), "bold"),
             padx=16,
             pady=8,
             width=28,
         ).pack(pady=8)
 
         tk.Button(
-            self.main_frame,
+            button_col,
             text="Abrir monitor en tiempo real",
             command=self._open_live_monitor,
             bg="#5D6D7E",
             fg="white",
-            font=("Arial", 12, "bold"),
+            font=("Arial", self._scaled_font(12, 10), "bold"),
             padx=16,
             pady=8,
             width=28,
         ).pack(pady=8)
+
+    def _scaled_font(self, base_size: int, min_size: int = 9) -> int:
+        return max(min_size, int(round(base_size * self._ui_scale)))
 
     def _open_live_monitor(self) -> None:
         if self.monitor_panel and self.monitor_panel.winfo_exists():
@@ -2541,14 +2557,13 @@ class WizardApp:
         self.root.update_idletasks()
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
-        width = max(1100, int(screen_w * 0.9))
-        height = max(800, int(screen_h * 0.9))
-        self.root.geometry(f"{width}x{height}+0+0")
-        if sys.platform.startswith("win"):
-            try:
-                self.root.state("zoomed")
-            except tk.TclError:
-                pass
+        # Keep window inside the visible work area for low-resolution displays.
+        width = min(max(980, int(screen_w * 0.9)), max(900, screen_w - 20))
+        height = min(max(620, int(screen_h * 0.9)), max(560, screen_h - 80))
+        x = max(0, int((screen_w - width) / 2))
+        y = max(0, int((screen_h - height) / 2))
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
+        self.root.minsize(900, 560)
 
     def start_new_service(self) -> None:
         try:
@@ -3084,8 +3099,10 @@ def main() -> None:
         time.sleep(1.0 - elapsed)
     splash.close()
     root.deiconify()
+    screen_h = root.winfo_screenheight()
+    base_font_size = 13 if screen_h >= 900 else 12 if screen_h >= 800 else 11
     default_font = tkfont.nametofont("TkDefaultFont")
-    default_font.configure(size=13)
+    default_font.configure(size=base_font_size)
     root.option_add("*Font", default_font)
     style = ttk.Style(root)
     try:
