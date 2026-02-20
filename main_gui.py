@@ -4,7 +4,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -446,7 +446,9 @@ def set_widgets_state(container: tk.Widget, state: str) -> None:
         set_widgets_state(child, state)
 
 
-def configure_combobox(combo: ttk.Combobox, values: list[str] | None = None) -> None:
+def configure_combobox(
+    combo: ttk.Combobox, values: list[str] | None = None, allow_typing: bool = False
+) -> None:
     if values is not None:
         combo._all_values = list(values)
 
@@ -459,7 +461,12 @@ def configure_combobox(combo: ttk.Combobox, values: list[str] | None = None) -> 
             filtered = [v for v in all_values if current in str(v).lower()]
             combo.configure(values=filtered)
 
-    combo.bind("<KeyRelease>", on_keyrelease, add="+")
+    if allow_typing:
+        combo.bind("<KeyRelease>", on_keyrelease, add="+")
+
+    combo.bind("<MouseWheel>", lambda _e: "break", add="+")
+    combo.bind("<Button-4>", lambda _e: "break", add="+")
+    combo.bind("<Button-5>", lambda _e: "break", add="+")
 
 
 def format_currency(value) -> str:
@@ -510,12 +517,12 @@ class Seccion1Frame(BaseSection):
         self.orden_var = tk.StringVar()
         self.prof_var = tk.StringVar()
         ttk.Label(self.body, text="Orden Clausulada").grid(row=0, column=0, sticky="w")
-        self.orden_combo = ttk.Combobox(self.body, textvariable=self.orden_var, state="normal", width=20)
+        self.orden_combo = ttk.Combobox(self.body, textvariable=self.orden_var, state="readonly", width=20)
         self.orden_combo.grid(row=0, column=1, sticky="w")
         configure_combobox(self.orden_combo)
 
         ttk.Label(self.body, text="Profesional").grid(row=1, column=0, sticky="w")
-        self.prof_combo = ttk.Combobox(self.body, textvariable=self.prof_var, state="normal", width=40)
+        self.prof_combo = ttk.Combobox(self.body, textvariable=self.prof_var, state="readonly", width=40)
         self.prof_combo.grid(row=1, column=1, sticky="w")
         configure_combobox(self.prof_combo)
         tk.Button(
@@ -573,7 +580,7 @@ class Seccion1Frame(BaseSection):
             dialog,
             textvariable=programa_var,
             values=["Inclusión Laboral", "Interprete"],
-            state="normal",
+            state="readonly",
             width=20,
         )
         programa_combo.grid(row=1, column=1, padx=10, pady=8, sticky="w")
@@ -634,19 +641,19 @@ class Seccion2Frame(BaseSection):
         self.nit_combo = ttk.Combobox(self.body, textvariable=self.nit_var, state="normal", width=30)
         self.nit_combo.grid(row=0, column=1, sticky="w")
         self.nit_combo.bind("<<ComboboxSelected>>", self._on_nit_selected)
-        self.nit_combo.bind("<KeyRelease>", self._on_nit_typed)
-        self.nit_combo.bind("<Return>", self._on_nit_confirm)
-        self.nit_combo.bind("<FocusOut>", self._on_nit_confirm)
-        configure_combobox(self.nit_combo)
+        self.nit_combo.bind("<KeyRelease>", self._on_nit_typed, add="+")
+        self.nit_combo.bind("<Return>", self._on_nit_confirm, add="+")
+        self.nit_combo.bind("<FocusOut>", self._on_nit_confirm, add="+")
+        configure_combobox(self.nit_combo, allow_typing=True)
 
         ttk.Label(self.body, text="Nombre Empresa").grid(row=1, column=0, sticky="w")
         self.nombre_combo = ttk.Combobox(self.body, textvariable=self.nombre_var, state="normal", width=50)
         self.nombre_combo.grid(row=1, column=1, sticky="w")
         self.nombre_combo.bind("<<ComboboxSelected>>", self._on_nombre_selected)
-        self.nombre_combo.bind("<KeyRelease>", self._on_nombre_typed)
-        self.nombre_combo.bind("<Return>", self._on_nombre_confirm)
-        self.nombre_combo.bind("<FocusOut>", self._on_nombre_confirm)
-        configure_combobox(self.nombre_combo)
+        self.nombre_combo.bind("<KeyRelease>", self._on_nombre_typed, add="+")
+        self.nombre_combo.bind("<Return>", self._on_nombre_confirm, add="+")
+        self.nombre_combo.bind("<FocusOut>", self._on_nombre_confirm, add="+")
+        configure_combobox(self.nombre_combo, allow_typing=True)
 
         ttk.Label(self.body, text="Caja Compensacion").grid(row=2, column=0, sticky="w")
         ttk.Entry(self.body, textvariable=self.caja_var, state="readonly", width=40).grid(
@@ -712,8 +719,24 @@ class Seccion2Frame(BaseSection):
 
     def _on_nit_confirm(self, _event) -> None:
         nit = self.nit_var.get().strip()
-        if nit:
-            self._fetch_empresa(nit)
+        if not nit:
+            self.nit_combo.configure(values=self._nits)
+            return
+        selected_nit = nit if nit in self._empresas_by_nit else ""
+        if not selected_nit:
+            candidates = [item for item in self._nits if nit in item]
+            if candidates:
+                selected_nit = candidates[0]
+        if not selected_nit:
+            self.nit_var.set("")
+            self.nombre_var.set("")
+            self.caja_var.set("")
+            self.asesor_var.set("")
+            self.sede_var.set("")
+            self.nit_combo.configure(values=self._nits)
+            return
+        self.nit_var.set(selected_nit)
+        self._fetch_empresa(selected_nit)
 
     def _on_nombre_selected(self, _event) -> None:
         self._fetch_empresa_por_nombre(self.nombre_var.get())
@@ -728,8 +751,25 @@ class Seccion2Frame(BaseSection):
 
     def _on_nombre_confirm(self, _event) -> None:
         nombre = self.nombre_var.get().strip()
-        if nombre:
-            self._fetch_empresa_por_nombre(nombre)
+        if not nombre:
+            self.nombre_combo.configure(values=self._nombres)
+            return
+        key = self._normalize_nombre(nombre)
+        matched = next((item for item in self._nombres if self._normalize_nombre(item) == key), "")
+        if not matched:
+            candidates = [item for item in self._nombres if key in self._normalize_nombre(item)]
+            if candidates:
+                matched = candidates[0]
+        if not matched:
+            self.nombre_var.set("")
+            self.nit_var.set("")
+            self.caja_var.set("")
+            self.asesor_var.set("")
+            self.sede_var.set("")
+            self.nombre_combo.configure(values=self._nombres)
+            return
+        self.nombre_var.set(matched)
+        self._fetch_empresa_por_nombre(matched)
 
     def _fetch_empresa(self, nit: str) -> None:
         if not nit:
@@ -835,6 +875,7 @@ class Seccion3Frame(BaseSection):
         self._codigos: list[str] = []
         self._tarifas_by_codigo: dict[str, dict] = {}
         self._last_codigo: str | None = None
+        self._codigos_popup: tk.Toplevel | None = None
 
         ttk.Label(self.body, text="Fecha Servicio (YYYY-MM-DD)").grid(row=0, column=0, sticky="w")
         DateEntry = _get_date_entry()
@@ -854,10 +895,19 @@ class Seccion3Frame(BaseSection):
         self.codigo_combo = ttk.Combobox(self.body, textvariable=self.codigo_var, state="normal", width=20)
         self.codigo_combo.grid(row=1, column=1, sticky="w")
         self.codigo_combo.bind("<<ComboboxSelected>>", self._on_codigo_selected)
-        self.codigo_combo.bind("<KeyRelease>", self._on_codigo_typed)
-        self.codigo_combo.bind("<Return>", self._on_codigo_confirm)
-        self.codigo_combo.bind("<FocusOut>", self._on_codigo_confirm)
-        configure_combobox(self.codigo_combo)
+        self.codigo_combo.bind("<KeyRelease>", self._on_codigo_typed, add="+")
+        self.codigo_combo.bind("<Return>", self._on_codigo_confirm, add="+")
+        self.codigo_combo.bind("<FocusOut>", self._on_codigo_confirm, add="+")
+        configure_combobox(self.codigo_combo, allow_typing=True)
+        tk.Button(
+            self.body,
+            text="Lista de codigos",
+            command=self._open_codigos_popup,
+            bg="#2E86C1",
+            fg="white",
+            padx=8,
+            pady=2,
+        ).grid(row=1, column=2, sticky="w", padx=(8, 0))
 
         ttk.Label(self.body, text="Referencia").grid(row=2, column=0, sticky="w")
         ttk.Entry(self.body, textvariable=self.referencia_var, state="readonly", width=40).grid(
@@ -980,8 +1030,26 @@ class Seccion3Frame(BaseSection):
 
     def _on_codigo_confirm(self, _event) -> None:
         codigo = self.codigo_var.get().strip()
-        if codigo:
-            self._fetch_tarifa(codigo)
+        if not codigo:
+            self.codigo_combo.configure(values=self._codigos)
+            return
+        selected_codigo = codigo if codigo in self._tarifas_by_codigo else ""
+        if not selected_codigo:
+            candidates = [item for item in self._codigos if codigo in item]
+            if candidates:
+                selected_codigo = candidates[0]
+        if not selected_codigo:
+            self.codigo_var.set("")
+            self.referencia_var.set("")
+            self.descripcion_var.set("")
+            self.modalidad_var.set("")
+            self.valor_base_var.set("")
+            self.valor_base_display_var.set("")
+            self._last_codigo = None
+            self.codigo_combo.configure(values=self._codigos)
+            return
+        self.codigo_var.set(selected_codigo)
+        self._fetch_tarifa(selected_codigo)
 
     def _fetch_tarifa(self, codigo: str) -> None:
         codigo = str(codigo).strip()
@@ -1002,6 +1070,63 @@ class Seccion3Frame(BaseSection):
         self.valor_base_display_var.set(format_currency(valor_base))
         self._last_codigo = codigo
         self.total_calculado_var.set("")
+
+    def _open_codigos_popup(self) -> None:
+        if self._codigos_popup and self._codigos_popup.winfo_exists():
+            self._codigos_popup.lift()
+            self._codigos_popup.focus_force()
+            return
+
+        rows = []
+        for codigo, item in self._tarifas_by_codigo.items():
+            rows.append((str(codigo), str(item.get("descripcion_servicio", "") or "")))
+        def _codigo_sort_key(value: str):
+            txt = str(value or "").strip()
+            nums = re.findall(r"\d+", txt)
+            if nums:
+                return (0, int(nums[0]), txt.lower())
+            return (1, txt.lower())
+
+        rows.sort(key=lambda r: _codigo_sort_key(r[0]))
+
+        popup = tk.Toplevel(self)
+        popup.title("Lista de codigos")
+        popup.geometry("760x440")
+        popup.transient(self.winfo_toplevel())
+        popup.configure(bg="white")
+        self._codigos_popup = popup
+        popup.protocol("WM_DELETE_WINDOW", self._close_codigos_popup)
+
+        wrap = ttk.Frame(popup, padding=10)
+        wrap.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(wrap, text="Tarifas disponibles", font=("Arial", 11, "bold")).pack(anchor="w", pady=(0, 8))
+
+        table_wrap = ttk.Frame(wrap)
+        table_wrap.pack(fill=tk.BOTH, expand=True)
+        table_wrap.grid_rowconfigure(0, weight=1)
+        table_wrap.grid_columnconfigure(0, weight=1)
+
+        tree = ttk.Treeview(table_wrap, columns=("codigo", "descripcion"), show="headings")
+        tree.heading("codigo", text="Codigo servicio")
+        tree.heading("descripcion", text="Descripcion servicio")
+        tree.column("codigo", width=170, anchor="w")
+        tree.column("descripcion", width=520, anchor="w")
+
+        yscroll = ttk.Scrollbar(table_wrap, orient="vertical", command=tree.yview)
+        xscroll = ttk.Scrollbar(table_wrap, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+
+        tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+
+        for codigo, descripcion in rows:
+            tree.insert("", "end", values=(codigo, descripcion))
+
+    def _close_codigos_popup(self) -> None:
+        if self._codigos_popup and self._codigos_popup.winfo_exists():
+            self._codigos_popup.destroy()
+        self._codigos_popup = None
 
     def _calcular_interprete(self) -> None:
         base = float(self.valor_base_var.get() or 0)
@@ -1076,10 +1201,16 @@ class PersonaRow(ttk.Frame):
         self.tipo_contrato_var = tk.StringVar()
         self.cargo_var = tk.StringVar()
 
+        self._cedulas = [str(c) for c in (cedulas or [])]
+
         ttk.Label(self, text="Cedula").grid(row=0, column=0, sticky="w")
-        self.cedula_combo = ttk.Combobox(self, textvariable=self.cedula_var, values=cedulas, width=14)
+        self.cedula_combo = ttk.Combobox(
+            self, textvariable=self.cedula_var, values=cedulas, width=14, state="normal"
+        )
         self.cedula_combo.grid(row=0, column=1, sticky="w")
-        configure_combobox(self.cedula_combo, cedulas)
+        configure_combobox(self.cedula_combo, cedulas, allow_typing=True)
+        self.cedula_combo.bind("<Return>", self._on_cedula_confirm, add="+")
+        self.cedula_combo.bind("<FocusOut>", self._on_cedula_confirm, add="+")
         tk.Button(self, text="Buscar", command=lambda: on_search(self)).grid(
             row=0, column=2, sticky="w", padx=(6, 0)
         )
@@ -1126,7 +1257,7 @@ class PersonaRow(ttk.Frame):
 
         ttk.Label(self, text="Tipo contrato").grid(row=2, column=3, sticky="w", padx=(10, 0))
         self.contrato_combo = ttk.Combobox(
-            self, textvariable=self.tipo_contrato_var, values=contratos, width=14, state="normal"
+            self, textvariable=self.tipo_contrato_var, values=contratos, width=14, state="readonly"
         )
         self.contrato_combo.grid(row=2, column=4, sticky="w")
         configure_combobox(self.contrato_combo, contratos)
@@ -1136,6 +1267,22 @@ class PersonaRow(ttk.Frame):
 
     def _remove_self(self) -> None:
         self.destroy()
+
+    def _on_cedula_confirm(self, _event) -> None:
+        value = self.cedula_var.get().strip()
+        if not value:
+            self.cedula_combo.configure(values=self._cedulas)
+            return
+        selected = value if value in self._cedulas else ""
+        if not selected:
+            candidates = [item for item in self._cedulas if value in item]
+            if candidates:
+                selected = candidates[0]
+        if not selected:
+            self.cedula_var.set("")
+            self.cedula_combo.configure(values=self._cedulas)
+            return
+        self.cedula_var.set(selected)
 
     def set_highlight(self, enabled: bool) -> None:
         color = "#FFF2CC" if enabled else "white"
@@ -1246,8 +1393,6 @@ class Seccion4Frame(BaseSection):
         )
         row.grid(row=len(self.rows), column=0, sticky="w", pady=(4, 8))
         row.cedula_combo.bind("<<ComboboxSelected>>", lambda _e, r=row: self._fill_user(r))
-        row.cedula_combo.bind("<KeyRelease>", lambda _e, r=row: self._filter_cedulas(r))
-        row.cedula_combo.bind("<Return>", lambda _e, r=row: self._search_user(r))
         self.rows.append(row)
 
     def clear_rows(self) -> None:
@@ -1355,13 +1500,13 @@ class Seccion4Frame(BaseSection):
         ttk.Entry(dialog, textvariable=cedula_var, width=20).grid(row=1, column=1, padx=10, pady=6)
         ttk.Label(dialog, text="Discapacidad").grid(row=2, column=0, sticky="w", padx=10, pady=6)
         discapacidad_combo = ttk.Combobox(
-            dialog, textvariable=discapacidad_var, values=self.discapacidades, state="normal", width=18
+            dialog, textvariable=discapacidad_var, values=self.discapacidades, state="readonly", width=18
         )
         discapacidad_combo.grid(row=2, column=1, padx=10, pady=6)
         configure_combobox(discapacidad_combo, self.discapacidades)
         ttk.Label(dialog, text="Genero").grid(row=3, column=0, sticky="w", padx=10, pady=6)
         genero_combo = ttk.Combobox(
-            dialog, textvariable=genero_var, values=self.generos, state="normal", width=18
+            dialog, textvariable=genero_var, values=self.generos, state="readonly", width=18
         )
         genero_combo.grid(row=3, column=1, padx=10, pady=6)
         configure_combobox(genero_combo, self.generos)
@@ -1398,6 +1543,7 @@ class Seccion4Frame(BaseSection):
                 self.rows = [r for r in self.rows if r.winfo_exists()]
                 for row in self.rows:
                     row.cedula_combo.configure(values=self.cedulas)
+                    row._cedulas = [str(c) for c in self.cedulas]
 
             self.api.invalidate("/wizard/seccion-4/usuarios")
 
@@ -1542,6 +1688,7 @@ class ResumenFrame(ttk.Frame):
 class LiveMonitorPanel(tk.Toplevel):
     COLUMNS = [
         ("id", "ID", 70),
+        ("created_at_local", "CREADO (COL UTC-5)", 170),
         ("nombre_profesional", "PROFESIONAL", 160),
         ("codigo_servicio", "NUEVO CODIGO", 110),
         ("nombre_empresa", "EMPRESA", 180),
@@ -1567,7 +1714,7 @@ class LiveMonitorPanel(tk.Toplevel):
         ("modalidad_servicio", "MODALIDAD", 130),
         ("observacion_agencia", "OBSERVACION AGENCIA", 165),
     ]
-    EDITABLE_KEYS = {key for key, _title, _width in COLUMNS if key != "id"}
+    EDITABLE_KEYS = {key for key, _title, _width in COLUMNS if key not in {"id", "created_at_local"}}
     DATE_KEYS = {"fecha_servicio", "fecha_ingreso"}
     MONEY_KEYS = {
         "valor_virtual",
@@ -1590,6 +1737,12 @@ class LiveMonitorPanel(tk.Toplevel):
 
         self._rows_by_id: dict[str, dict] = {}
         self._syncing = False
+        self._server_total = 0
+        self._server_loaded = 0
+        self._sort_key: str | None = None
+        self._sort_desc = False
+        self._sort_buttons: dict[str, tk.Button] = {}
+        self._filter_vars: dict[str, tk.StringVar] = {key: tk.StringVar() for key, _t, _w in self.COLUMNS}
 
         top = ttk.Frame(self, padding=(10, 8))
         top.pack(fill=tk.X)
@@ -1601,6 +1754,8 @@ class LiveMonitorPanel(tk.Toplevel):
 
         self.pending_var = tk.StringVar(value="Cambios pendientes: 0")
         ttk.Label(top, textvariable=self.pending_var, foreground=COLOR_PURPLE).pack(side=tk.LEFT, padx=(14, 0))
+        self.records_var = tk.StringVar(value="Registros en Supabase: - | Cargados: - | Filtrados: -")
+        ttk.Label(top, textvariable=self.records_var, foreground="#2E86C1").pack(side=tk.LEFT, padx=(14, 0))
 
         btns = ttk.Frame(top)
         btns.pack(side=tk.RIGHT)
@@ -1650,8 +1805,31 @@ class LiveMonitorPanel(tk.Toplevel):
         )
 
         header = ttk.Frame(self.table_content)
-        for col, title, width in self.COLUMNS:
-            ttk.Label(header, text=title, width=max(8, int(width / 10)), anchor="w").pack(side=tk.LEFT, padx=(0, 4))
+        for key, title, width in self.COLUMNS:
+            col_w = max(8, int(width / 10))
+            cell = ttk.Frame(header)
+            cell.pack(side=tk.LEFT, padx=(0, 4))
+            title_row = ttk.Frame(cell)
+            title_row.pack(fill=tk.X)
+            ttk.Label(title_row, text=title, width=max(6, col_w - 2), anchor="w").pack(side=tk.LEFT)
+            sort_btn = tk.Button(
+                title_row,
+                text="↕",
+                command=lambda k=key: self._toggle_sort(k),
+                bg=COLOR_PURPLE,
+                fg="white",
+                padx=2,
+                pady=0,
+                width=2,
+                font=("Arial", 8, "bold"),
+            )
+            sort_btn.pack(side=tk.LEFT, padx=(2, 0))
+            self._sort_buttons[key] = sort_btn
+
+            filter_entry = ttk.Entry(cell, textvariable=self._filter_vars[key], width=col_w)
+            filter_entry.pack(fill=tk.X, pady=(2, 0))
+            self._filter_vars[key].trace_add("write", lambda *_args: self._apply_filters_and_sort())
+
         header.pack(fill=tk.X)
 
         self.rows_container = ttk.Frame(self.table_content)
@@ -1665,17 +1843,45 @@ class LiveMonitorPanel(tk.Toplevel):
     def _initial_load(self) -> None:
         self.force_refresh()
 
-    def _fetch_rows(self) -> list[dict]:
-        data = self.api.get("/wizard/monitor/entradas", params={"limit": 200})
-        return list(data.get("data", []) or [])
+    def _fetch_rows(self) -> tuple[list[dict], int, int]:
+        payload = self.api.get("/wizard/monitor/entradas", params={"limit": 1000})
+        rows = list(payload.get("data", []) or [])
+        for row in rows:
+            row["created_at_local"] = self._format_created_at_es(row.get("created_at"))
+        total = int(payload.get("total", len(rows)) or 0)
+        shown = int(payload.get("shown", len(rows)) or 0)
+        return rows, total, shown
+
+    def _format_created_at_es(self, value) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        try:
+            if raw.endswith("Z"):
+                raw = raw[:-1] + "+00:00"
+            dt = datetime.fromisoformat(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            col_tz = timezone(timedelta(hours=-5))
+            dt_col = dt.astimezone(col_tz)
+            meses = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+            return (
+                f"{dt_col.day:02d} {meses[dt_col.month - 1]} {dt_col.year} "
+                f"{dt_col.hour:02d}:{dt_col.minute:02d}:{dt_col.second:02d}"
+            )
+        except Exception:
+            return str(value)
 
     def force_refresh(self, silent: bool = False) -> None:
         if self._syncing:
             return
         self._syncing = True
         try:
-            rows = self._fetch_rows()
+            rows, total, shown = self._fetch_rows()
             self._merge_rows(rows)
+            self._server_total = total
+            self._server_loaded = shown
+            self._apply_filters_and_sort()
             self._update_pending_label()
         except Exception as exc:
             if not silent:
@@ -1698,6 +1904,7 @@ class LiveMonitorPanel(tk.Toplevel):
             "entries": {},
             "dirty": set(),
             "suspend_trace": False,
+            "created_at_raw": data.get("created_at"),
         }
         self._rows_by_id[row_id] = row_state
 
@@ -1726,6 +1933,7 @@ class LiveMonitorPanel(tk.Toplevel):
 
     def _set_row_data(self, row_state: dict, data: dict, set_as_original: bool = False) -> None:
         row_state["suspend_trace"] = True
+        row_state["created_at_raw"] = data.get("created_at")
         for key, _title, _width in self.COLUMNS:
             if key == "id":
                 continue
@@ -1749,6 +1957,7 @@ class LiveMonitorPanel(tk.Toplevel):
         else:
             row_state["dirty"].discard(key)
         self._refresh_row_colors(row_state)
+        self._apply_filters_and_sort()
         self._update_pending_label()
 
     def _refresh_row_colors(self, row_state: dict) -> None:
@@ -1864,6 +2073,7 @@ class LiveMonitorPanel(tk.Toplevel):
                 if key in state["dirty"]:
                     continue
                 state["orig"][key] = incoming
+                state["created_at_raw"] = row.get("created_at")
                 state["suspend_trace"] = True
                 state["vars"][key].set(incoming)
                 state["suspend_trace"] = False
@@ -1881,6 +2091,84 @@ class LiveMonitorPanel(tk.Toplevel):
             except tk.TclError:
                 pass
             self._rows_by_id.pop(row_id, None)
+        self._apply_filters_and_sort()
+
+    def _toggle_sort(self, key: str) -> None:
+        self._sort_key = "created_at_local"
+        self._sort_desc = False
+        self._apply_filters_and_sort()
+
+    def _sort_value(self, row_state: dict, key: str):
+        text = row_state["vars"].get(key).get() if key in row_state["vars"] else ""
+        if key in self.MONEY_KEYS:
+            try:
+                return self._parse_money(text)
+            except Exception:
+                return 0.0
+        if key in self.INT_KEYS:
+            try:
+                return int(float(text or 0))
+            except Exception:
+                return 0
+        if key in self.DATE_KEYS:
+            raw = (text or "").strip()
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", raw):
+                return raw
+            return ""
+        return (text or "").strip().lower()
+
+    def _apply_filters_and_sort(self) -> None:
+        states = list(self._rows_by_id.values())
+
+        def _matches(state: dict) -> bool:
+            for key, var in self._filter_vars.items():
+                needle = var.get().strip().lower()
+                if not needle:
+                    continue
+                value = state["vars"].get(key).get().strip().lower() if key in state["vars"] else ""
+                if needle not in value:
+                    return False
+            return True
+
+        filtered = [state for state in states if _matches(state)]
+
+        def _created_sort(state: dict):
+            raw = state.get("created_at_raw")
+            if raw in (None, ""):
+                return datetime.min.replace(tzinfo=timezone.utc)
+            txt = str(raw).strip()
+            if txt.endswith("Z"):
+                txt = txt[:-1] + "+00:00"
+            try:
+                parsed = datetime.fromisoformat(txt)
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed
+            except Exception:
+                return datetime.min.replace(tzinfo=timezone.utc)
+
+        # Always oldest first, newest at the bottom.
+        filtered.sort(key=_created_sort, reverse=False)
+
+        for state in states:
+            try:
+                state["frame"].pack_forget()
+            except tk.TclError:
+                continue
+        for state in filtered:
+            try:
+                state["frame"].pack(fill=tk.X, pady=1)
+            except tk.TclError:
+                continue
+
+        for key, btn in self._sort_buttons.items():
+            if key == "created_at_local":
+                btn.configure(text="ASC", state="disabled")
+            else:
+                btn.configure(text="FIX", state="disabled")
+        self.records_var.set(
+            f"Registros en Supabase: {self._server_total} | Cargados: {self._server_loaded} | Filtrados: {len(filtered)}"
+        )
 
     def _update_pending_label(self) -> None:
         dirty_cells = 0
@@ -1951,8 +2239,6 @@ class WizardApp:
         self.api = api
         self.state = WizardState()
         self._summary_after_id: str | None = None
-        self.edit_entry_id: str | None = None
-        self.edit_original_entry: dict | None = None
         self._version_var = tk.StringVar()
         self.monitor_panel: LiveMonitorPanel | None = None
 
@@ -2038,18 +2324,6 @@ class WizardApp:
             text="Crear nueva entrada",
             command=self.start_new_service,
             bg=COLOR_TEAL,
-            fg="white",
-            font=("Arial", 12, "bold"),
-            padx=16,
-            pady=8,
-            width=28,
-        ).pack(pady=8)
-
-        tk.Button(
-            self.main_frame,
-            text="Editar entrada existente",
-            command=self.show_edit_search_screen,
-            bg=COLOR_PURPLE,
             fg="white",
             font=("Arial", 12, "bold"),
             padx=16,
@@ -2188,24 +2462,26 @@ class WizardApp:
         ano_var.set(str(hoy.year))
 
         ttk.Label(container, text="Mes").grid(row=0, column=0, sticky="w", pady=4)
-        ttk.Combobox(container, textvariable=mes_var, values=meses, width=20, state="readonly").grid(
-            row=0, column=1, sticky="w", pady=4
-        )
+        mes_combo = ttk.Combobox(container, textvariable=mes_var, values=meses, width=20, state="readonly")
+        mes_combo.grid(row=0, column=1, sticky="w", pady=4)
+        configure_combobox(mes_combo, meses)
 
         ttk.Label(container, text="Año").grid(row=1, column=0, sticky="w", pady=4)
         anos = [str(year) for year in range(2020, 2031)]
-        ttk.Combobox(container, textvariable=ano_var, values=anos, width=10, state="readonly").grid(
-            row=1, column=1, sticky="w", pady=4
-        )
+        ano_combo = ttk.Combobox(container, textvariable=ano_var, values=anos, width=10, state="readonly")
+        ano_combo.grid(row=1, column=1, sticky="w", pady=4)
+        configure_combobox(ano_combo, anos)
 
         ttk.Label(container, text="Tipo").grid(row=2, column=0, sticky="w", pady=4)
-        ttk.Combobox(
+        tipo_combo = ttk.Combobox(
             container,
             textvariable=tipo_var,
             values=["Clausulada", "No clausulada"],
             width=20,
             state="readonly",
-        ).grid(row=2, column=1, sticky="w", pady=4)
+        )
+        tipo_combo.grid(row=2, column=1, sticky="w", pady=4)
+        configure_combobox(tipo_combo, ["Clausulada", "No clausulada"])
 
         button_row = ttk.Frame(container)
         button_row.grid(row=3, column=0, columnspan=2, pady=(12, 0), sticky="e")
@@ -2274,248 +2550,6 @@ class WizardApp:
             except tk.TclError:
                 pass
 
-    def show_edit_search_screen(self) -> None:
-        for child in self.main_frame.winfo_children():
-            child.destroy()
-
-        header = ttk.Label(
-            self.main_frame,
-            text="Buscar entrada existente",
-            font=("Arial", 14, "bold"),
-            foreground=COLOR_PURPLE,
-        )
-        header.pack(pady=12)
-
-        search_frame = ttk.Frame(self.main_frame)
-        search_frame.pack(fill=tk.X, padx=12, pady=8)
-
-        self.edit_filters = {
-            "nombre_profesional": tk.StringVar(),
-            "nit_empresa": tk.StringVar(),
-            "fecha_servicio": tk.StringVar(),
-            "codigo_servicio": tk.StringVar(),
-        }
-
-        ttk.Label(search_frame, text="Profesional").grid(row=0, column=0, sticky="w")
-        ttk.Entry(search_frame, textvariable=self.edit_filters["nombre_profesional"], width=24).grid(
-            row=0, column=1, sticky="w", padx=(0, 10)
-        )
-        ttk.Label(search_frame, text="NIT").grid(row=0, column=2, sticky="w")
-        ttk.Entry(search_frame, textvariable=self.edit_filters["nit_empresa"], width=16).grid(
-            row=0, column=3, sticky="w", padx=(0, 10)
-        )
-
-        ttk.Label(search_frame, text="Fecha servicio (YYYY-MM-DD)").grid(row=1, column=0, sticky="w")
-        ttk.Entry(search_frame, textvariable=self.edit_filters["fecha_servicio"], width=16).grid(
-            row=1, column=1, sticky="w", padx=(0, 10)
-        )
-        ttk.Label(search_frame, text="Codigo servicio").grid(row=1, column=2, sticky="w")
-        ttk.Entry(search_frame, textvariable=self.edit_filters["codigo_servicio"], width=16).grid(
-            row=1, column=3, sticky="w", padx=(0, 10)
-        )
-
-        tk.Button(
-            search_frame,
-            text="Buscar",
-            command=self._buscar_entradas,
-            bg=COLOR_TEAL,
-            fg="white",
-            padx=12,
-            pady=4,
-        ).grid(row=1, column=5, sticky="w")
-
-        tk.Button(
-            search_frame,
-            text="Volver",
-            command=self.show_initial_screen,
-            bg=COLOR_PURPLE,
-            fg="white",
-            padx=12,
-            pady=4,
-        ).grid(row=1, column=6, sticky="w", padx=(10, 0))
-
-        self.results_container = ttk.Frame(self.main_frame)
-        self.results_container.pack(fill=tk.BOTH, expand=True, padx=12, pady=8)
-
-        self._edit_results_map: dict[str, dict] = {}
-        self._edit_tree: ttk.Treeview | None = None
-
-        self.selected_entry_label = ttk.Label(
-            self.main_frame,
-            text="",
-            font=("Arial", 10, "bold"),
-            foreground=COLOR_PURPLE,
-        )
-        self.selected_entry_label.pack(pady=(4, 2))
-        self.queue_status_label = ttk.Label(
-            self.main_frame,
-            text="",
-            font=("Arial", 9),
-            foreground=COLOR_TEAL,
-        )
-        self.queue_status_label.pack(pady=(0, 2))
-        self.confirm_button = tk.Button(
-            self.main_frame,
-            text="Cargar entrada seleccionada",
-            command=self._confirmar_carga_edicion,
-            bg=COLOR_PURPLE,
-            fg="white",
-            padx=14,
-            pady=6,
-            state="disabled",
-        )
-        self.confirm_button.pack(pady=(0, 8))
-
-        tk.Button(
-            self.main_frame,
-            text="Reintentar cola Excel",
-            command=self._flush_excel_queue,
-            bg=COLOR_TEAL,
-            fg="white",
-            padx=12,
-            pady=4,
-        ).pack(pady=(0, 8))
-
-        self._flush_excel_queue()
-
-    def _buscar_entradas(self) -> None:
-        params = {}
-        for key, var in self.edit_filters.items():
-            value = var.get().strip()
-            if value:
-                params[key] = value
-        if not params:
-            messagebox.showerror("Error", "Debes llenar al menos un filtro")
-            return
-
-        loading = LoadingDialog(self.root, "Buscando entradas...", determinate=True)
-        self.root.update_idletasks()
-        loading.set_status("Preparando filtros...", 25)
-        try:
-            loading.set_status("Consultando ODS...", 70)
-            data = self.api.get("/wizard/editar/buscar", params=params)
-        except Exception as exc:
-            loading.close()
-            messagebox.showerror("Error", f"No se pudo buscar: {exc}")
-            return
-        loading.set_status("Renderizando resultados...", 90)
-        loading.set_status("Listo...", 100)
-        loading.close()
-        self._render_results(data.get("data", []))
-
-    def _render_results(self, results: list[dict]) -> None:
-        for child in self.results_container.winfo_children():
-            child.destroy()
-
-        if not results:
-            ttk.Label(self.results_container, text="No se encontraron resultados.").pack()
-            self.confirm_button.configure(state="disabled")
-            self.selected_entry_label.config(text="")
-            self.edit_entry_id = None
-            self._edit_results_map = {}
-            return
-
-        columns = (
-            "id",
-            "fecha",
-            "profesional",
-            "empresa",
-            "codigo",
-            "nit",
-            "accion",
-        )
-        tree = ttk.Treeview(self.results_container, columns=columns, show="headings", height=10)
-        tree.heading("id", text="ID")
-        tree.heading("fecha", text="Fecha")
-        tree.heading("profesional", text="Profesional")
-        tree.heading("empresa", text="Empresa")
-        tree.heading("codigo", text="Codigo")
-        tree.heading("nit", text="NIT")
-        tree.heading("accion", text="")
-
-        tree.column("id", width=60, anchor="w")
-        tree.column("fecha", width=110, anchor="w")
-        tree.column("profesional", width=170, anchor="w")
-        tree.column("empresa", width=170, anchor="w")
-        tree.column("codigo", width=90, anchor="w")
-        tree.column("nit", width=120, anchor="w")
-        tree.column("accion", width=110, anchor="center")
-
-        scrollbar = ttk.Scrollbar(self.results_container, orient="vertical", command=tree.yview)
-        tree.configure(yscrollcommand=scrollbar.set)
-        tree.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        self._edit_results_map = {}
-        for row in results:
-            values = (
-                row.get("id", ""),
-                row.get("fecha_servicio", ""),
-                row.get("nombre_profesional", ""),
-                row.get("nombre_empresa", ""),
-                row.get("codigo_servicio", ""),
-                row.get("nit_empresa", ""),
-                "Seleccionar",
-            )
-            item_id = tree.insert("", "end", values=values)
-            self._edit_results_map[item_id] = row
-
-        def on_click(event):
-            item = tree.identify_row(event.y)
-            column = tree.identify_column(event.x)
-            if not item:
-                return
-            if column == f"#{len(columns)}":
-                self._seleccionar_resultado(self._edit_results_map.get(item, {}))
-
-        def on_double_click(_event):
-            selection = tree.selection()
-            if selection:
-                self._seleccionar_resultado(self._edit_results_map.get(selection[0], {}))
-
-        tree.bind("<ButtonRelease-1>", on_click)
-        tree.bind("<Double-1>", on_double_click)
-        self._edit_tree = tree
-
-    def _seleccionar_resultado(self, row: dict) -> None:
-        self.edit_entry_id = row.get("id")
-        self.edit_original_entry = None
-        resumen = (
-            f"Seleccionado ID {row.get('id')} | "
-            f"{row.get('fecha_servicio')} | "
-            f"{row.get('nombre_profesional')} | "
-            f"{row.get('codigo_servicio')}"
-        )
-        self.selected_entry_label.config(text=resumen)
-        self.confirm_button.configure(state="normal")
-        self._confirmar_carga_edicion()
-
-    def _confirmar_carga_edicion(self) -> None:
-        if not self.edit_entry_id:
-            return
-        confirm = messagebox.askyesno(
-            "Confirmar",
-            f"Deseas cargar la entrada ID {self.edit_entry_id}?",
-        )
-        if not confirm:
-            return
-
-        loading = LoadingDialog(self.root, "Cargando entrada...", determinate=True)
-        self.root.update_idletasks()
-        loading.set_status("Consultando ODS...", 60)
-        try:
-            data = self.api.get("/wizard/editar/entrada", params={"id": self.edit_entry_id})
-        except Exception as exc:
-            loading.close()
-            messagebox.showerror("Error", f"No se pudo cargar la entrada: {exc}")
-            return
-        loading.set_status("Aplicando datos al formulario...", 90)
-        loading.set_status("Preparando formulario...", 95)
-        loading.close()
-        entry = data.get("data", {})
-        self.edit_original_entry = entry
-        self._start_edit_service(entry)
-
     def start_new_service(self) -> None:
         try:
             self.state.reset_service()
@@ -2568,86 +2602,6 @@ class WizardApp:
             self._update_queue_status()
         except Exception as exc:
             messagebox.showerror("Error", f"No se pudo iniciar el formulario: {exc}")
-
-    def _start_edit_service(self, entry: dict) -> None:
-        try:
-            for child in self.main_frame.winfo_children():
-                child.destroy()
-
-            self.scroll = ScrollableFrame(self.main_frame)
-            self.scroll.pack(fill=tk.BOTH, expand=True)
-            self.scroll.content.grid_columnconfigure(0, weight=1)
-
-            main_col = ttk.Frame(self.scroll.content)
-            main_col.grid(row=0, column=0, sticky="nsew")
-            main_col.grid_columnconfigure(0, weight=1)
-
-            self.seccion1 = Seccion1Frame(main_col, self.api, self.state)
-            self.seccion1.grid(row=0, column=0, sticky="ew", pady=8)
-
-            self.seccion2 = Seccion2Frame(main_col, self.api)
-            self.seccion2.grid(row=1, column=0, sticky="ew", pady=8)
-
-            self.seccion3 = Seccion3Frame(main_col, self.api)
-            self.seccion3.grid(row=2, column=0, sticky="ew", pady=8)
-
-            self.seccion4 = Seccion4Frame(main_col, self.api, self.state)
-            self.seccion4.grid(row=3, column=0, sticky="ew", pady=8)
-
-            self.seccion5 = Seccion5Frame(main_col, self.api)
-            self.seccion5.grid(row=4, column=0, sticky="ew", pady=8)
-
-            self.resumen = ResumenFrame(
-                main_col,
-                self.terminar_servicio,
-                self._flush_excel_queue,
-                show_terminar=False,
-            )
-            self.resumen.grid(row=5, column=0, sticky="ew", pady=8)
-
-            self.edit_actions = ttk.Frame(self.scroll.content)
-            self.edit_actions.grid(row=1, column=0, columnspan=1, sticky="w", pady=8)
-            tk.Button(
-                self.edit_actions,
-                text="Actualizar entrada",
-                command=self.actualizar_entrada,
-                bg=COLOR_TEAL,
-                fg="white",
-                padx=12,
-                pady=4,
-            ).pack(side="left", padx=(0, 10))
-            tk.Button(
-                self.edit_actions,
-                text="Eliminar entrada",
-                command=self.eliminar_entrada,
-                bg="#C62828",
-                fg="white",
-                padx=12,
-                pady=4,
-            ).pack(side="left", padx=(0, 10))
-            tk.Button(
-                self.edit_actions,
-                text="Volver",
-                command=self.show_initial_screen,
-                bg=COLOR_PURPLE,
-                fg="white",
-                padx=12,
-                pady=4,
-            ).pack(side="left")
-
-            self._load_section_data()
-            self._lock_sections()
-            self._bind_summary_updates()
-
-            self.seccion1.set_data(entry)
-            self.seccion2.set_data(entry)
-            self.seccion3.set_data(entry)
-            self.seccion4.set_data(entry)
-            self.seccion5.set_data(entry)
-            self.seccion5.set_fecha_servicio(entry.get("fecha_servicio", ""))
-            self._refresh_summary()
-        except Exception as exc:
-            messagebox.showerror("Error", f"No se pudo cargar el formulario: {exc}")
 
     def _flush_excel_queue(self) -> None:
         loading = LoadingDialog(self.root, "Reintentando cola Excel...", determinate=True)
@@ -3095,118 +3049,6 @@ class WizardApp:
             self.start_new_service()
         else:
             self.show_initial_screen()
-
-    def actualizar_entrada(self) -> None:
-        if not self.edit_entry_id:
-            messagebox.showerror("Error", "No hay una entrada seleccionada.")
-            return
-        loading = LoadingDialog(self.root, "Preparando actualizacion...")
-        self.root.update_idletasks()
-        try:
-            ods = self._validar_secciones()
-        except Exception as exc:
-            loading.close()
-            messagebox.showerror("Error", f"No se pudo validar la informacion: {exc}")
-            return
-        cambios = []
-        if self.edit_original_entry:
-            for key, value in ods.items():
-                original_value = self.edit_original_entry.get(key)
-                if isinstance(value, float):
-                    value = round(value, 4)
-                if isinstance(original_value, float):
-                    original_value = round(original_value, 4)
-                if str(value) != str(original_value):
-                    cambios.append(key)
-        loading.close()
-        force_excel_sync = False
-        if cambios:
-            detalle = ", ".join(sorted(cambios))
-            confirmar = messagebox.askyesno(
-                "Confirmar cambios",
-                f"Se actualizaran {len(cambios)} campos:\n{detalle}\n\nDeseas continuar?",
-            )
-            if not confirmar:
-                return
-        else:
-            force_excel_sync = True
-        loading = LoadingDialog(self.root, "Actualizando entrada...")
-        self.root.update_idletasks()
-        payload = {"filtro": {"id": self.edit_entry_id}, "datos": ods}
-        if self.edit_original_entry:
-            payload["original"] = self.edit_original_entry
-        if force_excel_sync:
-            payload["force_excel_sync"] = True
-        try:
-            response = self.api.post("/wizard/editar/actualizar", payload, timeout=120)
-        except Exception as exc:
-            loading.close()
-            messagebox.showerror("Error", f"No se pudo actualizar: {exc}")
-            return
-        loading.close()
-        cambios = response.get("cambios", [])
-        messagebox.showinfo(
-            "Actualizado",
-            "Entrada actualizada. Campos cambiados: " + (", ".join(cambios) if cambios else "ninguno"),
-        )
-        if response.get("excel_status") == "background":
-            messagebox.showinfo(
-                "Actualizado",
-                "Entrada actualizada. El Excel se actualiza en segundo plano.",
-            )
-        elif response.get("excel_status") == "pendiente":
-            messagebox.showwarning(
-                "Aviso",
-                "El archivo Excel estaba abierto. Se guardo la actualizacion en cola.",
-            )
-        elif response.get("excel_status") == "error":
-            messagebox.showwarning(
-                "Aviso",
-                f"No se pudo actualizar el Excel: {response.get('excel_error')}",
-            )
-        self._notify_monitor_refresh()
-
-    def eliminar_entrada(self) -> None:
-        if not self.edit_entry_id:
-            messagebox.showerror("Error", "No hay una entrada seleccionada.")
-            return
-        confirm = messagebox.askyesno(
-            "Eliminar",
-            f"Seguro que deseas eliminar la entrada ID {self.edit_entry_id}?",
-        )
-        if not confirm:
-            return
-        loading = LoadingDialog(self.root, "Eliminando entrada...")
-        self.root.update_idletasks()
-        payload = {"filtro": {"id": self.edit_entry_id}}
-        if self.edit_original_entry:
-            payload["original"] = self.edit_original_entry
-        try:
-            response = self.api.post("/wizard/editar/eliminar", payload, timeout=120)
-        except Exception as exc:
-            loading.close()
-            messagebox.showerror("Error", f"No se pudo eliminar: {exc}")
-            return
-        loading.close()
-        messagebox.showinfo("Eliminado", "Entrada eliminada correctamente.")
-        if response.get("excel_status") == "background":
-            messagebox.showinfo(
-                "Eliminado",
-                "Entrada eliminada. El Excel se actualiza en segundo plano.",
-            )
-        elif response.get("excel_status") == "pendiente":
-            messagebox.showwarning(
-                "Aviso",
-                "El archivo Excel estaba abierto. Se guardo la eliminacion en cola.",
-            )
-        elif response.get("excel_status") == "error":
-            messagebox.showwarning(
-                "Aviso",
-                f"No se pudo actualizar el Excel: {response.get('excel_error')}",
-            )
-        self._notify_monitor_refresh()
-        self.show_initial_screen()
-
 
 def main() -> None:
     try:

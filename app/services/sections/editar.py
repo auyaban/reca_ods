@@ -195,13 +195,15 @@ def buscar_entradas(
     return {"data": response.data}
 
 
-def listar_entradas_monitor(limit: int = 200):
+def listar_entradas_monitor(limit: int = 1000):
     client = get_supabase_client()
     try:
-        safe_limit = max(1, min(int(limit), 500))
+        safe_limit = max(1, min(int(limit), 5000))
     except Exception:
-        safe_limit = 200
+        safe_limit = 1000
     try:
+        count_response = client.table("ods").select("id", count="exact").limit(1).execute()
+        total = int(getattr(count_response, "count", 0) or 0)
         response = (
             client.table("ods")
             .select(
@@ -210,15 +212,21 @@ def listar_entradas_monitor(limit: int = 200):
                 "nombre_usuario,cedula_usuario,discapacidad_usuario,fecha_ingreso,"
                 "valor_virtual,valor_bogota,valor_otro,todas_modalidades,horas_interprete,"
                 "valor_interprete,valor_total,observaciones,asesor_empresa,sede_empresa,"
-                "modalidad_servicio,observacion_agencia"
+                "modalidad_servicio,observacion_agencia,created_at"
             )
-            .order("id", desc=True)
+            .order("created_at", desc=False, nullsfirst=False)
             .limit(safe_limit)
             .execute()
         )
     except Exception as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
-    return {"data": response.data}
+    rows = response.data or []
+    return {
+        "data": rows,
+        "total": total,
+        "shown": len(rows),
+        "limit": safe_limit,
+    }
 
 
 def obtener_entrada(
