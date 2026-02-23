@@ -7,15 +7,25 @@ from app.supabase_client import get_supabase_client
 def get_empresas() -> dict:
     client = get_supabase_client()
     try:
-        response = (
-            client.table("empresas")
-            .select("nit_empresa,nombre_empresa,caja_compensacion,asesor,sede_empresa")
-            .execute()
-        )
+        page_size = 1000
+        offset = 0
+        rows = []
+        while True:
+            response = (
+                client.table("empresas")
+                .select("nit_empresa,nombre_empresa,caja_compensacion,asesor,sede_empresa")
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+            batch = list(response.data or [])
+            rows.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += page_size
     except Exception as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
-    return {"data": response.data}
+    return {"data": rows}
 
 
 def get_empresa_por_nit(nit: str) -> dict:
