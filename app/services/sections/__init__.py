@@ -1,4 +1,5 @@
 from app.services.sections import (
+    actas_finalizadas,
     editar,
     facturas,
     resumen_final,
@@ -11,6 +12,7 @@ from app.services.sections import (
 )
 
 __all__ = [
+    "actas_finalizadas",
     "editar",
     "facturas",
     "resumen_final",

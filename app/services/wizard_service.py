@@ -1,4 +1,5 @@
 from app.services.sections import (
+    actas_finalizadas,
     editar as editar_entrada,
     facturas,
     resumen_final,
@@ -152,6 +153,24 @@ def excel_rebuild() -> dict:
 def crear_factura(payload: dict) -> dict:
     req = facturas.CrearFacturaRequest(**payload)
     return facturas.crear_factura(req)
+
+
+def listar_actas_finalizadas(params: dict | None = None) -> dict:
+    params = params or {}
+    try:
+        limit = int(params.get("limit", 500))
+    except Exception:
+        limit = 500
+    return actas_finalizadas.listar_actas_finalizadas(limit=limit)
+
+
+def estado_actas_finalizadas() -> dict:
+    return actas_finalizadas.estado_actas_finalizadas()
+
+
+def actualizar_acta_revisado(payload: dict) -> dict:
+    req = actas_finalizadas.ActaRevisadoRequest(**payload)
+    return actas_finalizadas.actualizar_revisado(req)
 
 
  

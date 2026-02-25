@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.11
+- Importador de actas Excel en "Crear nueva entrada" con vista previa antes de aplicar.
+- Mapeo base: NIT, fecha de visita y profesional desde seccion de asistentes (con match parcial/similar contra BD).
+- Validacion de NIT contra BD antes de aplicar importacion.
+- Participantes por cedula unicamente; solo se cargan cedulas existentes en BD.
+- Mejoras de layout inicial (centrado y ajuste para pantallas pequenas) y boton de actualizacion junto a notificaciones.
+
 ## 2.0.6
 - Busqueda por nombre de empresa muestra todos los nombres aunque compartan NIT.
 

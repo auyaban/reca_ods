@@ -3,11 +3,14 @@ import re
 import subprocess
 import sys
 import time
+import webbrowser
+import difflib
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 import tkinter.font as tkfont
 
 import threading
@@ -163,6 +166,10 @@ class ApiClient:
             return self._svc.buscar_entradas(params)
         if path == "/wizard/monitor/entradas":
             return self._svc.listar_entradas_monitor(params)
+        if path == "/wizard/actas-finalizadas":
+            return self._svc.listar_actas_finalizadas(params)
+        if path == "/wizard/actas-finalizadas/status":
+            return self._svc.estado_actas_finalizadas()
         if path == "/wizard/editar/entrada":
             return self._svc.obtener_entrada(params)
         if path == "/wizard/editar/excel/status":
@@ -198,6 +205,8 @@ class ApiClient:
             return self._svc.excel_rebuild()
         if path == "/wizard/facturas/crear":
             return self._svc.crear_factura(payload)
+        if path == "/wizard/actas-finalizadas/revisado":
+            return self._svc.actualizar_acta_revisado(payload)
         raise RuntimeError(f"Endpoint no soportado: POST {path}")
 
 
@@ -213,11 +222,12 @@ class ScrollableFrame(ttk.Frame):
             lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox("all")),
         )
 
-        self.canvas.create_window((0, 0), window=self.content, anchor="nw")
+        self._content_window = self.canvas.create_window((0, 0), window=self.content, anchor="nw")
         self.canvas.configure(yscrollcommand=scrollbar.set)
 
         self.canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
 
         self.canvas.bind("<Enter>", self._bind_mousewheel)
         self.canvas.bind("<Leave>", self._unbind_mousewheel)
@@ -248,6 +258,13 @@ class ScrollableFrame(ttk.Frame):
             else:
                 delta = int(-1 * (event.delta / 120))
                 self.canvas.yview_scroll(delta, "units")
+        except tk.TclError:
+            return
+
+    def _on_canvas_configure(self, event) -> None:
+        try:
+            if self.canvas.winfo_exists():
+                self.canvas.itemconfigure(self._content_window, width=event.width)
         except tk.TclError:
             return
 
@@ -2233,6 +2250,180 @@ class LiveMonitorPanel(tk.Toplevel):
             )
         else:
             messagebox.showinfo("Monitor", f"Guardadas {ok} fila(s) correctamente.")
+
+
+class ActasTerminadasPanel(tk.Toplevel):
+    def __init__(self, root: tk.Tk, api: ApiClient, on_status_change=None):
+        super().__init__(root)
+        self.root = root
+        self.api = api
+        self.on_status_change = on_status_change
+        self.title("Actas Terminadas")
+        self.geometry("1180x620")
+        self.configure(bg="white")
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        self._rows_by_item: dict[str, dict] = {}
+
+        top = ttk.Frame(self, padding=(10, 8))
+        top.pack(fill=tk.X)
+
+        self.pending_var = tk.StringVar(value="Pendientes por revisar: 0")
+        ttk.Label(top, textvariable=self.pending_var, foreground=COLOR_PURPLE, font=("Arial", 10, "bold")).pack(
+            side=tk.LEFT
+        )
+        ttk.Label(
+            top,
+            text="Doble clic en 'Revisado' para cambiar estado. Doble clic en 'Ruta' para abrir.",
+            foreground="#555555",
+        ).pack(side=tk.LEFT, padx=(12, 0))
+        tk.Button(top, text="Refrescar", command=self.refresh, bg="#2E86C1", fg="white", padx=8, pady=3).pack(
+            side=tk.RIGHT
+        )
+
+        wrap = ttk.Frame(self)
+        wrap.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        wrap.grid_rowconfigure(0, weight=1)
+        wrap.grid_columnconfigure(0, weight=1)
+
+        cols = ("fecha", "profesional", "empresa", "formato", "ruta", "revisado")
+        self.tree = ttk.Treeview(wrap, columns=cols, show="headings")
+        self.tree.heading("fecha", text="Fecha y Hora")
+        self.tree.heading("profesional", text="Profesional")
+        self.tree.heading("empresa", text="Empresa")
+        self.tree.heading("formato", text="Formato")
+        self.tree.heading("ruta", text="Ruta")
+        self.tree.heading("revisado", text="Revisado")
+        self.tree.column("fecha", width=170, anchor="w")
+        self.tree.column("profesional", width=210, anchor="w")
+        self.tree.column("empresa", width=220, anchor="w")
+        self.tree.column("formato", width=180, anchor="w")
+        self.tree.column("ruta", width=300, anchor="w")
+        self.tree.column("revisado", width=90, anchor="center")
+
+        yscroll = ttk.Scrollbar(wrap, orient="vertical", command=self.tree.yview)
+        xscroll = ttk.Scrollbar(wrap, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+
+        self.tree.bind("<Double-1>", self._on_double_click)
+        self.tree.tag_configure("pending", background="#FFF8E1")
+
+        self.refresh()
+
+    def _on_close(self) -> None:
+        self.destroy()
+
+    def _format_fecha(self, row: dict) -> str:
+        text = str(
+            row.get("finalizado_at_colombia")
+            or row.get("finalizado_at_iso")
+            or row.get("created_at")
+            or ""
+        ).strip()
+        if not text:
+            return ""
+        try:
+            raw = text
+            if raw.endswith("Z"):
+                raw = raw[:-1] + "+00:00"
+            dt = datetime.fromisoformat(raw)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            local = dt.astimezone(timezone(timedelta(hours=-5)))
+            return local.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return text
+
+    def _set_pending(self, pendientes: int) -> None:
+        self.pending_var.set(f"Pendientes por revisar: {pendientes}")
+        if self.on_status_change:
+            try:
+                self.on_status_change(pendientes)
+            except Exception:
+                pass
+
+    def refresh(self) -> None:
+        payload = self.api.get("/wizard/actas-finalizadas", params={"limit": 1000})
+        rows = list(payload.get("data", []) or [])
+        pendientes = int(payload.get("pendientes", 0) or 0)
+        self._set_pending(pendientes)
+
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        self._rows_by_item.clear()
+
+        for idx, row in enumerate(rows):
+            iid = f"row_{idx}"
+            revisado = bool(row.get("revisado"))
+            tag = "" if revisado else "pending"
+            self.tree.insert(
+                "",
+                "end",
+                iid=iid,
+                values=(
+                    self._format_fecha(row),
+                    row.get("nombre_usuario", "") or "",
+                    row.get("nombre_empresa", "") or "",
+                    row.get("nombre_formato", "") or "",
+                    row.get("path_formato", "") or "",
+                    "Si" if revisado else "No",
+                ),
+                tags=(tag,) if tag else (),
+            )
+            self._rows_by_item[iid] = row
+
+    def _on_double_click(self, event) -> None:
+        region = self.tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+        iid = self.tree.identify_row(event.y)
+        column = self.tree.identify_column(event.x)
+        if not iid or iid not in self._rows_by_item:
+            return
+        row = self._rows_by_item[iid]
+
+        # #5 = ruta, #6 = revisado
+        if column == "#5":
+            self._open_path(row.get("path_formato", ""))
+        elif column == "#6":
+            self._toggle_revisado(row)
+
+    def _open_path(self, path_value: str) -> None:
+        path = str(path_value or "").strip()
+        if not path:
+            messagebox.showinfo("Actas Terminadas", "No hay ruta para este registro.")
+            return
+        try:
+            if re.match(r"^https?://", path, re.IGNORECASE):
+                webbrowser.open(path)
+                return
+            normalized = os.path.expanduser(os.path.expandvars(path))
+            if os.path.exists(normalized):
+                os.startfile(normalized)
+                return
+            messagebox.showwarning("Actas Terminadas", f"La ruta no existe:\n{path}")
+        except Exception as exc:
+            messagebox.showerror("Actas Terminadas", f"No se pudo abrir la ruta: {exc}")
+
+    def _toggle_revisado(self, row: dict) -> None:
+        nuevo = not bool(row.get("revisado"))
+        payload = {
+            "registro_id": row.get("registro_id"),
+            "session_id": row.get("session_id"),
+            "revisado": nuevo,
+        }
+        try:
+            response = self.api.post("/wizard/actas-finalizadas/revisado", payload, timeout=30)
+            pendientes = int(response.get("pendientes", 0) or 0)
+            self._set_pending(pendientes)
+            self.refresh()
+        except Exception as exc:
+            messagebox.showerror("Actas Terminadas", f"No se pudo actualizar 'revisado': {exc}")
+
+
 class WizardApp:
     def __init__(self, root: tk.Tk, api: ApiClient):
         self.root = root
@@ -2241,27 +2432,30 @@ class WizardApp:
         self._summary_after_id: str | None = None
         self._version_var = tk.StringVar()
         self.monitor_panel: LiveMonitorPanel | None = None
+        self.actas_panel: ActasTerminadasPanel | None = None
+        self._actas_alert_button: tk.Button | None = None
+        self._actas_pending = 0
         self._screen_w = self.root.winfo_screenwidth()
         self._screen_h = self.root.winfo_screenheight()
         self._ui_scale = max(0.78, min(1.0, self._screen_h / 900.0))
+        self._is_small_screen = self._screen_h <= 800 or self._screen_w <= 1366
+        self._main_padx = 10 if self._is_small_screen else 16
+        self._main_pady = 10 if self._is_small_screen else 16
+        self._menu_button_width = 24 if self._is_small_screen else 28
+        self._menu_button_pady = 6 if self._is_small_screen else 8
 
         self.root.title("SISTEMA DE GESTIÓN ODS - RECA")
         self._set_window_size()
 
-        self.header = tk.Frame(self.root, bg=COLOR_PURPLE, height=70)
+        self.header = tk.Frame(self.root, bg=COLOR_PURPLE, height=82 if self._is_small_screen else 96)
         self.header.pack(fill=tk.X)
-        self.header.grid_columnconfigure(0, weight=1)
-        self.header.grid_columnconfigure(1, weight=0)
-        self.header.grid_columnconfigure(2, weight=1)
-        self.header_logo = _load_logo(subsample=8)
-        logo_width = 0
+        self.header_logo = _load_logo(subsample=9 if self._is_small_screen else 8)
         if self.header_logo:
-            logo_width = self.header_logo.width()
-            tk.Label(self.header, image=self.header_logo, bg=COLOR_PURPLE).grid(
-                row=0, column=0, padx=(16, 6), pady=8, sticky="w"
+            tk.Label(self.header, image=self.header_logo, bg=COLOR_PURPLE).place(
+                x=10 if self._is_small_screen else 16, rely=0.5, anchor="w"
             )
         title_frame = tk.Frame(self.header, bg=COLOR_PURPLE)
-        title_frame.grid(row=0, column=1, pady=10, sticky="n")
+        title_frame.place(relx=0.5, rely=0.5, anchor="center")
         tk.Label(
             title_frame,
             text="SISTEMA DE GESTION ODS",
@@ -2276,15 +2470,12 @@ class WizardApp:
             bg=COLOR_PURPLE,
             fg="white",
         ).pack()
-        spacer = tk.Frame(self.header, bg=COLOR_PURPLE, width=logo_width)
-        spacer.grid(row=0, column=2, padx=16, sticky="e")
-        spacer.grid_propagate(False)
 
         self.main_frame = ttk.Frame(self.root)
-        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=self._main_padx, pady=self._main_pady)
 
         self.footer = ttk.Frame(self.root)
-        self.footer.pack(fill=tk.X, padx=12, pady=(0, 6), side=tk.BOTTOM)
+        self.footer.pack(fill=tk.X, padx=max(8, self._main_padx - 2), pady=(0, 6), side=tk.BOTTOM)
         self._version_var.set("Version local: - | GitHub: -")
         version_box = ttk.Frame(self.footer)
         version_box.pack(side=tk.LEFT, anchor="w")
@@ -2294,16 +2485,6 @@ class WizardApp:
             font=("Arial", 9),
             foreground="#666666",
         ).pack(anchor="w")
-        tk.Button(
-            version_box,
-            text="Actualizar Versión de la Aplicación",
-            command=self._open_update_page,
-            bg="#4B8BBE",
-            fg="white",
-            font=("Arial", self._scaled_font(10, 9), "bold"),
-            padx=10,
-            pady=4,
-        ).pack(anchor="w", pady=(4, 0))
 
         self.show_initial_screen()
 
@@ -2323,14 +2504,40 @@ class WizardApp:
         content.grid_columnconfigure(0, weight=1)
 
         button_col = ttk.Frame(content)
-        button_col.grid(row=0, column=0, pady=8)
+        button_col.grid(row=0, column=0, pady=(4, 8))
+
+        top_actions = ttk.Frame(button_col)
+        top_actions.pack(fill=tk.X, pady=(0, max(4, int(6 * self._ui_scale))))
+        actions_right = ttk.Frame(top_actions)
+        actions_right.pack(anchor="e")
+        tk.Button(
+            actions_right,
+            text="Actualizar Version de la Aplicacion",
+            command=self._open_update_page,
+            bg="#4B8BBE",
+            fg="white",
+            font=("Arial", self._scaled_font(9, 8), "bold"),
+            padx=7 if self._is_small_screen else 8,
+            pady=2 if self._is_small_screen else 3,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        self._actas_alert_button = tk.Button(
+            actions_right,
+            text="Actas Terminadas (0)",
+            command=self._open_actas_terminadas,
+            bg="#5D6D7E",
+            fg="white",
+            font=("Arial", self._scaled_font(9, 8), "bold"),
+            padx=7 if self._is_small_screen else 8,
+            pady=2 if self._is_small_screen else 3,
+        )
+        self._actas_alert_button.pack(side=tk.LEFT)
 
         ttk.Label(
             button_col,
             text="Seleccione una opcion para iniciar",
             font=("Arial", self._scaled_font(14, 11), "bold"),
             foreground=COLOR_PURPLE,
-        ).pack(pady=20)
+        ).pack(pady=(max(12, int(16 * self._ui_scale)), max(8, int(12 * self._ui_scale))))
 
         tk.Button(
             button_col,
@@ -2340,9 +2547,9 @@ class WizardApp:
             fg="white",
             font=("Arial", self._scaled_font(12, 10), "bold"),
             padx=16,
-            pady=8,
-            width=28,
-        ).pack(pady=8)
+            pady=self._menu_button_pady,
+            width=self._menu_button_width,
+        ).pack(pady=self._menu_button_pady)
 
         tk.Button(
             button_col,
@@ -2352,9 +2559,9 @@ class WizardApp:
             fg="white",
             font=("Arial", self._scaled_font(12, 10), "bold"),
             padx=16,
-            pady=8,
-            width=28,
-        ).pack(pady=8)
+            pady=self._menu_button_pady,
+            width=self._menu_button_width,
+        ).pack(pady=self._menu_button_pady)
 
         tk.Button(
             button_col,
@@ -2364,9 +2571,9 @@ class WizardApp:
             fg="white",
             font=("Arial", self._scaled_font(12, 10), "bold"),
             padx=16,
-            pady=8,
-            width=28,
-        ).pack(pady=8)
+            pady=self._menu_button_pady,
+            width=self._menu_button_width,
+        ).pack(pady=self._menu_button_pady)
 
         tk.Button(
             button_col,
@@ -2376,9 +2583,9 @@ class WizardApp:
             fg="white",
             font=("Arial", self._scaled_font(12, 10), "bold"),
             padx=16,
-            pady=8,
-            width=28,
-        ).pack(pady=8)
+            pady=self._menu_button_pady,
+            width=self._menu_button_width,
+        ).pack(pady=self._menu_button_pady)
 
         tk.Button(
             button_col,
@@ -2388,9 +2595,10 @@ class WizardApp:
             fg="white",
             font=("Arial", self._scaled_font(12, 10), "bold"),
             padx=16,
-            pady=8,
-            width=28,
-        ).pack(pady=8)
+            pady=self._menu_button_pady,
+            width=self._menu_button_width,
+        ).pack(pady=self._menu_button_pady)
+        self._refresh_actas_alert(silent=True)
 
     def _scaled_font(self, base_size: int, min_size: int = 9) -> int:
         return max(min_size, int(round(base_size * self._ui_scale)))
@@ -2401,6 +2609,48 @@ class WizardApp:
             self.monitor_panel.focus_force()
             return
         self.monitor_panel = LiveMonitorPanel(self.root, self.api)
+
+    def _set_actas_pending(self, pendientes: int) -> None:
+        self._actas_pending = max(0, int(pendientes or 0))
+        btn = self._actas_alert_button
+        if not btn:
+            return
+        try:
+            if not btn.winfo_exists():
+                return
+            if self._actas_pending > 0:
+                btn.configure(
+                    text=f"Actas Terminadas ({self._actas_pending})",
+                    bg="#C0392B",
+                )
+            else:
+                btn.configure(text="Actas Terminadas (0)", bg="#5D6D7E")
+        except tk.TclError:
+            return
+
+    def _on_canvas_configure(self, event) -> None:
+        try:
+            if self.canvas.winfo_exists():
+                self.canvas.itemconfigure(self._content_window, width=event.width)
+        except tk.TclError:
+            return
+
+    def _refresh_actas_alert(self, silent: bool = False) -> None:
+        try:
+            payload = self.api.get("/wizard/actas-finalizadas/status")
+            data = payload.get("data", {})
+            pendientes = int(data.get("pendientes", 0) or 0)
+            self._set_actas_pending(pendientes)
+        except Exception as exc:
+            if not silent:
+                messagebox.showerror("Actas Terminadas", f"No se pudo cargar el estado: {exc}")
+
+    def _open_actas_terminadas(self) -> None:
+        if self.actas_panel and self.actas_panel.winfo_exists():
+            self.actas_panel.lift()
+            self.actas_panel.focus_force()
+            return
+        self.actas_panel = ActasTerminadasPanel(self.root, self.api, on_status_change=self._set_actas_pending)
 
     def _notify_monitor_refresh(self) -> None:
         panel = self.monitor_panel
@@ -2558,12 +2808,14 @@ class WizardApp:
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
         # Keep window inside the visible work area for low-resolution displays.
-        width = min(max(980, int(screen_w * 0.9)), max(900, screen_w - 20))
-        height = min(max(620, int(screen_h * 0.9)), max(560, screen_h - 80))
+        min_w = 760 if self._is_small_screen else 900
+        min_h = 520 if self._is_small_screen else 560
+        width = min(max(min_w, int(screen_w * 0.9)), max(min_w, screen_w - 20))
+        height = min(max(min_h, int(screen_h * 0.9)), max(min_h, screen_h - 80))
         x = max(0, int((screen_w - width) / 2))
         y = max(0, int((screen_h - height) / 2))
         self.root.geometry(f"{width}x{height}+{x}+{y}")
-        self.root.minsize(900, 560)
+        self.root.minsize(min_w, min_h)
 
     def start_new_service(self) -> None:
         try:
@@ -2590,6 +2842,15 @@ class WizardApp:
                 padx=12,
                 pady=4,
             ).pack(side="left")
+            tk.Button(
+                nav,
+                text="Importar acta Excel",
+                command=self._importar_acta_excel,
+                bg="#2E86C1",
+                fg="white",
+                padx=12,
+                pady=4,
+            ).pack(side="left", padx=(8, 0))
 
             self.seccion1 = Seccion1Frame(main_col, self.api, self.state)
             self.seccion1.grid(row=1, column=0, sticky="ew", pady=8)
@@ -2617,6 +2878,373 @@ class WizardApp:
             self._update_queue_status()
         except Exception as exc:
             messagebox.showerror("Error", f"No se pudo iniciar el formulario: {exc}")
+
+    def _importar_acta_excel(self) -> None:
+        file_path = filedialog.askopenfilename(
+            title="Seleccionar acta en Excel",
+            filetypes=[
+                ("Archivos Excel", "*.xlsx *.xlsm"),
+                ("Todos los archivos", "*.*"),
+            ],
+        )
+        if not file_path:
+            return
+
+        loading = LoadingDialog(self.root, "Leyendo acta de Excel...")
+        self.root.update_idletasks()
+        try:
+            from app.services.excel_acta_import import parse_acta_excel
+
+            parsed = parse_acta_excel(file_path)
+        except Exception as exc:
+            loading.close()
+            messagebox.showerror("Importar acta", f"No se pudo leer el archivo:\n{exc}")
+            return
+        loading.close()
+
+        nit = (parsed.get("nit_empresa") or "").strip()
+        if not nit:
+            messagebox.showerror(
+                "Importar acta",
+                "No se detecto NIT en el archivo. Verifica la plantilla.",
+            )
+            return
+        try:
+            empresa_lookup = self.api.get_cached("/wizard/seccion-2/empresa", params={"nit": nit})
+        except Exception as exc:
+            messagebox.showerror("Importar acta", f"No se pudo validar el NIT contra la base de datos:\n{exc}")
+            return
+        empresas_encontradas = list(empresa_lookup.get("data") or [])
+        if not empresas_encontradas:
+            messagebox.showerror(
+                "Importar acta",
+                f"El NIT {nit} no existe en la base de datos. Verifica el formulario.",
+            )
+            return
+        parsed["_nit_validado_bd"] = True
+        parsed["_empresa_bd_nombre"] = str(empresas_encontradas[0].get("nombre_empresa") or "").strip()
+
+        participantes_raw = list(parsed.get("participantes") or [])
+        cedulas_bd = set()
+        try:
+            usuarios_data = self.api.get_cached("/wizard/seccion-4/usuarios")
+            for item in list(usuarios_data.get("data") or []):
+                ced = str(item.get("cedula_usuario") or "").strip()
+                if ced:
+                    cedulas_bd.add(ced)
+        except Exception:
+            cedulas_bd = set()
+
+        participantes: list[dict] = []
+        descartados: list[str] = []
+        for persona in participantes_raw:
+            ced = str(persona.get("cedula_usuario") or "").strip()
+            if not ced:
+                continue
+            if ced in cedulas_bd:
+                participantes.append({"cedula_usuario": ced})
+            else:
+                descartados.append(ced)
+        if descartados:
+            parsed.setdefault("warnings", []).append(
+                f"Se descartaron {len(descartados)} cedula(s) que no existen en BD."
+            )
+            parsed["_cedulas_descartadas"] = descartados
+
+        if len(participantes) > 1:
+            seleccion = self._seleccionar_participantes_import(participantes)
+            if seleccion is None:
+                return
+            participantes = seleccion
+
+        if not self._preview_importacion_acta(parsed, participantes):
+            return
+
+        self._aplicar_importacion_acta(parsed, participantes)
+
+        warnings = parsed.get("warnings") or []
+        summary = [
+            f"NIT detectado: {nit}",
+            f"Cedulas cargadas: {len(participantes)}",
+        ]
+        fecha_servicio = (parsed.get("fecha_servicio") or "").strip()
+        if fecha_servicio:
+            summary.append(f"Fecha detectada: {fecha_servicio}")
+        if warnings:
+            summary.append("")
+            summary.append("Avisos:")
+            summary.extend(f"- {item}" for item in warnings)
+        messagebox.showinfo("Importar acta", "\n".join(summary))
+
+    def _seleccionar_participantes_import(self, participantes: list[dict]) -> list[dict] | None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Seleccionar participantes")
+        dialog.resizable(True, True)
+        dialog.geometry("760x420")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        ttk.Label(
+            dialog,
+            text="Se detectaron varias cedulas validas en BD. Elige cuales importar:",
+            font=("Arial", 10, "bold"),
+        ).pack(anchor="w", padx=12, pady=(10, 8))
+
+        table_wrap = ttk.Frame(dialog)
+        table_wrap.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 10))
+        table_wrap.grid_rowconfigure(0, weight=1)
+        table_wrap.grid_columnconfigure(0, weight=1)
+
+        tree = ttk.Treeview(table_wrap, columns=("idx", "cedula"), show="headings", selectmode="extended")
+        tree.heading("idx", text="#")
+        tree.heading("cedula", text="Cedula")
+        tree.column("idx", width=60, anchor="center")
+        tree.column("cedula", width=260, anchor="w")
+        yscroll = ttk.Scrollbar(table_wrap, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=yscroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+
+        row_map: dict[str, dict] = {}
+        for idx, persona in enumerate(participantes, start=1):
+            ced = (persona.get("cedula_usuario") or "").strip()
+            item_id = tree.insert("", "end", values=(idx, ced))
+            row_map[item_id] = {"cedula_usuario": ced}
+
+        result: dict[str, list[dict] | None] = {"value": None}
+
+        def _importar_todos() -> None:
+            result["value"] = list(row_map.values())
+            dialog.destroy()
+
+        def _importar_seleccion() -> None:
+            selected = tree.selection()
+            if not selected:
+                messagebox.showwarning("Seleccion", "Selecciona al menos un participante.")
+                return
+            result["value"] = [row_map[item_id] for item_id in selected if item_id in row_map]
+            dialog.destroy()
+
+        def _cancelar() -> None:
+            result["value"] = None
+            dialog.destroy()
+
+        btns = ttk.Frame(dialog)
+        btns.pack(fill=tk.X, padx=12, pady=(0, 12))
+        tk.Button(btns, text="Importar todos", command=_importar_todos, bg=COLOR_TEAL, fg="white", padx=10, pady=4).pack(
+            side=tk.LEFT
+        )
+        tk.Button(
+            btns,
+            text="Importar seleccionados",
+            command=_importar_seleccion,
+            bg="#2E86C1",
+            fg="white",
+            padx=10,
+            pady=4,
+        ).pack(side=tk.LEFT, padx=(8, 0))
+        tk.Button(btns, text="Cancelar", command=_cancelar, bg=COLOR_PURPLE, fg="white", padx=10, pady=4).pack(
+            side=tk.RIGHT
+        )
+
+        dialog.wait_window()
+        return result["value"]
+
+    def _resolve_profesional_import(self, profesional: str) -> str:
+        profesional = (profesional or "").strip()
+        if not profesional:
+            return ""
+        prof_values = list(getattr(self.seccion1.prof_combo, "_all_values", []) or [])
+        if profesional in prof_values:
+            return profesional
+
+        def _norm_name(text: str) -> str:
+            text = str(text).strip().lower()
+            text = unicodedata.normalize("NFKD", text)
+            text = "".join(ch for ch in text if not unicodedata.combining(ch))
+            text = re.sub(r"[^a-z0-9\\s]", " ", text)
+            text = re.sub(r"\\s+", " ", text).strip()
+            return text
+
+        src = _norm_name(profesional)
+        if not src:
+            return ""
+        src_tokens = set(src.split())
+
+        best_item = ""
+        best_score = 0.0
+        for item in prof_values:
+            norm_item = _norm_name(item)
+            if not norm_item:
+                continue
+            if src in norm_item or norm_item in src:
+                return item
+            item_tokens = set(norm_item.split())
+            overlap = len(src_tokens & item_tokens) / max(len(src_tokens), 1)
+            ratio = difflib.SequenceMatcher(None, src, norm_item).ratio()
+            score = max(overlap, ratio)
+            if score > best_score:
+                best_score = score
+                best_item = item
+
+        if best_score >= 0.55:
+            return best_item
+        return ""
+
+    def _preview_importacion_acta(self, parsed: dict, participantes: list[dict]) -> bool:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Vista previa de importacion")
+        dialog.resizable(True, True)
+        dialog.geometry("900x560")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        ttk.Label(
+            dialog,
+            text="Revisa el mapeo antes de aplicar al formulario",
+            font=("Arial", 10, "bold"),
+        ).pack(anchor="w", padx=12, pady=(10, 8))
+
+        mapping_wrap = ttk.LabelFrame(dialog, text="Campos detectados", padding=(8, 8))
+        mapping_wrap.pack(fill=tk.X, padx=12, pady=(0, 8))
+        mapping_wrap.grid_columnconfigure(0, weight=1)
+
+        mapping_tree = ttk.Treeview(mapping_wrap, columns=("campo", "valor", "destino"), show="headings", height=8)
+        mapping_tree.heading("campo", text="Campo interno")
+        mapping_tree.heading("valor", text="Valor detectado")
+        mapping_tree.heading("destino", text="Destino")
+        mapping_tree.column("campo", width=220, anchor="w")
+        mapping_tree.column("valor", width=340, anchor="w")
+        mapping_tree.column("destino", width=260, anchor="w")
+        map_scroll = ttk.Scrollbar(mapping_wrap, orient="vertical", command=mapping_tree.yview)
+        mapping_tree.configure(yscrollcommand=map_scroll.set)
+        mapping_tree.grid(row=0, column=0, sticky="nsew")
+        map_scroll.grid(row=0, column=1, sticky="ns")
+
+        raw_prof = (parsed.get("nombre_profesional") or "").strip()
+        resolved_prof = self._resolve_profesional_import(raw_prof)
+        modalidad = (parsed.get("modalidad_servicio") or "").strip()
+        nombre_empresa = (parsed.get("nombre_empresa") or "").strip()
+        empresa_bd_nombre = (parsed.get("_empresa_bd_nombre") or "").strip()
+        nit = (parsed.get("nit_empresa") or "").strip()
+        fecha = (parsed.get("fecha_servicio") or "").strip()
+        nit_validado_bd = bool(parsed.get("_nit_validado_bd"))
+
+        rows = [
+            ("seccion2.nit_empresa", nit or "-", "NIT de empresa"),
+            ("validacion.nit_bd", "Si" if nit_validado_bd else "No", "Validacion en BD"),
+            (
+                "seccion2.empresa_bd",
+                empresa_bd_nombre or "-",
+                "Empresa encontrada en BD",
+            ),
+            (
+                "seccion2.nombre_empresa",
+                nombre_empresa or "(se resuelve por NIT en BD)",
+                "Nombre empresa",
+            ),
+            ("seccion3.fecha_servicio", fecha or "-", "Fecha servicio"),
+            (
+                "seccion1.nombre_profesional",
+                (resolved_prof or raw_prof or "-"),
+                "Profesional (match en lista)",
+            ),
+            ("seccion3.modalidad_servicio", modalidad or "-", "Modalidad (si aplica)"),
+            ("seccion4.total_participantes", str(len(participantes)), "Oferentes"),
+        ]
+        for row in rows:
+            mapping_tree.insert("", "end", values=row)
+
+        parts_wrap = ttk.LabelFrame(dialog, text="Participantes a importar", padding=(8, 8))
+        parts_wrap.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 8))
+        parts_wrap.grid_rowconfigure(0, weight=1)
+        parts_wrap.grid_columnconfigure(0, weight=1)
+
+        parts_tree = ttk.Treeview(parts_wrap, columns=("idx", "cedula"), show="headings")
+        parts_tree.heading("idx", text="#")
+        parts_tree.heading("cedula", text="Cedula")
+        parts_tree.column("idx", width=50, anchor="center")
+        parts_tree.column("cedula", width=260, anchor="w")
+        parts_scroll = ttk.Scrollbar(parts_wrap, orient="vertical", command=parts_tree.yview)
+        parts_tree.configure(yscrollcommand=parts_scroll.set)
+        parts_tree.grid(row=0, column=0, sticky="nsew")
+        parts_scroll.grid(row=0, column=1, sticky="ns")
+
+        if participantes:
+            for idx, persona in enumerate(participantes, start=1):
+                parts_tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        idx,
+                        (persona.get("cedula_usuario") or "").strip(),
+                    ),
+                )
+        else:
+            parts_tree.insert("", "end", values=("-", "Sin cedulas detectadas"))
+
+        warnings = list(parsed.get("warnings") or [])
+        if warnings:
+            warn_wrap = ttk.LabelFrame(dialog, text="Avisos", padding=(8, 6))
+            warn_wrap.pack(fill=tk.X, padx=12, pady=(0, 8))
+            for item in warnings[:6]:
+                ttk.Label(warn_wrap, text=f"- {item}", foreground="#8A6D3B").pack(anchor="w")
+
+        result = {"apply": False}
+
+        def _apply() -> None:
+            result["apply"] = True
+            dialog.destroy()
+
+        def _cancel() -> None:
+            dialog.destroy()
+
+        btns = ttk.Frame(dialog)
+        btns.pack(fill=tk.X, padx=12, pady=(0, 12))
+        tk.Button(btns, text="Cancelar", command=_cancel, bg=COLOR_PURPLE, fg="white", padx=10, pady=4).pack(
+            side=tk.RIGHT
+        )
+        tk.Button(btns, text="Aplicar al formulario", command=_apply, bg=COLOR_TEAL, fg="white", padx=12, pady=4).pack(
+            side=tk.RIGHT,
+            padx=(0, 8),
+        )
+
+        dialog.wait_window()
+        return bool(result["apply"])
+
+    def _aplicar_importacion_acta(self, parsed: dict, participantes: list[dict]) -> None:
+        nit = (parsed.get("nit_empresa") or "").strip()
+        if nit:
+            self.seccion2.nit_var.set(nit)
+            self.seccion2._fetch_empresa(nit)
+            if not self.seccion2.nombre_var.get().strip():
+                self.seccion2.nombre_var.set((parsed.get("nombre_empresa") or "").strip())
+
+        fecha = (parsed.get("fecha_servicio") or "").strip()
+        if fecha:
+            self.seccion3.fecha_var.set(fecha)
+
+        selected_prof = self._resolve_profesional_import((parsed.get("nombre_profesional") or "").strip())
+        if selected_prof:
+            self.seccion1.prof_var.set(selected_prof)
+
+        modalidad = (parsed.get("modalidad_servicio") or "").strip()
+        if modalidad and not self.seccion3.modalidad_var.get().strip():
+            self.seccion3.modalidad_var.set(modalidad)
+
+        if participantes:
+            self.seccion4.clear_rows()
+            for persona in participantes:
+                self.seccion4._add_row()
+                row = self.seccion4.rows[-1]
+                ced = (persona.get("cedula_usuario") or "").strip()
+                if ced:
+                    row.cedula_var.set(ced)
+                    self.seccion4._fill_user(row)
+        else:
+            self.seccion4.reset_for_new_entry()
+
+        self._refresh_summary()
 
     def _flush_excel_queue(self) -> None:
         loading = LoadingDialog(self.root, "Reintentando cola Excel...", determinate=True)
