@@ -1,11 +1,14 @@
-import os
+﻿import os
+import queue
 import re
 import subprocess
 import sys
 import time
 import webbrowser
 import difflib
-import unicodedata
+from contextlib import contextmanager
+from collections import OrderedDict
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
@@ -15,60 +18,84 @@ import tkinter.font as tkfont
 
 import threading
 
+from app.domain.service_calculation import CalculoServicioInput, calcular_servicio
+from app.logging_utils import LOGGER_GUI, get_logger
+from app.utils.text import normalize_search_text, normalize_text
 
 COLOR_PURPLE = "#7C3D96"
 COLOR_TEAL = "#07B499"
+_LOGGER = get_logger(LOGGER_GUI)
 _LOGO_PATH = None
 _LOGO_CACHE: dict[int, tk.PhotoImage] = {}
+_MAX_LOGO_CACHE_ENTRIES = 8
+_MAX_API_CACHE_ENTRIES = 256
 _DATE_ENTRY_CLS = None
+_GLOBAL_STATE_LOCK = threading.RLock()
 
 
-def _get_date_entry():
+def log_and_show_error(exc: Exception, context: str, title: str = "Error") -> None:
+    error_code = f"E-{int(time.time() * 1000) % 1_000_000:06d}"
+    _LOGGER.exception("[%s] %s: %s", error_code, context, exc)
+    messagebox.showerror(
+        title,
+        f"{context}.\nIntenta nuevamente o contacta soporte.\nCodigo: {error_code}",
+    )
+
+
+def _get_date_entry() -> object | None:
     global _DATE_ENTRY_CLS
-    if _DATE_ENTRY_CLS is None:
-        try:
-            from tkcalendar import DateEntry
-        except ImportError:
-            _DATE_ENTRY_CLS = False
-        else:
-            _DATE_ENTRY_CLS = DateEntry
-    return None if _DATE_ENTRY_CLS is False else _DATE_ENTRY_CLS
+    with _GLOBAL_STATE_LOCK:
+        if _DATE_ENTRY_CLS is None:
+            try:
+                from tkcalendar import DateEntry
+            except ImportError:
+                _DATE_ENTRY_CLS = False
+            else:
+                _DATE_ENTRY_CLS = DateEntry
+        return None if _DATE_ENTRY_CLS is False else _DATE_ENTRY_CLS
 
 
 def _load_logo(subsample: int = 12) -> tk.PhotoImage | None:
     global _LOGO_PATH
-    if _LOGO_PATH is None:
-        try:
-            from app.paths import resource_path
+    with _GLOBAL_STATE_LOCK:
+        if _LOGO_PATH is None:
+            try:
+                from app.paths import resource_path
 
-            candidate = resource_path("logo/logo_reca.png")
-            if candidate.exists():
-                _LOGO_PATH = str(candidate)
-            else:
+                candidate = resource_path("logo/logo_reca.png")
+                if candidate.exists():
+                    _LOGO_PATH = str(candidate)
+                else:
+                    _LOGO_PATH = os.path.join(os.path.dirname(__file__), "logo", "logo_reca.png")
+            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+                _LOGGER.warning("No se pudo resolver ruta de logo via resource_path: %s", exc)
                 _LOGO_PATH = os.path.join(os.path.dirname(__file__), "logo", "logo_reca.png")
-        except Exception:
-            _LOGO_PATH = os.path.join(os.path.dirname(__file__), "logo", "logo_reca.png")
-    if not os.path.exists(_LOGO_PATH):
-        return None
-    if subsample not in _LOGO_CACHE:
-        _LOGO_CACHE[subsample] = tk.PhotoImage(file=_LOGO_PATH).subsample(subsample)
-    return _LOGO_CACHE[subsample]
+        if not os.path.exists(_LOGO_PATH):
+            return None
+        if subsample not in _LOGO_CACHE:
+            if len(_LOGO_CACHE) >= _MAX_LOGO_CACHE_ENTRIES:
+                oldest_key = next(iter(_LOGO_CACHE))
+                _LOGO_CACHE.pop(oldest_key, None)
+            _LOGO_CACHE[subsample] = tk.PhotoImage(file=_LOGO_PATH).subsample(subsample)
+        return _LOGO_CACHE[subsample]
 
 
+
+
+INITIAL_PREFETCH_ITEMS: list[tuple[str, dict | None, str]] = [
+    ("/wizard/seccion-1/orden-clausulada/opciones", None, "opciones de orden"),
+    ("/wizard/seccion-1/profesionales", None, "profesionales"),
+    ("/wizard/seccion-2/empresas", None, "empresas"),
+    ("/wizard/seccion-3/tarifas", None, "tarifas"),
+    ("/wizard/seccion-4/usuarios", None, "usuarios"),
+    ("/wizard/seccion-4/discapacidades", None, "discapacidades"),
+    ("/wizard/seccion-4/generos", None, "generos"),
+    ("/wizard/seccion-4/contratos", None, "contratos"),
+]
 
 
 def _prefetch_initial_data(api: "ApiClient", status_callback=None) -> None:
-    items = [
-        ("/wizard/seccion-1/orden-clausulada/opciones", None, "opciones de orden"),
-        ("/wizard/seccion-1/profesionales", None, "profesionales"),
-        ("/wizard/seccion-2/empresas", None, "empresas"),
-        ("/wizard/seccion-3/tarifas", None, "tarifas"),
-        ("/wizard/seccion-4/usuarios", None, "usuarios"),
-        ("/wizard/seccion-4/discapacidades", None, "discapacidades"),
-        ("/wizard/seccion-4/generos", None, "generos"),
-        ("/wizard/seccion-4/contratos", None, "contratos"),
-    ]
-    api.prefetch(items, status_callback=status_callback)
+    api.prefetch(INITIAL_PREFETCH_ITEMS, status_callback=status_callback)
 
 
 class ApiClient:
@@ -76,7 +103,7 @@ class ApiClient:
         from app.services import wizard_service
 
         self._svc = wizard_service
-        self._cache: dict[tuple[str, str, tuple[tuple[str, str], ...] | None], dict] = {}
+        self._cache: OrderedDict[tuple[str, str, tuple[tuple[str, str], ...] | None], dict] = OrderedDict()
 
     def _cache_key(self, path: str, params: dict | None) -> tuple[str, str, tuple[tuple[str, str], ...] | None]:
         if params:
@@ -88,13 +115,17 @@ class ApiClient:
     def get(self, path: str, params: dict | None = None, use_cache: bool = False) -> dict:
         cache_key = self._cache_key(path, params) if use_cache else None
         if cache_key and cache_key in self._cache:
+            self._cache.move_to_end(cache_key)
             return self._cache[cache_key]
         try:
             data = self._dispatch_get(path, params or {})
             if cache_key:
                 self._cache[cache_key] = data
+                self._cache.move_to_end(cache_key)
+                while len(self._cache) > _MAX_API_CACHE_ENTRIES:
+                    self._cache.popitem(last=False)
             return data
-        except Exception as exc:
+        except (RuntimeError, ValueError, TypeError, OSError, KeyError, IndexError, AttributeError, tk.TclError) as exc:
             detail = getattr(exc, "detail", None) or str(exc)
             raise RuntimeError(detail) from exc
 
@@ -115,7 +146,7 @@ class ApiClient:
 
     def build_cache(self, items: list[tuple[str, dict | None, str]], status_callback=None) -> dict:
         total = len(items)
-        new_cache: dict[tuple[str, str, tuple[tuple[str, str], ...] | None], dict] = {}
+        new_cache: OrderedDict[tuple[str, str, tuple[tuple[str, str], ...] | None], dict] = OrderedDict()
         for index, (path, params, label) in enumerate(items, start=1):
             if status_callback:
                 progress = int((index / max(total, 1)) * 100)
@@ -123,15 +154,27 @@ class ApiClient:
             data = self._dispatch_get(path, params or {})
             key = self._cache_key(path, params)
             new_cache[key] = data
+            new_cache.move_to_end(key)
+            while len(new_cache) > _MAX_API_CACHE_ENTRIES:
+                new_cache.popitem(last=False)
         return new_cache
 
     def replace_cache(self, new_cache: dict) -> None:
-        self._cache = new_cache
+        bounded: OrderedDict[tuple[str, str, tuple[tuple[str, str], ...] | None], dict] = OrderedDict()
+        for key, value in new_cache.items():
+            bounded[key] = value
+            bounded.move_to_end(key)
+            while len(bounded) > _MAX_API_CACHE_ENTRIES:
+                bounded.popitem(last=False)
+        self._cache = bounded
+
+    def reset_runtime_caches(self) -> None:
+        self._svc.reset_runtime_caches()
 
     def post(self, path: str, payload: dict | None = None, timeout: int | float = 10) -> dict:
         try:
             return self._dispatch_post(path, payload or {})
-        except Exception as exc:
+        except (RuntimeError, ValueError, TypeError, OSError, KeyError, IndexError, AttributeError, tk.TclError) as exc:
             detail = getattr(exc, "detail", None) or str(exc)
             raise RuntimeError(detail) from exc
 
@@ -211,7 +254,7 @@ class ApiClient:
 
 
 class ScrollableFrame(ttk.Frame):
-    def __init__(self, parent):
+    def __init__(self, parent) -> None:
         super().__init__(parent)
         self.canvas = tk.Canvas(self, highlightthickness=0, bg="white")
         scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
@@ -249,6 +292,7 @@ class ScrollableFrame(ttk.Frame):
             if not self.canvas.winfo_exists():
                 return
         except tk.TclError:
+            _LOGGER.debug("Canvas ya no existe al procesar rueda del mouse.")
             return
         try:
             if event.num == 4:
@@ -259,6 +303,7 @@ class ScrollableFrame(ttk.Frame):
                 delta = int(-1 * (event.delta / 120))
                 self.canvas.yview_scroll(delta, "units")
         except tk.TclError:
+            _LOGGER.debug("Error Tcl en desplazamiento de canvas; se ignora por widget destruido.")
             return
 
     def _on_canvas_configure(self, event) -> None:
@@ -266,24 +311,25 @@ class ScrollableFrame(ttk.Frame):
             if self.canvas.winfo_exists():
                 self.canvas.itemconfigure(self._content_window, width=event.width)
         except tk.TclError:
+            _LOGGER.debug("Error Tcl al redimensionar canvas scrollable.")
             return
 
 
 class StartupSplash(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
-        self.title("SISTEMA DE GESTIÓN ODS - RECA")
+        self.title("SISTEMA DE GESTIÃ“N ODS - RECA")
         self.resizable(False, False)
         self.configure(bg="white")
         self.protocol("WM_DELETE_WINDOW", lambda: None)
         try:
             self.transient(parent)
         except tk.TclError:
-            pass
+            _LOGGER.debug("No se pudo establecer splash como transient.")
         try:
             self.attributes("-topmost", True)
         except tk.TclError:
-            pass
+            _LOGGER.debug("No se pudo establecer splash topmost.")
 
         container = tk.Frame(self, bg="white")
         container.pack(fill=tk.BOTH, expand=True, padx=24, pady=20)
@@ -304,7 +350,7 @@ class StartupSplash(tk.Toplevel):
         try:
             style.theme_use("clam")
         except tk.TclError:
-            pass
+            _LOGGER.debug("No se pudo aplicar tema 'clam' en StartupSplash.")
         style.configure(
             "Reca.Horizontal.TProgressbar",
             background=COLOR_TEAL,
@@ -354,11 +400,11 @@ class LoadingDialog(tk.Toplevel):
         try:
             self.transient(parent)
         except tk.TclError:
-            pass
+            _LOGGER.debug("No se pudo establecer loading dialog como transient.")
         try:
             self.attributes("-topmost", True)
         except tk.TclError:
-            pass
+            _LOGGER.debug("No se pudo establecer loading dialog topmost.")
         self._determinate = determinate
 
         container = tk.Frame(self, bg="white")
@@ -389,7 +435,7 @@ class LoadingDialog(tk.Toplevel):
         try:
             style.theme_use("clam")
         except tk.TclError:
-            pass
+            _LOGGER.debug("No se pudo aplicar tema 'clam' en LoadingDialog.")
         style.configure(
             "Reca.Horizontal.TProgressbar",
             background=COLOR_TEAL,
@@ -459,7 +505,7 @@ def set_widgets_state(container: tk.Widget, state: str) -> None:
             else:
                 child.configure(state=state)
         except tk.TclError:
-            pass
+            _LOGGER.debug("No se pudo cambiar estado de un widget (TclError).")
         set_widgets_state(child, state)
 
 
@@ -487,11 +533,11 @@ def configure_combobox(
 
 
 def format_currency(value) -> str:
-    try:
-        amount = float(value)
-    except (TypeError, ValueError):
+    amount = safe_decimal(value)
+    if amount == Decimal("0") and value not in (0, "0", 0.0, Decimal("0")):
         return ""
-    return f"$ {amount:,.0f}".replace(",", ".")
+    rounded = int(amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    return f"$ {rounded:,}".replace(",", ".")
 
 
 def safe_int(value: str) -> int | None:
@@ -499,6 +545,32 @@ def safe_int(value: str) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def safe_decimal(value) -> Decimal:
+    try:
+        if isinstance(value, str):
+            clean = value.strip()
+            if not clean:
+                return Decimal("0")
+            clean = clean.replace("$", "").replace(" ", "")
+            if "." in clean and "," in clean:
+                if clean.rfind(",") > clean.rfind("."):
+                    clean = clean.replace(".", "").replace(",", ".")
+                else:
+                    clean = clean.replace(",", "")
+            elif "." in clean:
+                if clean.count(".") > 1 or re.search(r"\.\d{3}$", clean):
+                    clean = clean.replace(".", "")
+            elif "," in clean:
+                if clean.count(",") > 1 or re.search(r",\d{3}$", clean):
+                    clean = clean.replace(",", "")
+                else:
+                    clean = clean.replace(",", ".")
+            return Decimal(clean)
+        return Decimal(str(value or "0"))
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal("0")
 
 
 @dataclass
@@ -577,7 +649,7 @@ class Seccion1Frame(BaseSection):
 
     def set_data(self, data: dict) -> None:
         orden = str(data.get("orden_clausulada", "")).strip().lower()
-        self.orden_var.set("Sí" if orden.startswith("s") or orden == "true" else "No")
+        self.orden_var.set("SÃ­" if orden.startswith("s") or orden == "true" else "No")
         self.prof_var.set(data.get("nombre_profesional", ""))
 
     def _open_add_profesional(self) -> None:
@@ -596,12 +668,12 @@ class Seccion1Frame(BaseSection):
         programa_combo = ttk.Combobox(
             dialog,
             textvariable=programa_var,
-            values=["Inclusión Laboral", "Interprete"],
+            values=["InclusiÃ³n Laboral", "Interprete"],
             state="readonly",
             width=20,
         )
         programa_combo.grid(row=1, column=1, padx=10, pady=8, sticky="w")
-        programa_combo.set("Inclusión Laboral")
+        programa_combo.set("InclusiÃ³n Laboral")
 
         def on_save():
             payload = {
@@ -610,8 +682,8 @@ class Seccion1Frame(BaseSection):
             }
             try:
                 data = self.api.post("/wizard/seccion-1/profesionales", payload)
-            except Exception as exc:
-                messagebox.showerror("Error", f"No se pudo guardar: {exc}")
+            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+                log_and_show_error(exc, "No se pudo guardar el profesional", title="Error")
                 return
 
             nuevo = data.get("data")
@@ -721,7 +793,7 @@ class Seccion2Frame(BaseSection):
         self.nombre_combo.configure(values=self._nombres)
 
     def _normalize_nombre(self, nombre: str) -> str:
-        return " ".join(nombre.strip().lower().split())
+        return normalize_text(nombre, lowercase=True)
 
     def _on_nit_selected(self, _event) -> None:
         self._fetch_empresa(self.nit_var.get())
@@ -984,6 +1056,25 @@ class Seccion3Frame(BaseSection):
         self.interprete_frame.grid(row=7, column=0, columnspan=2, sticky="w", pady=(4, 0))
         self.interprete_frame.grid_remove()
 
+    @staticmethod
+    def _decimal_to_float(value: Decimal, field_name: str) -> float:
+        if not value.is_finite():
+            raise ValueError(f"{field_name}: valor no finito")
+        return float(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+    def _build_calculo_input(self) -> CalculoServicioInput:
+        horas_raw = self.horas_var.get().strip()
+        minutos_raw = self.minutos_var.get().strip()
+        return CalculoServicioInput(
+            fecha_servicio=self.fecha_var.get().strip(),
+            codigo_servicio=self.codigo_var.get().strip(),
+            modalidad_servicio=self.modalidad_var.get().strip(),
+            valor_base=self.valor_base_var.get().strip() or "0",
+            servicio_interpretacion=self.interpretacion_var.get(),
+            horas_interprete=safe_int(horas_raw) if horas_raw else 0,
+            minutos_interprete=safe_int(minutos_raw) if minutos_raw else 0,
+        )
+
     def _toggle_interprete(self) -> None:
         if self.interpretacion_var.get():
             self.interprete_frame.grid()
@@ -1018,7 +1109,7 @@ class Seccion3Frame(BaseSection):
             if hasattr(self.fecha_widget, "delete"):
                 self.fecha_widget.delete(0, "end")
         except tk.TclError:
-            pass
+            _LOGGER.debug("No se pudo limpiar fecha en Seccion3.")
         self.codigo_var.set("")
         self.codigo_combo.configure(values=self._codigos)
         self.referencia_var.set("")
@@ -1097,7 +1188,7 @@ class Seccion3Frame(BaseSection):
         rows = []
         for codigo, item in self._tarifas_by_codigo.items():
             rows.append((str(codigo), str(item.get("descripcion_servicio", "") or "")))
-        def _codigo_sort_key(value: str):
+        def _codigo_sort_key(value: str) -> tuple[int, int | str, str]:
             txt = str(value or "").strip()
             nums = re.findall(r"\d+", txt)
             if nums:
@@ -1146,13 +1237,14 @@ class Seccion3Frame(BaseSection):
         self._codigos_popup = None
 
     def _calcular_interprete(self) -> None:
-        base = float(self.valor_base_var.get() or 0)
-        horas = safe_int(self.horas_var.get() or "") or 0
-        minutos = safe_int(self.minutos_var.get() or "") or 0
-        horas_decimal = horas + (minutos / 60)
-        self.horas_decimal_var.set(f"{horas_decimal:.2f}")
-        total = horas_decimal * base
-        self.total_calculado_var.set(format_currency(total))
+        try:
+            result = calcular_servicio(self._build_calculo_input())
+        except ValueError as exc:
+            messagebox.showerror("Seccion 3", str(exc))
+            return
+        horas_dec = result.horas_interprete or Decimal("0")
+        self.horas_decimal_var.set(f"{horas_dec:.2f}")
+        self.total_calculado_var.set(format_currency(result.valor_total))
 
     def ensure_tarifa_loaded(self) -> None:
         codigo = self.codigo_var.get().strip()
@@ -1160,18 +1252,27 @@ class Seccion3Frame(BaseSection):
             self._fetch_tarifa(codigo)
 
     def get_payload(self) -> dict:
+        calculo_input = self._build_calculo_input()
+        try:
+            result = calcular_servicio(calculo_input)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+        valor_base = safe_decimal(self.valor_base_var.get()).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         payload = {
             "fecha_servicio": self.fecha_var.get().strip(),
             "codigo_servicio": self.codigo_var.get().strip(),
             "referencia_servicio": self.referencia_var.get().strip(),
             "descripcion_servicio": self.descripcion_var.get().strip(),
             "modalidad_servicio": self.modalidad_var.get().strip(),
-            "valor_base": float(self.valor_base_var.get() or 0),
+            "valor_base": self._decimal_to_float(valor_base, "valor_base"),
             "servicio_interpretacion": self.interpretacion_var.get(),
         }
         if self.interpretacion_var.get():
-            payload["horas_interprete"] = int(self.horas_var.get() or 0)
-            payload["minutos_interprete"] = int(self.minutos_var.get() or 0)
+            payload["horas_interprete"] = int(calculo_input.horas_interprete or 0)
+            payload["minutos_interprete"] = int(calculo_input.minutos_interprete or 0)
+            self.horas_decimal_var.set(f"{(result.horas_interprete or Decimal('0')):.2f}")
+            self.total_calculado_var.set(format_currency(result.valor_total))
         return payload
 
     def set_data(self, data: dict) -> None:
@@ -1183,12 +1284,12 @@ class Seccion3Frame(BaseSection):
         self.modalidad_var.set(data.get("modalidad_servicio", ""))
 
         base = max(
-            float(data.get("valor_virtual", 0) or 0),
-            float(data.get("valor_bogota", 0) or 0),
-            float(data.get("valor_otro", 0) or 0),
-            float(data.get("todas_modalidades", 0) or 0),
-        )
-        self.valor_base_var.set(str(base))
+            safe_decimal(data.get("valor_virtual", 0)),
+            safe_decimal(data.get("valor_bogota", 0)),
+            safe_decimal(data.get("valor_otro", 0)),
+            safe_decimal(data.get("todas_modalidades", 0)),
+        ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        self.valor_base_var.set(f"{base:.2f}")
         self.valor_base_display_var.set(format_currency(base))
         self._last_codigo = codigo
 
@@ -1196,19 +1297,23 @@ class Seccion3Frame(BaseSection):
         valor_interprete = data.get("valor_interprete") or 0
         if horas_decimal:
             self.interpretacion_var.set(True)
-            horas_decimal = float(horas_decimal)
-            horas = int(horas_decimal)
-            minutos = int(round((horas_decimal - horas) * 60))
+            horas_decimal_dec = safe_decimal(horas_decimal).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            horas = int(horas_decimal_dec)
+            minutos_dec = (horas_decimal_dec - Decimal(horas)) * Decimal("60")
+            minutos = int(minutos_dec.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+            if minutos == 60:
+                horas += 1
+                minutos = 0
             self._toggle_interprete()
             self.horas_var.set(str(horas))
             self.minutos_var.set(str(minutos))
-            self.horas_decimal_var.set(f"{horas_decimal:.2f}")
+            self.horas_decimal_var.set(f"{horas_decimal_dec:.2f}")
             self.total_calculado_var.set(format_currency(valor_interprete))
         else:
             self.interpretacion_var.set(False)
             self._toggle_interprete()
 class PersonaRow(ttk.Frame):
-    def __init__(self, parent, cedulas, discapacidades, generos, contratos, on_search):
+    def __init__(self, parent, cedulas, discapacidades, generos, contratos, on_search) -> None:
         super().__init__(parent)
         self.nombre_var = tk.StringVar()
         self.cedula_var = tk.StringVar()
@@ -1270,7 +1375,7 @@ class PersonaRow(ttk.Frame):
             try:
                 self.fecha_ingreso_widget.delete(0, "end")
             except tk.TclError:
-                pass
+                _LOGGER.debug("No se pudo limpiar fecha de ingreso en fila de persona.")
 
         ttk.Label(self, text="Tipo contrato").grid(row=2, column=3, sticky="w", padx=(10, 0))
         self.contrato_combo = ttk.Combobox(
@@ -1315,7 +1420,7 @@ class PersonaRow(ttk.Frame):
             try:
                 widget.configure(background=color)
             except tk.TclError:
-                pass
+                _LOGGER.debug("No se pudo aplicar color de validacion a widget de persona.")
 
     def as_payload(self) -> dict:
         return {
@@ -1499,6 +1604,8 @@ class Seccion4Frame(BaseSection):
             self._open_create_user(prefill_cedula=cedula, target_row=row)
 
     def _open_create_user(self, prefill_cedula: str | None = None, target_row: PersonaRow | None = None) -> None:
+        if not hasattr(self, "rows") or not isinstance(self.rows, list):
+            self.rows = []
         dialog = tk.Toplevel(self)
         dialog.title("Crear usuario")
         dialog.geometry("420x360")
@@ -1548,8 +1655,8 @@ class Seccion4Frame(BaseSection):
                 return
             try:
                 data = self.api.post("/wizard/seccion-4/usuarios", payload)
-            except Exception as exc:
-                messagebox.showerror("Error", f"No se pudo crear el usuario: {exc}")
+            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+                log_and_show_error(exc, "No se pudo crear el usuario", title="Error")
                 return
 
             user = data["data"]
@@ -1702,6 +1809,19 @@ class ResumenFrame(ttk.Frame):
             var.set(value)
 
 
+@dataclass
+class MonitorRowState:
+    row_id: str
+    frame: ttk.Frame
+    orig: dict[str, str] = field(default_factory=dict)
+    dirty: set[str] = field(default_factory=set)
+    created_at_raw: str | None = None
+    vars: dict[str, tk.StringVar] = field(default_factory=dict)
+    entries: dict[str, tk.Entry] = field(default_factory=dict)
+    trace_ids: dict[str, str] = field(default_factory=dict)
+    suspend_counter: int = 0
+
+
 class LiveMonitorPanel(tk.Toplevel):
     COLUMNS = [
         ("id", "ID", 70),
@@ -1752,7 +1872,8 @@ class LiveMonitorPanel(tk.Toplevel):
         self.configure(bg="white")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        self._rows_by_id: dict[str, dict] = {}
+        self._ui_thread_id = threading.get_ident()
+        self._rows_by_id: dict[str, MonitorRowState] = {}
         self._syncing = False
         self._server_total = 0
         self._server_loaded = 0
@@ -1831,7 +1952,7 @@ class LiveMonitorPanel(tk.Toplevel):
             ttk.Label(title_row, text=title, width=max(6, col_w - 2), anchor="w").pack(side=tk.LEFT)
             sort_btn = tk.Button(
                 title_row,
-                text="↕",
+                text="â†•",
                 command=lambda k=key: self._toggle_sort(k),
                 bg=COLOR_PURPLE,
                 fg="white",
@@ -1853,6 +1974,23 @@ class LiveMonitorPanel(tk.Toplevel):
         self.rows_container.pack(fill=tk.X, expand=True)
 
         self._initial_load()
+
+    def _ensure_ui_thread(self) -> bool:
+        return threading.get_ident() == self._ui_thread_id
+
+    def _run_on_ui_thread(self, callback, *args, **kwargs) -> None:
+        if self._ensure_ui_thread():
+            callback(*args, **kwargs)
+            return
+        self.after(0, lambda: callback(*args, **kwargs))
+
+    @contextmanager
+    def _suspend_row_traces(self, row_state: MonitorRowState):
+        row_state.suspend_counter += 1
+        try:
+            yield
+        finally:
+            row_state.suspend_counter = max(0, row_state.suspend_counter - 1)
 
     def _on_close(self) -> None:
         self.destroy()
@@ -1886,10 +2024,13 @@ class LiveMonitorPanel(tk.Toplevel):
                 f"{dt_col.day:02d} {meses[dt_col.month - 1]} {dt_col.year} "
                 f"{dt_col.hour:02d}:{dt_col.minute:02d}:{dt_col.second:02d}"
             )
-        except Exception:
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
             return str(value)
 
     def force_refresh(self, silent: bool = False) -> None:
+        if not self._ensure_ui_thread():
+            self._run_on_ui_thread(self.force_refresh, silent=silent)
+            return
         if self._syncing:
             return
         self._syncing = True
@@ -1900,11 +2041,31 @@ class LiveMonitorPanel(tk.Toplevel):
             self._server_loaded = shown
             self._apply_filters_and_sort()
             self._update_pending_label()
-        except Exception as exc:
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
             if not silent:
-                messagebox.showerror("Monitor", f"No se pudo refrescar: {exc}")
+                log_and_show_error(exc, "No se pudo refrescar el monitor", title="Monitor")
         finally:
             self._syncing = False
+
+    def _remove_row_widget(self, row_state: MonitorRowState) -> None:
+        for key, var in row_state.vars.items():
+            trace_id = row_state.trace_ids.get(key, "")
+            if trace_id:
+                try:
+                    var.trace_remove("write", trace_id)
+                except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
+                    _LOGGER.debug("No se pudo remover trace de fila %s campo %s", row_state.row_id, key)
+            entry = row_state.entries.get(key)
+            if entry:
+                try:
+                    entry.unbind("<Double-1>")
+                except tk.TclError:
+                    _LOGGER.debug("No se pudo limpiar bind de fila %s campo %s", row_state.row_id, key)
+        try:
+            row_state.frame.destroy()
+        except tk.TclError:
+            _LOGGER.debug("No se pudo destruir frame de fila %s", row_state.row_id)
+        self._rows_by_id.pop(row_state.row_id, None)
 
     def _add_row_widget(self, data: dict) -> None:
         row_id = str(data.get("id", "")).strip()
@@ -1913,16 +2074,11 @@ class LiveMonitorPanel(tk.Toplevel):
         row_frame = ttk.Frame(self.rows_container)
         row_frame.pack(fill=tk.X, pady=1)
 
-        row_state = {
-            "id": row_id,
-            "frame": row_frame,
-            "orig": {},
-            "vars": {},
-            "entries": {},
-            "dirty": set(),
-            "suspend_trace": False,
-            "created_at_raw": data.get("created_at"),
-        }
+        row_state = MonitorRowState(
+            row_id=row_id,
+            frame=row_frame,
+            created_at_raw=data.get("created_at"),
+        )
         self._rows_by_id[row_id] = row_state
 
         for key, _title, width in self.COLUMNS:
@@ -1936,51 +2092,51 @@ class LiveMonitorPanel(tk.Toplevel):
             entry.configure(state="readonly", readonlybackground="white")
             if key in self.EDITABLE_KEYS:
                 entry.bind("<Double-1>", lambda _e, k=key, st=row_state: self._open_cell_editor(st, k))
-            row_state["vars"][key] = var
-            row_state["entries"][key] = entry
+            row_state.vars[key] = var
+            row_state.entries[key] = entry
 
-            def _on_var_change(*_args, key_name=key, state=row_state):
-                if state.get("suspend_trace"):
+            def _on_var_change(*_args, key_name=key, state: MonitorRowState = row_state):
+                if state.suspend_counter > 0:
                     return
                 self._mark_dirty_state(state, key_name)
 
-            var.trace_add("write", _on_var_change)
+            trace_id = var.trace_add("write", _on_var_change)
+            row_state.trace_ids[key] = trace_id
 
         self._set_row_data(row_state, data, set_as_original=True)
 
-    def _set_row_data(self, row_state: dict, data: dict, set_as_original: bool = False) -> None:
-        row_state["suspend_trace"] = True
-        row_state["created_at_raw"] = data.get("created_at")
-        for key, _title, _width in self.COLUMNS:
-            if key == "id":
-                continue
-            value = self._display_value(key, data.get(key))
-            if key in row_state["vars"]:
-                row_state["vars"][key].set(value)
-            if set_as_original:
-                row_state["orig"][key] = value
-        row_state["suspend_trace"] = False
+    def _set_row_data(self, row_state: MonitorRowState, data: dict, set_as_original: bool = False) -> None:
+        row_state.created_at_raw = data.get("created_at")
+        with self._suspend_row_traces(row_state):
+            for key, _title, _width in self.COLUMNS:
+                if key == "id":
+                    continue
+                value = self._display_value(key, data.get(key))
+                if key in row_state.vars:
+                    row_state.vars[key].set(value)
+                if set_as_original:
+                    row_state.orig[key] = value
         if set_as_original:
-            row_state["dirty"].clear()
+            row_state.dirty.clear()
             self._refresh_row_colors(row_state)
 
-    def _mark_dirty_state(self, row_state: dict, key: str) -> None:
-        if key not in row_state["vars"]:
+    def _mark_dirty_state(self, row_state: MonitorRowState, key: str) -> None:
+        if key not in row_state.vars:
             return
-        current = row_state["vars"][key].get()
-        original = row_state["orig"].get(key, "")
+        current = row_state.vars[key].get()
+        original = row_state.orig.get(key, "")
         if current != original:
-            row_state["dirty"].add(key)
+            row_state.dirty.add(key)
         else:
-            row_state["dirty"].discard(key)
+            row_state.dirty.discard(key)
         self._refresh_row_colors(row_state)
         self._apply_filters_and_sort()
         self._update_pending_label()
 
-    def _refresh_row_colors(self, row_state: dict) -> None:
-        for key, entry in row_state["entries"].items():
+    def _refresh_row_colors(self, row_state: MonitorRowState) -> None:
+        for key, entry in row_state.entries.items():
             try:
-                if key in row_state["dirty"]:
+                if key in row_state.dirty:
                     entry.configure(readonlybackground="#FFF59D")
                 else:
                     entry.configure(readonlybackground="white")
@@ -1992,36 +2148,33 @@ class LiveMonitorPanel(tk.Toplevel):
             return ""
         if key in self.MONEY_KEYS:
             try:
-                return format_currency(float(value))
-            except Exception:
+                return format_currency(value)
+            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
                 return str(value)
         if key in self.INT_KEYS:
             try:
-                return str(int(float(value)))
-            except Exception:
+                return str(int(safe_decimal(value)))
+            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
                 return str(value)
         return str(value)
 
-    def _parse_money(self, text: str) -> float:
-        clean = str(text).replace("$", "").replace(",", "").strip()
-        if not clean:
-            return 0.0
-        return float(clean)
+    def _parse_money(self, text: str) -> Decimal:
+        return safe_decimal(text)
 
     def _parse_for_save(self, key: str, text: str):
         if key in self.MONEY_KEYS:
-            return self._parse_money(text)
+            return float(self._parse_money(text))
         if key in self.INT_KEYS:
             clean = str(text).strip()
             if not clean:
                 return 0
-            return int(float(clean))
+            return int(safe_decimal(clean))
         return text.strip()
 
-    def _open_cell_editor(self, row_state: dict, key: str) -> None:
+    def _open_cell_editor(self, row_state: MonitorRowState, key: str) -> None:
         if key not in self.EDITABLE_KEYS:
             return
-        current = row_state["vars"][key].get()
+        current = row_state.vars[key].get()
         dialog = tk.Toplevel(self)
         dialog.title(f"Editar {key}")
         dialog.resizable(False, False)
@@ -2053,16 +2206,16 @@ class LiveMonitorPanel(tk.Toplevel):
             if key in self.MONEY_KEYS and raw:
                 try:
                     raw = self._display_value(key, self._parse_money(raw))
-                except Exception:
+                except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
                     messagebox.showerror("Monitor", "Valor monetario invalido.")
                     return
             if key in self.INT_KEYS and raw:
                 try:
-                    raw = str(int(float(raw)))
-                except Exception:
+                    raw = str(int(safe_decimal(raw)))
+                except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
                     messagebox.showerror("Monitor", "El valor debe ser numerico entero.")
                     return
-            row_state["vars"][key].set(raw)
+            row_state.vars[key].set(raw)
             dialog.destroy()
 
         btns = ttk.Frame(frame)
@@ -2084,16 +2237,15 @@ class LiveMonitorPanel(tk.Toplevel):
                 continue
             state = self._rows_by_id[row_id]
             for key, _title, _width in self.COLUMNS:
-                if key == "id" or key not in state["vars"]:
+                if key == "id" or key not in state.vars:
                     continue
                 incoming = self._display_value(key, row.get(key))
-                if key in state["dirty"]:
+                if key in state.dirty:
                     continue
-                state["orig"][key] = incoming
-                state["created_at_raw"] = row.get("created_at")
-                state["suspend_trace"] = True
-                state["vars"][key].set(incoming)
-                state["suspend_trace"] = False
+                state.orig[key] = incoming
+                state.created_at_raw = row.get("created_at")
+                with self._suspend_row_traces(state):
+                    state.vars[key].set(incoming)
             self._refresh_row_colors(state)
 
         existing_ids = list(self._rows_by_id.keys())
@@ -2101,13 +2253,9 @@ class LiveMonitorPanel(tk.Toplevel):
             if row_id in seen_ids:
                 continue
             state = self._rows_by_id[row_id]
-            if state["dirty"]:
+            if state.dirty:
                 continue
-            try:
-                state["frame"].destroy()
-            except tk.TclError:
-                pass
-            self._rows_by_id.pop(row_id, None)
+            self._remove_row_widget(state)
         self._apply_filters_and_sort()
 
     def _toggle_sort(self, key: str) -> None:
@@ -2115,17 +2263,17 @@ class LiveMonitorPanel(tk.Toplevel):
         self._sort_desc = False
         self._apply_filters_and_sort()
 
-    def _sort_value(self, row_state: dict, key: str):
-        text = row_state["vars"].get(key).get() if key in row_state["vars"] else ""
+    def _sort_value(self, row_state: MonitorRowState, key: str):
+        text = row_state.vars.get(key).get() if key in row_state.vars else ""
         if key in self.MONEY_KEYS:
             try:
                 return self._parse_money(text)
-            except Exception:
-                return 0.0
+            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
+                return Decimal("0")
         if key in self.INT_KEYS:
             try:
-                return int(float(text or 0))
-            except Exception:
+                return int(safe_decimal(text or 0))
+            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
                 return 0
         if key in self.DATE_KEYS:
             raw = (text or "").strip()
@@ -2137,20 +2285,20 @@ class LiveMonitorPanel(tk.Toplevel):
     def _apply_filters_and_sort(self) -> None:
         states = list(self._rows_by_id.values())
 
-        def _matches(state: dict) -> bool:
+        def _matches(state: MonitorRowState) -> bool:
             for key, var in self._filter_vars.items():
                 needle = var.get().strip().lower()
                 if not needle:
                     continue
-                value = state["vars"].get(key).get().strip().lower() if key in state["vars"] else ""
+                value = state.vars.get(key).get().strip().lower() if key in state.vars else ""
                 if needle not in value:
                     return False
             return True
 
         filtered = [state for state in states if _matches(state)]
 
-        def _created_sort(state: dict):
-            raw = state.get("created_at_raw")
+        def _created_sort(state: MonitorRowState):
+            raw = state.created_at_raw
             if raw in (None, ""):
                 return datetime.min.replace(tzinfo=timezone.utc)
             txt = str(raw).strip()
@@ -2161,7 +2309,7 @@ class LiveMonitorPanel(tk.Toplevel):
                 if parsed.tzinfo is None:
                     parsed = parsed.replace(tzinfo=timezone.utc)
                 return parsed
-            except Exception:
+            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
                 return datetime.min.replace(tzinfo=timezone.utc)
 
         # Always oldest first, newest at the bottom.
@@ -2169,12 +2317,12 @@ class LiveMonitorPanel(tk.Toplevel):
 
         for state in states:
             try:
-                state["frame"].pack_forget()
+                state.frame.pack_forget()
             except tk.TclError:
                 continue
         for state in filtered:
             try:
-                state["frame"].pack(fill=tk.X, pady=1)
+                state.frame.pack(fill=tk.X, pady=1)
             except tk.TclError:
                 continue
 
@@ -2191,27 +2339,28 @@ class LiveMonitorPanel(tk.Toplevel):
         dirty_cells = 0
         dirty_rows = 0
         for state in self._rows_by_id.values():
-            if state["dirty"]:
+            if state.dirty:
                 dirty_rows += 1
-                dirty_cells += len(state["dirty"])
+                dirty_cells += len(state.dirty)
         self.pending_var.set(f"Cambios pendientes: {dirty_cells} celda(s) en {dirty_rows} fila(s)")
 
     def discard_changes(self) -> None:
         for state in self._rows_by_id.values():
-            if not state["dirty"]:
+            if not state.dirty:
                 continue
-            for key in list(state["dirty"]):
-                original = state["orig"].get(key, "")
-                state["vars"][key].set(original)
-            state["dirty"].clear()
+            with self._suspend_row_traces(state):
+                for key in list(state.dirty):
+                    original = state.orig.get(key, "")
+                    state.vars[key].set(original)
+            state.dirty.clear()
             self._refresh_row_colors(state)
         self._update_pending_label()
 
     def has_pending_changes(self) -> bool:
-        return any(state["dirty"] for state in self._rows_by_id.values())
+        return any(state.dirty for state in self._rows_by_id.values())
 
     def save_changes(self) -> None:
-        pending = [state for state in self._rows_by_id.values() if state["dirty"]]
+        pending = [state for state in self._rows_by_id.values() if state.dirty]
         if not pending:
             messagebox.showinfo("Monitor", "No hay cambios pendientes.")
             return
@@ -2219,12 +2368,12 @@ class LiveMonitorPanel(tk.Toplevel):
         ok = 0
         errors = []
         for state in pending:
-            row_id = state["id"]
+            row_id = state.row_id
             datos = {}
-            for key in state["dirty"]:
+            for key in state.dirty:
                 try:
-                    datos[key] = self._parse_for_save(key, state["vars"][key].get())
-                except Exception:
+                    datos[key] = self._parse_for_save(key, state.vars[key].get())
+                except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
                     errors.append(f"ID {row_id}: valor invalido en {key}")
                     continue
             if not datos:
@@ -2232,12 +2381,12 @@ class LiveMonitorPanel(tk.Toplevel):
             payload = {"filtro": {"id": row_id}, "datos": datos}
             try:
                 self.api.post("/wizard/editar/actualizar", payload, timeout=120)
-                for key in list(state["dirty"]):
-                    state["orig"][key] = state["vars"][key].get()
-                state["dirty"].clear()
+                for key in list(state.dirty):
+                    state.orig[key] = state.vars[key].get()
+                state.dirty.clear()
                 self._refresh_row_colors(state)
                 ok += 1
-            except Exception as exc:
+            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
                 errors.append(f"ID {row_id}: {exc}")
 
         self._update_pending_label()
@@ -2253,7 +2402,7 @@ class LiveMonitorPanel(tk.Toplevel):
 
 
 class ActasTerminadasPanel(tk.Toplevel):
-    def __init__(self, root: tk.Tk, api: ApiClient, on_status_change=None):
+    def __init__(self, root: tk.Tk, api: ApiClient, on_status_change=None) -> None:
         super().__init__(root)
         self.root = root
         self.api = api
@@ -2314,6 +2463,10 @@ class ActasTerminadasPanel(tk.Toplevel):
         self.refresh()
 
     def _on_close(self) -> None:
+        for row_id in list(self._rows_by_id.keys()):
+            state = self._rows_by_id.get(row_id)
+            if state:
+                self._remove_row_widget(state)
         self.destroy()
 
     def _format_fecha(self, row: dict) -> str:
@@ -2334,7 +2487,7 @@ class ActasTerminadasPanel(tk.Toplevel):
                 dt = dt.replace(tzinfo=timezone.utc)
             local = dt.astimezone(timezone(timedelta(hours=-5)))
             return local.strftime("%Y-%m-%d %H:%M:%S")
-        except Exception:
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
             return text
 
     def _set_pending(self, pendientes: int) -> None:
@@ -2342,8 +2495,20 @@ class ActasTerminadasPanel(tk.Toplevel):
         if self.on_status_change:
             try:
                 self.on_status_change(pendientes)
-            except Exception:
-                pass
+            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+                _LOGGER.warning("No se pudo notificar cambio de pendientes en actas: %s", exc)
+
+    @staticmethod
+    def _is_revisado(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "t", "si", "s", "yes", "y", "x"}
+        return bool(value)
 
     def refresh(self) -> None:
         payload = self.api.get("/wizard/actas-finalizadas", params={"limit": 1000})
@@ -2357,7 +2522,7 @@ class ActasTerminadasPanel(tk.Toplevel):
 
         for idx, row in enumerate(rows):
             iid = f"row_{idx}"
-            revisado = bool(row.get("revisado"))
+            revisado = self._is_revisado(row.get("revisado"))
             tag = "" if revisado else "pending"
             self.tree.insert(
                 "",
@@ -2396,20 +2561,35 @@ class ActasTerminadasPanel(tk.Toplevel):
         if not path:
             messagebox.showinfo("Actas Terminadas", "No hay ruta para este registro.")
             return
+        allowed_doc_exts = {".pdf", ".xlsx", ".xlsm", ".xls", ".doc", ".docx", ".png", ".jpg", ".jpeg"}
+        blocked_exts = {".exe", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".msi", ".com", ".scr", ".pif"}
         try:
             if re.match(r"^https?://", path, re.IGNORECASE):
                 webbrowser.open(path)
                 return
             normalized = os.path.expanduser(os.path.expandvars(path))
+            ext = os.path.splitext(normalized)[1].lower()
+            if ext in blocked_exts:
+                messagebox.showwarning(
+                    "Actas Terminadas",
+                    "La ruta fue bloqueada por seguridad (tipo de archivo no permitido).",
+                )
+                return
+            if ext and ext not in allowed_doc_exts:
+                messagebox.showwarning(
+                    "Actas Terminadas",
+                    "Tipo de archivo no permitido para apertura desde la aplicacion.",
+                )
+                return
             if os.path.exists(normalized):
                 os.startfile(normalized)
                 return
-            messagebox.showwarning("Actas Terminadas", f"La ruta no existe:\n{path}")
-        except Exception as exc:
-            messagebox.showerror("Actas Terminadas", f"No se pudo abrir la ruta: {exc}")
+            messagebox.showwarning("Actas Terminadas", "La ruta configurada no existe o no es accesible.")
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+            log_and_show_error(exc, "No se pudo abrir la ruta del acta", title="Actas Terminadas")
 
     def _toggle_revisado(self, row: dict) -> None:
-        nuevo = not bool(row.get("revisado"))
+        nuevo = not self._is_revisado(row.get("revisado"))
         payload = {
             "registro_id": row.get("registro_id"),
             "session_id": row.get("session_id"),
@@ -2420,12 +2600,12 @@ class ActasTerminadasPanel(tk.Toplevel):
             pendientes = int(response.get("pendientes", 0) or 0)
             self._set_pending(pendientes)
             self.refresh()
-        except Exception as exc:
-            messagebox.showerror("Actas Terminadas", f"No se pudo actualizar 'revisado': {exc}")
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+            log_and_show_error(exc, "No se pudo actualizar estado de revision", title="Actas Terminadas")
 
 
 class WizardApp:
-    def __init__(self, root: tk.Tk, api: ApiClient):
+    def __init__(self, root: tk.Tk, api: ApiClient) -> None:
         self.root = root
         self.api = api
         self.state = WizardState()
@@ -2443,8 +2623,14 @@ class WizardApp:
         self._main_pady = 10 if self._is_small_screen else 16
         self._menu_button_width = 24 if self._is_small_screen else 28
         self._menu_button_pady = 6 if self._is_small_screen else 8
+        self._op_in_progress = False
+        self._op_lock_owner: str | None = None
+        self._main_action_buttons: list[tk.Button] = []
+        self._startup_status_var = tk.StringVar(value="Cargando datos iniciales...")
+        self._initial_data_ready = False
+        self._initial_data_loading = False
 
-        self.root.title("SISTEMA DE GESTIÓN ODS - RECA")
+        self.root.title("SISTEMA DE GESTIÃ“N ODS - RECA")
         self._set_window_size()
 
         self.header = tk.Frame(self.root, bg=COLOR_PURPLE, height=82 if self._is_small_screen else 96)
@@ -2487,6 +2673,7 @@ class WizardApp:
         ).pack(anchor="w")
 
         self.show_initial_screen()
+        self.root.after(100, lambda: self._prefetch_initial_data_async(silent=True))
 
     def set_version_info(self, local_version: str, remote_version: str | None) -> None:
         remote_label = remote_version or "-"
@@ -2510,7 +2697,7 @@ class WizardApp:
         top_actions.pack(fill=tk.X, pady=(0, max(4, int(6 * self._ui_scale))))
         actions_right = ttk.Frame(top_actions)
         actions_right.pack(anchor="e")
-        tk.Button(
+        update_btn = tk.Button(
             actions_right,
             text="Actualizar Version de la Aplicacion",
             command=self._open_update_page,
@@ -2519,7 +2706,8 @@ class WizardApp:
             font=("Arial", self._scaled_font(9, 8), "bold"),
             padx=7 if self._is_small_screen else 8,
             pady=2 if self._is_small_screen else 3,
-        ).pack(side=tk.LEFT, padx=(0, 6))
+        )
+        update_btn.pack(side=tk.LEFT, padx=(0, 6))
         self._actas_alert_button = tk.Button(
             actions_right,
             text="Actas Terminadas (0)",
@@ -2532,6 +2720,26 @@ class WizardApp:
         )
         self._actas_alert_button.pack(side=tk.LEFT)
 
+        startup_status = ttk.Frame(button_col)
+        startup_status.pack(fill=tk.X, pady=(0, max(4, int(6 * self._ui_scale))))
+        ttk.Label(
+            startup_status,
+            textvariable=self._startup_status_var,
+            foreground="#666666",
+            font=("Arial", self._scaled_font(9, 8)),
+        ).pack(side=tk.LEFT)
+        retry_btn = tk.Button(
+            startup_status,
+            text="Reintentar carga",
+            command=lambda: self._prefetch_initial_data_async(silent=False),
+            bg="#5D6D7E",
+            fg="white",
+            font=("Arial", self._scaled_font(8, 8), "bold"),
+            padx=6,
+            pady=1,
+        )
+        retry_btn.pack(side=tk.RIGHT)
+
         ttk.Label(
             button_col,
             text="Seleccione una opcion para iniciar",
@@ -2539,7 +2747,7 @@ class WizardApp:
             foreground=COLOR_PURPLE,
         ).pack(pady=(max(12, int(16 * self._ui_scale)), max(8, int(12 * self._ui_scale))))
 
-        tk.Button(
+        new_entry_btn = tk.Button(
             button_col,
             text="Crear nueva entrada",
             command=self.start_new_service,
@@ -2549,9 +2757,10 @@ class WizardApp:
             padx=16,
             pady=self._menu_button_pady,
             width=self._menu_button_width,
-        ).pack(pady=self._menu_button_pady)
+        )
+        new_entry_btn.pack(pady=self._menu_button_pady)
 
-        tk.Button(
+        factura_btn = tk.Button(
             button_col,
             text="Crear factura",
             command=self._open_factura_dialog,
@@ -2561,9 +2770,10 @@ class WizardApp:
             padx=16,
             pady=self._menu_button_pady,
             width=self._menu_button_width,
-        ).pack(pady=self._menu_button_pady)
+        )
+        factura_btn.pack(pady=self._menu_button_pady)
 
-        tk.Button(
+        rebuild_btn = tk.Button(
             button_col,
             text="Reconstruir Excel desde Supabase",
             command=self._rebuild_excel_from_supabase,
@@ -2573,9 +2783,10 @@ class WizardApp:
             padx=16,
             pady=self._menu_button_pady,
             width=self._menu_button_width,
-        ).pack(pady=self._menu_button_pady)
+        )
+        rebuild_btn.pack(pady=self._menu_button_pady)
 
-        tk.Button(
+        refresh_cache_btn = tk.Button(
             button_col,
             text="Actualizar Base de Datos",
             command=self._refresh_cache_from_supabase,
@@ -2585,9 +2796,10 @@ class WizardApp:
             padx=16,
             pady=self._menu_button_pady,
             width=self._menu_button_width,
-        ).pack(pady=self._menu_button_pady)
+        )
+        refresh_cache_btn.pack(pady=self._menu_button_pady)
 
-        tk.Button(
+        monitor_btn = tk.Button(
             button_col,
             text="Abrir monitor en tiempo real",
             command=self._open_live_monitor,
@@ -2597,11 +2809,122 @@ class WizardApp:
             padx=16,
             pady=self._menu_button_pady,
             width=self._menu_button_width,
-        ).pack(pady=self._menu_button_pady)
+        )
+        monitor_btn.pack(pady=self._menu_button_pady)
+        self._main_action_buttons = [
+            update_btn,
+            self._actas_alert_button,
+            retry_btn,
+            new_entry_btn,
+            factura_btn,
+            rebuild_btn,
+            refresh_cache_btn,
+            monitor_btn,
+        ]
+        if self._initial_data_loading:
+            self._set_main_actions_enabled(False)
+        elif not self._initial_data_ready:
+            # Permitimos acciones auxiliares, pero forzamos recarga de datos para nueva entrada.
+            self._set_main_actions_enabled(True)
         self._refresh_actas_alert(silent=True)
 
     def _scaled_font(self, base_size: int, min_size: int = 9) -> int:
         return max(min_size, int(round(base_size * self._ui_scale)))
+
+    def _set_main_actions_enabled(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        for button in self._main_action_buttons:
+            try:
+                if button.winfo_exists():
+                    button.configure(state=state)
+            except tk.TclError:
+                _LOGGER.debug("No se pudo actualizar estado de boton de menu principal.")
+
+    def _begin_ui_operation(self, name: str, disable_main_actions: bool = True) -> bool:
+        if self._op_in_progress:
+            messagebox.showinfo("Operacion en curso", "Espera a que finalice la operacion actual.")
+            return False
+        self._op_in_progress = True
+        self._op_lock_owner = name
+        if disable_main_actions:
+            self._set_main_actions_enabled(False)
+        return True
+
+    def _end_ui_operation(self, name: str) -> None:
+        if not self._op_in_progress:
+            return
+        if self._op_lock_owner and name != self._op_lock_owner:
+            return
+        self._op_in_progress = False
+        self._op_lock_owner = None
+        self._set_main_actions_enabled(True)
+
+    def _report_error(self, context: str, exc: Exception, title: str = "Error") -> None:
+        log_and_show_error(exc, context, title=title)
+
+    def _run_background_task(
+        self,
+        worker,
+        on_success,
+        on_error=None,
+        *,
+        timeout_sec: int | float | None = None,
+        timeout_message: str | None = None,
+        poll_ms: int = 250,
+        operation_name: str | None = None,
+        disable_main_actions: bool = True,
+    ) -> None:
+        operation_started = False
+        if operation_name:
+            operation_started = self._begin_ui_operation(operation_name, disable_main_actions=disable_main_actions)
+            if not operation_started:
+                return
+
+        events: queue.Queue[tuple[str, object]] = queue.Queue(maxsize=1)
+
+        def _runner() -> None:
+            try:
+                result = worker()
+            except (RuntimeError, ValueError, TypeError, OSError, KeyError, IndexError, AttributeError, tk.TclError) as exc:
+                events.put(("error", exc))
+                return
+            events.put(("ok", result))
+
+        thread = threading.Thread(target=_runner, daemon=True)
+        thread.start()
+        started = time.time()
+
+        def _poll() -> None:
+            try:
+                status, payload = events.get_nowait()
+            except queue.Empty:
+                if timeout_sec is not None and (time.time() - started) >= timeout_sec:
+                    error = TimeoutError(timeout_message or "La operacion excedio el tiempo limite.")
+                    if operation_started and operation_name:
+                        self._end_ui_operation(operation_name)
+                    if on_error:
+                        on_error(error)
+                    else:
+                        self._report_error("Operacion en segundo plano", error)
+                    return
+                self.root.after(poll_ms, _poll)
+                return
+
+            if status == "ok":
+                if operation_started and operation_name:
+                    self._end_ui_operation(operation_name)
+                on_success(payload)
+                return
+
+            error = payload if isinstance(payload, Exception) else RuntimeError(str(payload))
+            if operation_started and operation_name:
+                self._end_ui_operation(operation_name)
+            if on_error:
+                on_error(error)
+            else:
+                self._report_error("Operacion en segundo plano", error)
+
+        self.root.after(poll_ms, _poll)
 
     def _open_live_monitor(self) -> None:
         if self.monitor_panel and self.monitor_panel.winfo_exists():
@@ -2626,13 +2949,7 @@ class WizardApp:
             else:
                 btn.configure(text="Actas Terminadas (0)", bg="#5D6D7E")
         except tk.TclError:
-            return
-
-    def _on_canvas_configure(self, event) -> None:
-        try:
-            if self.canvas.winfo_exists():
-                self.canvas.itemconfigure(self._content_window, width=event.width)
-        except tk.TclError:
+            _LOGGER.debug("No se pudo actualizar badge de actas pendientes (widget no disponible).")
             return
 
     def _refresh_actas_alert(self, silent: bool = False) -> None:
@@ -2641,9 +2958,45 @@ class WizardApp:
             data = payload.get("data", {})
             pendientes = int(data.get("pendientes", 0) or 0)
             self._set_actas_pending(pendientes)
-        except Exception as exc:
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
             if not silent:
-                messagebox.showerror("Actas Terminadas", f"No se pudo cargar el estado: {exc}")
+                log_and_show_error(exc, "No se pudo cargar el estado de actas", title="Actas Terminadas")
+
+    def _prefetch_initial_data_async(self, silent: bool = False) -> None:
+        if self._initial_data_loading:
+            return
+        if not self._begin_ui_operation("prefetch_inicial"):
+            return
+        self._initial_data_loading = True
+        self._startup_status_var.set("Cargando datos iniciales...")
+
+        def _worker() -> bool:
+            self.api.prefetch(INITIAL_PREFETCH_ITEMS)
+            return True
+
+        def _on_success(_result: bool) -> None:
+            self._initial_data_loading = False
+            self._initial_data_ready = True
+            self._startup_status_var.set("Datos iniciales cargados.")
+            self._end_ui_operation("prefetch_inicial")
+
+        def _on_error(exc: Exception) -> None:
+            self._initial_data_loading = False
+            self._initial_data_ready = False
+            self._startup_status_var.set("Sin conexion con Supabase. Usa 'Reintentar carga'.")
+            self._end_ui_operation("prefetch_inicial")
+            if not silent:
+                self._report_error("No se pudieron cargar datos iniciales", exc, title="Inicio")
+
+        self._run_background_task(
+            _worker,
+            _on_success,
+            _on_error,
+            timeout_sec=60,
+            timeout_message="Supabase no respondio durante la carga inicial.",
+            poll_ms=200,
+            operation_name=None,
+        )
 
     def _open_actas_terminadas(self) -> None:
         if self.actas_panel and self.actas_panel.winfo_exists():
@@ -2656,15 +3009,19 @@ class WizardApp:
         panel = self.monitor_panel
         if not panel or not panel.winfo_exists():
             return
-        try:
-            panel.force_refresh(silent=True)
-        except Exception:
-            return
+        def _refresh() -> None:
+            try:
+                if panel.winfo_exists():
+                    panel.force_refresh(silent=True)
+            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+                _LOGGER.warning("No se pudo refrescar monitor en segundo plano: %s", exc)
+
+        self.root.after(0, _refresh)
 
     def _rebuild_excel_from_supabase(self) -> None:
         confirm = messagebox.askyesno(
             "Reconstruir Excel",
-            "¿Estas seguro de que deseas reconstruir el Excel desde Supabase?",
+            "Â¿Estas seguro de que deseas reconstruir el Excel desde Supabase?",
         )
         if not confirm:
             return
@@ -2672,26 +3029,38 @@ class WizardApp:
             "Confirmacion final",
             "Este proceso BORRARA el contenido actual del Excel y lo recreara desde Supabase.\n"
             "Si el Excel tenia cambios no guardados, se perderan.\n"
-            "¿Deseas continuar?",
+            "Â¿Deseas continuar?",
         )
         if not confirm2:
             return
         loading = LoadingDialog(self.root, "Reconstruyendo Excel...")
         self.root.update_idletasks()
-        try:
-            response = self.api.post("/wizard/editar/excel/rebuild", {}, timeout=300)
-        except Exception as exc:
+
+        def _worker() -> dict:
+            return self.api.post("/wizard/editar/excel/rebuild", {}, timeout=300)
+
+        def _on_success(response: dict) -> None:
             loading.close()
-            messagebox.showerror("Error", f"No se pudo reconstruir el Excel: {exc}")
-            return
-        loading.close()
-        data = response.get("data", {})
-        backup = data.get("backup") or "No aplica"
-        messagebox.showinfo(
-            "Reconstruccion completa",
-            f"Filas recreadas: {data.get('rows', 0)}\nBackup: {backup}",
+            data = response.get("data", {})
+            backup = data.get("backup") or "No aplica"
+            messagebox.showinfo(
+                "Reconstruccion completa",
+                f"Filas recreadas: {data.get('rows', 0)}\nBackup: {backup}",
+            )
+            self._update_queue_status()
+
+        def _on_error(exc: Exception) -> None:
+            loading.close()
+            self._report_error("No se pudo reconstruir el Excel", exc)
+
+        self._run_background_task(
+            _worker,
+            _on_success,
+            _on_error,
+            timeout_sec=300,
+            timeout_message="La reconstruccion de Excel excedio el tiempo esperado.",
+            operation_name="rebuild_excel",
         )
-        self._update_queue_status()
 
     def _open_factura_dialog(self) -> None:
         dialog = tk.Toplevel(self.root)
@@ -2732,7 +3101,7 @@ class WizardApp:
         mes_combo.grid(row=0, column=1, sticky="w", pady=4)
         configure_combobox(mes_combo, meses)
 
-        ttk.Label(container, text="Año").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Label(container, text="AÃ±o").grid(row=1, column=0, sticky="w", pady=4)
         anos = [str(year) for year in range(2020, 2031)]
         ano_combo = ttk.Combobox(container, textvariable=ano_var, values=anos, width=10, state="readonly")
         ano_combo.grid(row=1, column=1, sticky="w", pady=4)
@@ -2762,7 +3131,7 @@ class WizardApp:
             try:
                 ano = int(ano_raw)
             except ValueError:
-                messagebox.showerror("Error", "Selecciona un año valido")
+                messagebox.showerror("Error", "Selecciona un aÃ±o valido")
                 return
             mes = meses.index(mes_nombre) + 1
             dialog.destroy()
@@ -2790,18 +3159,30 @@ class WizardApp:
     def _crear_factura(self, mes: int, ano: int, tipo: str) -> None:
         loading = LoadingDialog(self.root, "Generando factura...")
         self.root.update_idletasks()
-        try:
-            self.api.post(
+
+        def _worker() -> dict:
+            return self.api.post(
                 "/wizard/facturas/crear",
                 {"mes": mes, "ano": ano, "tipo": tipo},
                 timeout=300,
             )
-        except Exception as exc:
+
+        def _on_success(_result: dict) -> None:
             loading.close()
-            messagebox.showerror("Error", f"No se pudo crear la factura: {exc}")
-            return
-        loading.close()
-        messagebox.showinfo("Factura creada", "La factura se genero en el Excel.")
+            messagebox.showinfo("Factura creada", "La factura se genero en el Excel.")
+
+        def _on_error(exc: Exception) -> None:
+            loading.close()
+            self._report_error("No se pudo crear la factura", exc)
+
+        self._run_background_task(
+            _worker,
+            _on_success,
+            _on_error,
+            timeout_sec=300,
+            timeout_message="La creacion de factura excedio el tiempo esperado.",
+            operation_name="crear_factura",
+        )
 
     def _set_window_size(self) -> None:
         self.root.update_idletasks()
@@ -2870,14 +3251,44 @@ class WizardApp:
             self.resumen = ResumenFrame(main_col, self.terminar_servicio, self._flush_excel_queue)
             self.resumen.grid(row=6, column=0, sticky="ew", pady=8)
 
-            self._load_section_data()
-            self._reset_for_new_entry()
-            self._lock_sections()
-            self._bind_summary_updates()
-            self._refresh_summary()
-            self._update_queue_status()
-        except Exception as exc:
-            messagebox.showerror("Error", f"No se pudo iniciar el formulario: {exc}")
+            loading = LoadingDialog(self.root, "Cargando datos del formulario...", determinate=True)
+            loading.set_status("Sincronizando cache local...", 10)
+
+            def _worker() -> dict:
+                return self.api.build_cache(INITIAL_PREFETCH_ITEMS)
+
+            def _on_success(new_cache: dict) -> None:
+                loading.set_status("Aplicando datos...", 80)
+                self.api.replace_cache(new_cache)
+                self._initial_data_ready = True
+                self._startup_status_var.set("Datos iniciales cargados.")
+                self._load_section_data()
+                self._reset_for_new_entry()
+                self._lock_sections()
+                self._bind_summary_updates()
+                self._refresh_summary()
+                self._update_queue_status()
+                loading.set_status("Listo", 100)
+                loading.close()
+
+            def _on_error(exc: Exception) -> None:
+                loading.close()
+                self._initial_data_ready = False
+                self._startup_status_var.set("Sin conexion con Supabase. Usa 'Reintentar carga'.")
+                self.show_initial_screen()
+                self._report_error("No se pudo iniciar el formulario", exc)
+
+            self._run_background_task(
+                _worker,
+                _on_success,
+                _on_error,
+                timeout_sec=60,
+                timeout_message="Supabase no respondio al cargar el formulario.",
+                poll_ms=200,
+                operation_name="start_new_service_load",
+            )
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+            self._report_error("No se pudo iniciar el formulario", exc)
 
     def _importar_acta_excel(self) -> None:
         file_path = filedialog.askopenfilename(
@@ -2896,9 +3307,9 @@ class WizardApp:
             from app.services.excel_acta_import import parse_acta_excel
 
             parsed = parse_acta_excel(file_path)
-        except Exception as exc:
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
             loading.close()
-            messagebox.showerror("Importar acta", f"No se pudo leer el archivo:\n{exc}")
+            self._report_error("No se pudo leer el archivo de acta", exc, title="Importar acta")
             return
         loading.close()
 
@@ -2911,8 +3322,8 @@ class WizardApp:
             return
         try:
             empresa_lookup = self.api.get_cached("/wizard/seccion-2/empresa", params={"nit": nit})
-        except Exception as exc:
-            messagebox.showerror("Importar acta", f"No se pudo validar el NIT contra la base de datos:\n{exc}")
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+            self._report_error("No se pudo validar el NIT contra la base de datos", exc, title="Importar acta")
             return
         empresas_encontradas = list(empresa_lookup.get("data") or [])
         if not empresas_encontradas:
@@ -2932,7 +3343,7 @@ class WizardApp:
                 ced = str(item.get("cedula_usuario") or "").strip()
                 if ced:
                     cedulas_bd.add(ced)
-        except Exception:
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
             cedulas_bd = set()
 
         participantes: list[dict] = []
@@ -2975,6 +3386,38 @@ class WizardApp:
             summary.append("Avisos:")
             summary.extend(f"- {item}" for item in warnings)
         messagebox.showinfo("Importar acta", "\n".join(summary))
+
+    def _wait_dialog_with_timeout(
+        self,
+        dialog: tk.Toplevel,
+        *,
+        timeout_ms: int = 120_000,
+        timeout_message: str = "La ventana tardo demasiado en responder.",
+    ) -> bool:
+        timed_out = {"value": False}
+
+        def _on_timeout() -> None:
+            timed_out["value"] = True
+            try:
+                if dialog.winfo_exists():
+                    dialog.grab_release()
+                    dialog.destroy()
+            except tk.TclError:
+                _LOGGER.debug("No se pudo cerrar dialogo por timeout.")
+
+        after_id = dialog.after(timeout_ms, _on_timeout)
+        try:
+            dialog.wait_window()
+        finally:
+            try:
+                dialog.after_cancel(after_id)
+            except tk.TclError:
+                _LOGGER.debug("No se pudo cancelar timeout de dialogo (ya destruido).")
+
+        if timed_out["value"]:
+            messagebox.showwarning("Tiempo de espera agotado", timeout_message)
+            return False
+        return True
 
     def _seleccionar_participantes_import(self, participantes: list[dict]) -> list[dict] | None:
         dialog = tk.Toplevel(self.root)
@@ -3047,7 +3490,12 @@ class WizardApp:
             side=tk.RIGHT
         )
 
-        dialog.wait_window()
+        if not self._wait_dialog_with_timeout(
+            dialog,
+            timeout_ms=120_000,
+            timeout_message="La seleccion de participantes supero el tiempo de espera.",
+        ):
+            return None
         return result["value"]
 
     def _resolve_profesional_import(self, profesional: str) -> str:
@@ -3058,15 +3506,7 @@ class WizardApp:
         if profesional in prof_values:
             return profesional
 
-        def _norm_name(text: str) -> str:
-            text = str(text).strip().lower()
-            text = unicodedata.normalize("NFKD", text)
-            text = "".join(ch for ch in text if not unicodedata.combining(ch))
-            text = re.sub(r"[^a-z0-9\\s]", " ", text)
-            text = re.sub(r"\\s+", " ", text).strip()
-            return text
-
-        src = _norm_name(profesional)
+        src = normalize_search_text(profesional)
         if not src:
             return ""
         src_tokens = set(src.split())
@@ -3074,7 +3514,7 @@ class WizardApp:
         best_item = ""
         best_score = 0.0
         for item in prof_values:
-            norm_item = _norm_name(item)
+            norm_item = normalize_search_text(item)
             if not norm_item:
                 continue
             if src in norm_item or norm_item in src:
@@ -3209,7 +3649,12 @@ class WizardApp:
             padx=(0, 8),
         )
 
-        dialog.wait_window()
+        if not self._wait_dialog_with_timeout(
+            dialog,
+            timeout_ms=120_000,
+            timeout_message="La vista previa de importacion supero el tiempo de espera.",
+        ):
+            return False
         return bool(result["apply"])
 
     def _aplicar_importacion_acta(self, parsed: dict, participantes: list[dict]) -> None:
@@ -3250,115 +3695,92 @@ class WizardApp:
         loading = LoadingDialog(self.root, "Reintentando cola Excel...", determinate=True)
         self.root.update_idletasks()
         loading.set_status("Procesando pendientes...", 60)
-        try:
-            response = self.api.post("/wizard/editar/excel/flush", {})
-        except Exception as exc:
+
+        def _worker() -> dict:
+            return self.api.post("/wizard/editar/excel/flush", {})
+
+        def _on_success(response: dict) -> None:
+            loading.set_status("Actualizando estado...", 90)
+            loading.set_status("Finalizando...", 100)
             loading.close()
-            messagebox.showerror("Error", f"No se pudo reintentar la cola: {exc}")
-            return
-        loading.set_status("Actualizando estado...", 90)
-        loading.set_status("Finalizando...", 100)
-        loading.close()
-        data = response.get("data", {})
-        label = getattr(self, "queue_status_label", None)
-        if label and label.winfo_exists():
-            try:
-                label.config(
-                    text=(
-                        f"Cola Excel: procesados {data.get('procesados', 0)} "
-                        f"/ pendientes {data.get('pendientes', 0)}"
+            data = response.get("data", {})
+            label = getattr(self, "queue_status_label", None)
+            if label and label.winfo_exists():
+                try:
+                    label.config(
+                        text=(
+                            f"Cola Excel: procesados {data.get('procesados', 0)} "
+                            f"/ pendientes {data.get('pendientes', 0)}"
+                        )
                     )
-                )
-            except tk.TclError:
-                pass
-        self._update_queue_status()
+                except tk.TclError:
+                    _LOGGER.debug("No se pudo actualizar label de estado de cola (widget destruido).")
+            self._update_queue_status()
+
+        def _on_error(exc: Exception) -> None:
+            loading.close()
+            self._report_error("No se pudo reintentar la cola Excel", exc)
+
+        self._run_background_task(
+            _worker,
+            _on_success,
+            _on_error,
+            timeout_sec=120,
+            timeout_message="La re-ejecucion de cola Excel excedio el tiempo esperado.",
+            operation_name="flush_excel_queue",
+        )
 
     def _refresh_cache_from_supabase(self) -> None:
         dialog = LoadingDialog(self.root, "Actualizando base de datos...", determinate=True)
-        start_time = time.time()
         timeout_sec = 60
-        result = {"cache": None, "error": None}
-
-        items = [
-            ("/wizard/seccion-1/orden-clausulada/opciones", None, "opciones de orden"),
-            ("/wizard/seccion-1/profesionales", None, "profesionales"),
-            ("/wizard/seccion-2/empresas", None, "empresas"),
-            ("/wizard/seccion-3/tarifas", None, "tarifas"),
-            ("/wizard/seccion-4/usuarios", None, "usuarios"),
-            ("/wizard/seccion-4/discapacidades", None, "discapacidades"),
-            ("/wizard/seccion-4/generos", None, "generos"),
-            ("/wizard/seccion-4/contratos", None, "contratos"),
-        ]
 
         def _status(message: str, progress: int | None = None) -> None:
             self.root.after(0, lambda: dialog.set_status(message, progress))
 
-        def _worker() -> None:
-            try:
-                _status("Conectando a Supabase...", 0)
-                new_cache = self.api.build_cache(items, status_callback=_status)
-                result["cache"] = new_cache
-            except Exception as exc:
-                result["error"] = str(exc)
+        def _worker() -> dict:
+            _status("Conectando a Supabase...", 0)
+            self.api.reset_runtime_caches()
+            return self.api.build_cache(INITIAL_PREFETCH_ITEMS, status_callback=_status)
 
-        thread = threading.Thread(target=_worker, daemon=True)
-        thread.start()
-
-        def _check_done() -> None:
-            if thread.is_alive():
-                if time.time() - start_time >= timeout_sec:
-                    dialog.close()
-                    messagebox.showerror(
-                        "Supabase no disponible",
-                        "Supabase no respondio en 60 segundos. Intentalo mas tarde.",
-                    )
-                    return
-                self.root.after(250, _check_done)
-                return
+        def _on_success(new_cache: dict) -> None:
             dialog.close()
-            if result["error"]:
+            self.api.replace_cache(new_cache)
+            messagebox.showinfo("Base de datos actualizada", "Datos actualizados correctamente.")
+
+        def _on_error(exc: Exception) -> None:
+            dialog.close()
+            if isinstance(exc, TimeoutError):
                 messagebox.showerror(
-                    "Error",
-                    f"No se pudo actualizar la base de datos: {result['error']}",
+                    "Supabase no disponible",
+                    "Supabase no respondio en 60 segundos. Intentalo mas tarde.",
                 )
                 return
-            if result["cache"] is not None:
-                self.api.replace_cache(result["cache"])
-                messagebox.showinfo("Base de datos actualizada", "Datos actualizados correctamente.")
+            self._report_error("No se pudo actualizar la base de datos", exc, title="Error")
 
-        self.root.after(250, _check_done)
+        self._run_background_task(
+            _worker,
+            _on_success,
+            _on_error,
+            timeout_sec=timeout_sec,
+            timeout_message="Supabase no respondio en el tiempo esperado.",
+            operation_name="refresh_cache_supabase",
+        )
 
     def _open_update_page(self) -> None:
         dialog = LoadingDialog(self.root, "Verificando actualizacion...", determinate=True)
         self.root.update_idletasks()
-        result = {"error": None, "local": None, "remote": None, "assets": None}
 
-        def _worker():
-            try:
-                from app.updater import get_latest_release_assets
-                from app.version import get_version
+        def _worker() -> tuple[str, str | None, dict]:
+            from app.updater import get_latest_release_assets
+            from app.version import get_version
 
-                local = get_version()
-                remote, assets = get_latest_release_assets()
-                result["local"] = local
-                result["remote"] = remote
-                result["assets"] = assets
-            except Exception as exc:
-                result["error"] = str(exc)
+            local = get_version()
+            remote, assets = get_latest_release_assets()
+            return local, remote, assets
 
-        thread = threading.Thread(target=_worker, daemon=True)
-        thread.start()
-
-        def _check_done():
-            if thread.is_alive():
-                self.root.after(200, _check_done)
-                return
+        def _on_success(result: tuple[str, str | None, dict]) -> None:
             dialog.close()
-            if result["error"]:
-                messagebox.showerror("Actualizacion", f"No se pudo verificar: {result['error']}")
-                return
-            local = result["local"] or "0.0.0"
-            remote = result["remote"]
+            local, remote, assets = result
             if remote:
                 self.set_version_info(local, remote)
             if not remote:
@@ -3376,44 +3798,51 @@ class WizardApp:
             )
             if not confirm:
                 return
-            self._start_manual_update(result["assets"] or {})
+            self._start_manual_update(assets or {})
 
-        self.root.after(200, _check_done)
+        def _on_error(exc: Exception) -> None:
+            dialog.close()
+            self._report_error("No se pudo verificar la actualizacion", exc, title="Actualizacion")
+
+        self._run_background_task(
+            _worker,
+            _on_success,
+            _on_error,
+            poll_ms=200,
+            operation_name="check_update",
+        )
 
     def _start_manual_update(self, assets: dict) -> None:
         dialog = LoadingDialog(self.root, "Descargando instalador...", determinate=True)
         self.root.update_idletasks()
-        result = {"error": None, "path": None}
 
         def _progress(message: str, value: int) -> None:
             self.root.after(0, lambda: dialog.set_status(message, value))
 
-        def _worker():
-            try:
-                from app.updater import download_installer, run_installer
+        def _worker() -> object:
+            from app.updater import download_installer, run_installer
 
-                path = download_installer(assets, progress_callback=_progress)
-                result["path"] = path
-                self.root.after(0, lambda: dialog.set_mode(False))
-                self.root.after(0, lambda: dialog.set_status("Instalando actualizacion..."))
-                run_installer(path, wait=True)
-            except Exception as exc:
-                result["error"] = str(exc)
+            path = download_installer(assets, progress_callback=_progress)
+            self.root.after(0, lambda: dialog.set_mode(False))
+            self.root.after(0, lambda: dialog.set_status("Instalando actualizacion..."))
+            run_installer(path, wait=True)
+            return path
 
-        thread = threading.Thread(target=_worker, daemon=True)
-        thread.start()
-
-        def _check_done():
-            if thread.is_alive():
-                self.root.after(300, _check_done)
-                return
+        def _on_success(_path) -> None:
             dialog.close()
-            if result["error"]:
-                messagebox.showerror("Actualizacion", f"No se pudo actualizar: {result['error']}")
-                return
             self._show_restart_countdown()
 
-        self.root.after(300, _check_done)
+        def _on_error(exc: Exception) -> None:
+            dialog.close()
+            self._report_error("No se pudo actualizar la aplicacion", exc, title="Actualizacion")
+
+        self._run_background_task(
+            _worker,
+            _on_success,
+            _on_error,
+            poll_ms=300,
+            operation_name="manual_update_install",
+        )
 
     def _show_restart_countdown(self, seconds: int = 5) -> None:
         dialog = tk.Toplevel(self.root)
@@ -3469,8 +3898,8 @@ class WizardApp:
                 script_path = os.path.abspath(__file__)
                 args = [sys.executable, script_path]
             subprocess.Popen(args, close_fds=True)
-        except Exception:
-            pass
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+            _LOGGER.exception("No se pudo reiniciar la aplicacion: %s", exc)
         self.root.after(200, self.root.destroy)
 
     def _center_dialog(self, dialog: tk.Toplevel, width: int, height: int) -> None:
@@ -3484,19 +3913,18 @@ class WizardApp:
     def _update_queue_status(self) -> None:
         try:
             data = self.api.get("/wizard/editar/excel/status").get("data", {})
-        except Exception:
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+            _LOGGER.warning("No se pudo consultar estado de cola Excel: %s", exc)
             return
         pendientes = int(data.get("pendientes", 0) or 0)
-        locked = bool(data.get("locked"))
         resumen = getattr(self, "resumen", None)
         if resumen and getattr(resumen, "queue_label", None):
             status = f"Cola Excel: {pendientes} pendiente(s)"
-            if locked:
-                status += " (Excel en uso)"
             try:
                 if resumen.queue_label.winfo_exists():
                     resumen.queue_label.config(text=status)
             except tk.TclError:
+                _LOGGER.debug("No se pudo actualizar queue_label en resumen (widget no disponible).")
                 return
 
     def _load_section_data(self) -> None:
@@ -3545,10 +3973,18 @@ class WizardApp:
             "codigo_servicio": self.seccion3.codigo_var.get().strip(),
             "valor_total": "",
         }
-        if self.seccion3.interpretacion_var.get():
-            data["valor_total"] = self.seccion3.total_calculado_var.get()
-        else:
-            base = float(self.seccion3.valor_base_var.get() or 0)
+        try:
+            result = calcular_servicio(self.seccion3._build_calculo_input())
+            if self.seccion3.interpretacion_var.get():
+                self.seccion3.horas_decimal_var.set(f"{(result.horas_interprete or Decimal('0')):.2f}")
+                self.seccion3.total_calculado_var.set(format_currency(result.valor_total))
+                data["valor_total"] = result.valor_total
+            else:
+                data["valor_total"] = result.valor_total if result.valor_total else ""
+        except ValueError:
+            base = safe_decimal(self.seccion3.valor_base_var.get() or 0).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
             data["valor_total"] = base if base else ""
         self.resumen.update_summary(data)
         self._update_queue_status()
@@ -3569,10 +4005,10 @@ class WizardApp:
             self.seccion3.modalidad_var.set("Todas las modalidades")
             seccion3_payload = self.seccion3.get_payload()
         elif "fuera" in modalidad_txt or "otro" in modalidad_txt:
-            self.seccion3.modalidad_var.set("Fuera de Bogotá")
+            self.seccion3.modalidad_var.set("Fuera de BogotÃ¡")
             seccion3_payload = self.seccion3.get_payload()
         elif "bogota" in modalidad_txt:
-            self.seccion3.modalidad_var.set("Bogotá")
+            self.seccion3.modalidad_var.set("BogotÃ¡")
             seccion3_payload = self.seccion3.get_payload()
         elif "virtual" in modalidad_txt:
             self.seccion3.modalidad_var.set("Virtual")
@@ -3615,7 +4051,7 @@ class WizardApp:
     def terminar_servicio(self) -> None:
         try:
             status = self.api.get("/wizard/editar/excel/status").get("data", {})
-        except Exception:
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
             status = {}
         if int(status.get("pendientes", 0) or 0) > 0:
             messagebox.showwarning(
@@ -3624,27 +4060,21 @@ class WizardApp:
                 "Usa 'Reintentar cola Excel' y espera a que termine antes de guardar otro servicio.",
             )
             return
-        if status.get("locked"):
-            messagebox.showwarning(
-                "Excel en uso",
-                "El archivo Excel esta abierto. Cierralo para continuar con el guardado.",
-            )
-            return
         loading = LoadingDialog(self.root, "Preparando servicio...")
         self.root.update_idletasks()
         try:
             ods = self._validar_secciones()
-        except Exception as exc:
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
             loading.close()
-            messagebox.showerror("Error", f"No se pudo validar la informacion: {exc}")
+            self._report_error("No se pudo validar la informacion", exc)
             return
 
         try:
             resumen = self.api.post("/wizard/resumen-final", {"ods": ods}, timeout=30)["data"]
             self.resumen.update_summary(resumen)
-        except Exception as exc:
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
             loading.close()
-            messagebox.showerror("Error", f"No se pudo generar el resumen: {exc}")
+            self._report_error("No se pudo generar el resumen", exc)
             return
         loading.close()
 
@@ -3661,9 +4091,9 @@ class WizardApp:
         payload = {"ods": ods, "usuarios_nuevos": self.state.usuarios_nuevos}
         try:
             response = self.api.post("/wizard/terminar-servicio", payload, timeout=120)
-        except Exception as exc:
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
             loading.close()
-            messagebox.showerror("Error", f"No se pudo terminar el servicio: {exc}")
+            self._report_error("No se pudo terminar el servicio", exc)
             return
         loading.close()
         if response.get("excel_status") == "background":
@@ -3698,8 +4128,8 @@ def main() -> None:
         from app.storage import ensure_appdata_files
 
         ensure_appdata_files()
-    except Exception:
-        pass
+    except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+        _LOGGER.warning("No se pudo asegurar estructura local de appdata: %s", exc)
 
     root = tk.Tk()
     root.withdraw()
@@ -3707,24 +4137,18 @@ def main() -> None:
     try:
         splash.deiconify()
     except tk.TclError:
-        pass
+        _LOGGER.debug("No se pudo mostrar splash con deiconify.")
     splash.lift()
     splash.update_idletasks()
     splash.update()
-    time.sleep(0.2)
-    start_time = time.time()
     api = ApiClient(None)
-    try:
-        splash.set_status("Cargando datos iniciales...", 55)
-        _prefetch_initial_data(api, splash.set_status)
-    except Exception as exc:
-        splash.close()
-        messagebox.showerror("Error", f"No se pudieron cargar datos iniciales: {exc}")
-        root.destroy()
-        return
-    elapsed = time.time() - start_time
-    if elapsed < 1.0:
-        time.sleep(1.0 - elapsed)
+
+    start_time = time.time()
+    while (time.time() - start_time) < 0.35:
+        root.update_idletasks()
+        root.update()
+        time.sleep(0.01)
+
     splash.close()
     root.deiconify()
     screen_h = root.winfo_screenheight()
@@ -3736,7 +4160,7 @@ def main() -> None:
     try:
         style.theme_use("clam")
     except tk.TclError:
-        pass
+        _LOGGER.debug("No se pudo aplicar tema 'clam' en ventana principal.")
     style.configure("TFrame", background="white")
     style.configure("TLabel", background="white")
     style.configure("TCombobox", padding=2)
@@ -3749,15 +4173,15 @@ def main() -> None:
         from app.version import get_version
 
         app.set_version_info(get_version(), None)
-    except Exception:
-        pass
+    except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+        _LOGGER.warning("No se pudo leer version local: %s", exc)
 
     def _on_close():
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", _on_close)
 
-    def _run_update():
+    def _run_update() -> None:
         try:
             from app.updater import get_latest_version
             from app.version import get_version
@@ -3765,8 +4189,8 @@ def main() -> None:
             local = get_version()
             remote = get_latest_version()
             root.after(0, lambda: app.set_version_info(local, remote))
-        except Exception:
-            pass
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+            _LOGGER.warning("No se pudo consultar version remota: %s", exc)
 
     threading.Thread(target=_run_update, daemon=True).start()
 
@@ -3775,3 +4199,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

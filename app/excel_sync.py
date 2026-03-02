@@ -1,12 +1,12 @@
-import json
-
-import logging
+﻿import json
 
 import os
+import time
 
 import shutil
 
 from datetime import datetime
+from uuid import uuid4
 
 from typing import Any
 
@@ -16,11 +16,25 @@ from copy import copy
 
 
 
+from app.logging_utils import LOGGER_EXCEL, get_file_logger
 from app.paths import app_data_dir, resource_path
 
 from app.storage import ensure_appdata_files, _desktop_excel_dir
+from app.utils.text import normalize_text
+
+try:
+    from postgrest.exceptions import APIError as PostgrestAPIError
+except ImportError:  # pragma: no cover - dependencia opcional en runtime
+    PostgrestAPIError = RuntimeError  # type: ignore[assignment]
 
 from app.factura_calc import calcular_items
+from app.constants import (
+    FACTURA_GRAND_TOTAL_CELL,
+    FACTURA_HEADER_ROW,
+    FACTURA_IVA_CELL,
+    FACTURA_TOTAL_CELL,
+    IVA_RATE,
+)
 
 
 
@@ -32,58 +46,36 @@ _EXCEL_QUEUE = _DATA_ROOT / "ODS 2026 pendiente.jsonl"
 
 _ODS_SHEET_GENERAL = "ODS General"
 _ODS_SHEET_FILTRADA = "ODS Filtrada"
+_YEAR_FIELD = "ano_servicio"
+_LEGACY_YEAR_FIELDS = ("a\u00f1o_servicio", "a\u00c3\u00b1o_servicio")
 
 
 
 _LOG_FILE = app_data_dir() / "logs" / "excel.log"
+_logger = get_file_logger(LOGGER_EXCEL, _LOG_FILE, announce=True)
+_SUPABASE_FETCH_ERRORS = (
+    PostgrestAPIError,
+    RuntimeError,
+    ValueError,
+    TypeError,
+    OSError,
+)
 
-_logger = logging.getLogger("reca_ods_excel")
 
-if not _logger.handlers:
+def _new_op_id() -> str:
+    return uuid4().hex[:8]
 
-    _LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    handler = logging.FileHandler(_LOG_FILE, encoding="utf-8")
-
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-
-    handler.setFormatter(formatter)
-
-    _logger.addHandler(handler)
-
-_logger.setLevel(logging.INFO)
-
-_logger.info("Excel logger iniciado. Archivo=%s", _LOG_FILE)
+def _log_event(level: str, context: str, op_id: str, message: str, *args, **kwargs) -> None:
+    log_fn = getattr(_logger, level, _logger.info)
+    log_fn(f"[ctx={context} op={op_id}] {message}", *args, **kwargs)
 
 
 
 
 
 def _normalize_header(value: str) -> str:
-
-    clean = " ".join(value.strip().lower().split())
-
-    replacements = {
-
-        "á": "a",
-
-        "é": "e",
-
-        "í": "i",
-
-        "ó": "o",
-
-        "ú": "u",
-
-        "ñ": "n",
-
-    }
-
-    for src, dst in replacements.items():
-
-        clean = clean.replace(src, dst)
-
-    return clean
+    return normalize_text(value, lowercase=True)
 
 
 
@@ -143,9 +135,9 @@ _EXCEL_FIELD_MAP = {
 
     "clausulada": "orden_clausulada",
 
-    "año": "año_servicio",
+    "a\u00f1o": _YEAR_FIELD,
 
-    "ano": "año_servicio",
+    "ano": _YEAR_FIELD,
 
     "mes": "mes_servicio",
 
@@ -184,8 +176,7 @@ _MATCH_KEYS = [
 
 
 def _get_year_value(data: dict) -> int:
-
-    for key in ("año_servicio", "ano_servicio"):
+    for key in (_YEAR_FIELD, *_LEGACY_YEAR_FIELDS):
 
         value = data.get(key)
 
@@ -266,8 +257,8 @@ def _find_target_row(ws, original: dict, headers: list[str], normalized_headers:
 
 
 
-def _prepare_sheet(ws, get_column_letter):
-    headers = [cell.value or "" for cell in ws[1]]
+def _prepare_sheet(ws: Any, get_column_letter: Any) -> tuple[list[str], list[str]]:
+    headers = [str(cell.value or "") for cell in ws[1]]
     normalized_headers = [_normalize_header(str(h)) for h in headers]
     if "id" not in normalized_headers:
         new_col = len(headers) + 1
@@ -278,7 +269,7 @@ def _prepare_sheet(ws, get_column_letter):
     return headers, normalized_headers
 
 
-def _get_target_sheets(wb, get_column_letter):
+def _get_target_sheets(wb: Any, get_column_letter: Any) -> list[tuple[Any, list[str], list[str]]]:
     targets = []
     lower_map = {name.lower(): name for name in wb.sheetnames}
     for name in (_ODS_SHEET_GENERAL, _ODS_SHEET_FILTRADA):
@@ -294,7 +285,9 @@ def _get_target_sheets(wb, get_column_letter):
     return targets
 
 
-def _load_excel():
+def _load_excel(op_id: str | None = None) -> tuple[Any, list[tuple[Any, list[str], list[str]]]]:
+    op_id = op_id or _new_op_id()
+    context = "excel.load"
 
     ensure_appdata_files()
 
@@ -304,21 +297,18 @@ def _load_excel():
 
         from openpyxl.utils import get_column_letter
 
-    except Exception as exc:  # pragma: no cover
+    except ImportError as exc:  # pragma: no cover
 
         raise RuntimeError("openpyxl no esta instalado") from exc
 
 
 
     if not _EXCEL_PATH.exists():
-
-        _logger.error("Excel no encontrado. Ruta=%s", _EXCEL_PATH)
+        _log_event("error", context, op_id, "Excel no encontrado. Ruta=%s", _EXCEL_PATH)
 
         raise RuntimeError(f"No se encontro el archivo Excel: {_EXCEL_PATH}")
 
-
-
-    _logger.info("Abriendo Excel. Ruta=%s", _EXCEL_PATH)
+    _log_event("info", context, op_id, "Abriendo Excel. Ruta=%s", _EXCEL_PATH)
 
     wb = openpyxl.load_workbook(_EXCEL_PATH)
 
@@ -326,7 +316,9 @@ def _load_excel():
     return wb, targets
 
 
-def _safe_save_workbook(wb) -> None:
+def _safe_save_workbook(wb, op_id: str | None = None) -> None:
+    op_id = op_id or _new_op_id()
+    context = "excel.save"
 
     tmp_path = _EXCEL_PATH.with_suffix(".tmp")
 
@@ -335,30 +327,90 @@ def _safe_save_workbook(wb) -> None:
         tmp_path.unlink()
 
     try:
-
         wb.save(tmp_path)
-
-        wb.close()
-
-        os.replace(tmp_path, _EXCEL_PATH)
-
-        _logger.info("Excel guardado. Ruta=%s", _EXCEL_PATH)
-
-    except Exception:
-
+    except (OSError, RuntimeError, ValueError) as exc:
         if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError as unlink_exc:
+                _log_event("warning", context, op_id, "No se pudo limpiar temporal tras fallo de save: %s", unlink_exc)
+        try:
+            wb.close()
+        except (OSError, RuntimeError, ValueError) as close_exc:
+            _log_event("exception", context, op_id, "Fallo al cerrar workbook tras error de save temporal.")
+            raise RuntimeError(
+                f"No se pudo escribir archivo temporal de Excel ({exc}) y tampoco cerrar workbook ({close_exc})"
+            ) from close_exc
+        _log_event("exception", context, op_id, "Fallo al guardar archivo temporal de Excel. Ruta=%s", tmp_path)
+        raise RuntimeError(f"No se pudo escribir archivo temporal de Excel: {exc}") from exc
 
+    try:
+        wb.close()
+    except (OSError, RuntimeError, ValueError) as exc:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError as unlink_exc:
+                _log_event("warning", context, op_id, "No se pudo limpiar temporal tras fallo de close: %s", unlink_exc)
+        _log_event("exception", context, op_id, "Fallo al cerrar workbook antes de replace.")
+        raise RuntimeError(f"No se pudo cerrar workbook antes de guardar Excel: {exc}") from exc
+
+    last_error = None
+    for attempt in range(1, 5):
+        try:
+            os.replace(tmp_path, _EXCEL_PATH)
+            _log_event("info", context, op_id, "Excel guardado. Ruta=%s Intento=%s", _EXCEL_PATH, attempt)
+            return
+        except PermissionError as exc:
+            last_error = exc
+            if attempt >= 4:
+                break
+            _log_event(
+                "warning",
+                context,
+                op_id,
+                "Excel bloqueado durante replace. Reintentando... intento=%s ruta=%s",
+                attempt,
+                _EXCEL_PATH,
+            )
+            time.sleep(0.2 * attempt)
+        except OSError as exc:
+            last_error = exc
+            if attempt >= 4:
+                break
+            # WinError 32/33: archivo en uso o bloqueo compartido.
+            if getattr(exc, "winerror", None) in {32, 33}:
+                _log_event(
+                    "warning",
+                    context,
+                    op_id,
+                    "Excel en uso durante replace (winerror=%s). Reintentando... intento=%s",
+                    getattr(exc, "winerror", None),
+                    attempt,
+                )
+                time.sleep(0.2 * attempt)
+                continue
+            break
+        except (RuntimeError, ValueError) as exc:
+            last_error = exc
+            break
+
+    if tmp_path.exists():
+        try:
             tmp_path.unlink()
+        except OSError as exc:
+            _log_event("warning", context, op_id, "No se pudo eliminar temporal tras fallo de replace: %s", exc)
 
-        _logger.exception("Fallo al guardar Excel. Ruta=%s", _EXCEL_PATH)
-
-        raise
-
-
-
+    _log_event("error", context, op_id, "Fallo al guardar Excel. Ruta=%s", _EXCEL_PATH, exc_info=last_error)
+    if isinstance(last_error, (PermissionError, OSError)):
+        raise PermissionError(f"No se pudo guardar Excel porque el archivo esta en uso: {_EXCEL_PATH}") from last_error
+    raise RuntimeError(f"No se pudo guardar Excel: {last_error}") from last_error
 
 
-def _nombre_hoja_factura(mes: int, año: int, tipo: str) -> str:
+
+
+
+def _nombre_hoja_factura(mes: int, ano: int, tipo: str) -> str:
 
     meses = [
 
@@ -392,7 +444,7 @@ def _nombre_hoja_factura(mes: int, año: int, tipo: str) -> str:
 
     tipo_label = "Claus" if tipo.strip().lower() == "clausulada" else "NoClaus"
 
-    nombre = f"Factura {nombre_mes} {año} {tipo_label}"
+    nombre = f"Factura {nombre_mes} {ano} {tipo_label}"
 
     return nombre[:31]
 
@@ -400,13 +452,15 @@ def _nombre_hoja_factura(mes: int, año: int, tipo: str) -> str:
 
 
 
-def _render_factura_sheet(wb, mes: int, año: int, tipo: str) -> None:
+def _render_factura_sheet(wb: Any, mes: int, ano: int, tipo: str) -> None:
+    op_id = _new_op_id()
+    context = "factura.render"
 
     try:
 
         import openpyxl
 
-    except Exception as exc:  # pragma: no cover
+    except ImportError as exc:  # pragma: no cover
 
         raise RuntimeError("openpyxl no esta instalado") from exc
 
@@ -416,13 +470,16 @@ def _render_factura_sheet(wb, mes: int, año: int, tipo: str) -> None:
 
     template_path = resource_path(f"facturas/{template_name}")
 
-    _logger.info(
+    _log_event(
+        "info",
+        context,
+        op_id,
 
         "Actualizando factura. Mes=%s Ano=%s Tipo=%s Plantilla=%s",
 
         mes,
 
-        año,
+        ano,
 
         tipo,
 
@@ -431,106 +488,62 @@ def _render_factura_sheet(wb, mes: int, año: int, tipo: str) -> None:
     )
 
     template_wb = openpyxl.load_workbook(template_path)
+    try:
+        template_ws = template_wb.active
+        items = calcular_items(mes, ano, tipo)
 
-    template_ws = template_wb.active
+        sheet_name = _nombre_hoja_factura(mes, ano, tipo)
+        if sheet_name in wb.sheetnames:
+            del wb[sheet_name]
+        ws = wb.create_sheet(sheet_name)
 
+        for row in template_ws.iter_rows():
+            for cell in row:
+                if cell.__class__.__name__ == "MergedCell":
+                    continue
 
+                target = ws.cell(row=cell.row, column=cell.column, value=cell.value)
+                if cell.has_style:
+                    target._style = copy(cell._style)
+                target.number_format = cell.number_format
+                target.alignment = copy(cell.alignment)
+                target.border = copy(cell.border)
+                target.fill = copy(cell.fill)
+                target.font = copy(cell.font)
 
-    items = calcular_items(mes, año, tipo)
+        for merged in template_ws.merged_cells.ranges:
+            ws.merge_cells(str(merged))
 
+        for key, dim in template_ws.row_dimensions.items():
+            ws.row_dimensions[key].height = dim.height
 
+        for key, dim in template_ws.column_dimensions.items():
+            ws.column_dimensions[key].width = dim.width
 
-    sheet_name = _nombre_hoja_factura(mes, año, tipo)
+        header_row = FACTURA_HEADER_ROW
+        for idx, item in enumerate(items, start=1):
+            row_idx = header_row + (idx - 1)
+            ws.cell(row=row_idx, column=1, value=item.codigo_servicio)
+            ws.cell(row=row_idx, column=2, value=item.referencia_servicio)
+            ws.cell(row=row_idx, column=3, value=item.descripcion_servicio)
+            ws.cell(row=row_idx, column=4, value=item.valor_base)
+            ws.cell(row=row_idx, column=5, value=item.cantidad)
+            ws.cell(row=row_idx, column=6, value=item.total)
 
-    if sheet_name in wb.sheetnames:
-
-        del wb[sheet_name]
-
-    ws = wb.create_sheet(sheet_name)
-
-
-
-    for row in template_ws.iter_rows():
-
-        for cell in row:
-
-            if cell.__class__.__name__ == "MergedCell":
-
-                continue
-
-            target = ws.cell(row=cell.row, column=cell.column, value=cell.value)
-
-            if cell.has_style:
-
-                target._style = copy(cell._style)
-
-            target.number_format = cell.number_format
-
-            target.alignment = copy(cell.alignment)
-
-            target.border = copy(cell.border)
-
-            target.fill = copy(cell.fill)
-
-            target.font = copy(cell.font)
-
-
-
-    for merged in template_ws.merged_cells.ranges:
-
-        ws.merge_cells(str(merged))
-
-
-
-    for key, dim in template_ws.row_dimensions.items():
-
-        ws.row_dimensions[key].height = dim.height
-
-
-
-    for key, dim in template_ws.column_dimensions.items():
-
-        ws.column_dimensions[key].width = dim.width
-
-
-
-    header_row = 10
-
-    for idx, item in enumerate(items, start=1):
-
-        row_idx = header_row + (idx - 1)
-
-        ws.cell(row=row_idx, column=1, value=item.codigo_servicio)
-
-        ws.cell(row=row_idx, column=2, value=item.referencia_servicio)
-
-        ws.cell(row=row_idx, column=3, value=item.descripcion_servicio)
-
-        ws.cell(row=row_idx, column=4, value=item.valor_base)
-
-        ws.cell(row=row_idx, column=5, value=item.cantidad)
-
-        ws.cell(row=row_idx, column=6, value=item.total)
-
-
-
-    total_sum = sum(item.total for item in items)
-
-    ws["F45"] = total_sum
-
-    ws["F46"] = round(total_sum * 0.19, 2)
-
-    ws["F47"] = round(total_sum + ws["F46"].value, 2)
-
-
-
-    template_wb.close()
+        total_sum = sum(item.total for item in items)
+        ws[FACTURA_TOTAL_CELL] = total_sum
+        ws[FACTURA_IVA_CELL] = round(total_sum * IVA_RATE, 2)
+        ws[FACTURA_GRAND_TOTAL_CELL] = round(total_sum + ws[FACTURA_IVA_CELL].value, 2)
+    finally:
+        template_wb.close()
 
 
 
 
 
 def update_factura_sheet(mes: int, ano: int, tipo: str) -> None:
+    op_id = _new_op_id()
+    context = "factura.update"
 
     ensure_appdata_files()
 
@@ -538,17 +551,24 @@ def update_factura_sheet(mes: int, ano: int, tipo: str) -> None:
 
         import openpyxl
 
-    except Exception as exc:  # pragma: no cover
+    except ImportError as exc:  # pragma: no cover
 
         raise RuntimeError("openpyxl no esta instalado") from exc
 
 
 
     wb = openpyxl.load_workbook(_EXCEL_PATH)
-
-    _render_factura_sheet(wb, mes, ano, tipo)
-
-    _safe_save_workbook(wb)
+    saved = False
+    try:
+        _render_factura_sheet(wb, mes, ano, tipo)
+        _safe_save_workbook(wb, op_id=op_id)
+        saved = True
+    finally:
+        if not saved:
+            try:
+                wb.close()
+            except (OSError, RuntimeError, ValueError) as exc:
+                _log_event("warning", context, op_id, "No se pudo cerrar workbook tras fallo en update_factura_sheet: %s", exc)
 
 
 
@@ -576,13 +596,14 @@ def _build_row_values(ods_data: dict, headers: list[str], normalized_headers: li
 
         value = ods_data.get(field)
 
-        if value is None and field in ("a\u00f1o_servicio", "ano_servicio"):
-
-            value = ods_data.get("año_servicio") or ods_data.get("ano_servicio")
+        if value is None and field == _YEAR_FIELD:
+            for legacy_key in _LEGACY_YEAR_FIELDS:
+                value = ods_data.get(legacy_key)
+                if value is not None:
+                    break
 
         if field == "orden_clausulada":
-
-            value = "Sí" if str(value).strip().lower().startswith("s") else "No"
+            value = "Si" if str(value).strip().lower().startswith("s") else "No"
 
         row_values[idx] = value
 
@@ -593,118 +614,105 @@ def _build_row_values(ods_data: dict, headers: list[str], normalized_headers: li
 
 
 def append_row(ods_data: dict) -> None:
-
-    wb, targets = _load_excel()
-
-    for ws, headers, normalized_headers in targets:
-
-        row_values = _build_row_values(ods_data, headers, normalized_headers)
-
-        target_row = None
-
-        for row_idx in range(2, ws.max_row + 2):
-
-            cells = ws[row_idx]
-
-            if all(cell.value in (None, "") for cell in cells):
-
-                target_row = row_idx
-
-                break
-
-        if target_row is None:
-
-            target_row = ws.max_row + 1
-
-        for col_idx, value in enumerate(row_values, start=1):
-
-            ws.cell(row=target_row, column=col_idx, value=value)
-
-    _safe_save_workbook(wb)
+    op_id = _new_op_id()
+    context = "excel.append"
+    wb, targets = _load_excel(op_id=op_id)
+    saved = False
+    try:
+        for ws, headers, normalized_headers in targets:
+            row_values = _build_row_values(ods_data, headers, normalized_headers)
+            target_row = None
+            for row_idx in range(2, ws.max_row + 1):
+                cells = ws[row_idx]
+                if all(cell.value in (None, "") for cell in cells):
+                    target_row = row_idx
+                    break
+            if target_row is None:
+                target_row = ws.max_row + 1
+            for col_idx, value in enumerate(row_values, start=1):
+                ws.cell(row=target_row, column=col_idx, value=value)
+        _safe_save_workbook(wb, op_id=op_id)
+        saved = True
+    finally:
+        if not saved:
+            try:
+                wb.close()
+            except (OSError, RuntimeError, ValueError) as exc:
+                _log_event("warning", context, op_id, "No se pudo cerrar workbook tras fallo en append_row: %s", exc)
 
 
 
 
 
 def update_row(original: dict, ods_data: dict) -> None:
+    op_id = _new_op_id()
+    context = "excel.update"
+    wb, targets = _load_excel(op_id=op_id)
+    saved = False
+    try:
+        found_any = False
+        target_rows: list[tuple[Any, int | None, list[Any]]] = []
+        for ws, headers, normalized_headers in targets:
+            target_row = _find_target_row(ws, original, headers, normalized_headers)
+            row_values = _build_row_values(ods_data, headers, normalized_headers)
+            if target_row is not None:
+                found_any = True
+            target_rows.append((ws, target_row, row_values))
 
-    wb, targets = _load_excel()
+        if not found_any:
+            raise RuntimeError("No se encontro la fila en Excel para actualizar")
 
-    found_any = False
-
-    for ws, headers, normalized_headers in targets:
-
-        target_row = _find_target_row(ws, original, headers, normalized_headers)
-
-        row_values = _build_row_values(ods_data, headers, normalized_headers)
-
-        if target_row is None:
-
-            _logger.warning("Fila no encontrada en hoja %s; agregando nueva.", ws.title)
-
-            target_row = None
-
-            for row_idx in range(2, ws.max_row + 2):
-
-                cells = ws[row_idx]
-
-                if all(cell.value in (None, "") for cell in cells):
-
-                    target_row = row_idx
-
-                    break
-
+        for ws, target_row, row_values in target_rows:
             if target_row is None:
+                _log_event("warning", context, op_id, "Fila no encontrada en hoja %s; se agregara para mantener sincronia.", ws.title)
+                for row_idx in range(2, ws.max_row + 1):
+                    cells = ws[row_idx]
+                    if all(cell.value in (None, "") for cell in cells):
+                        target_row = row_idx
+                        break
+                if target_row is None:
+                    target_row = ws.max_row + 1
 
-                target_row = ws.max_row + 1
+            for col_idx, value in enumerate(row_values, start=1):
+                ws.cell(row=target_row, column=col_idx, value=value)
 
-        else:
-
-            found_any = True
-
-        for col_idx, value in enumerate(row_values, start=1):
-
-            ws.cell(row=target_row, column=col_idx, value=value)
-
-        found_any = True
-
-    if not found_any:
-
-        raise RuntimeError("No se encontro la fila en Excel para actualizar")
-
-
-
-    _safe_save_workbook(wb)
+        _safe_save_workbook(wb, op_id=op_id)
+        saved = True
+    finally:
+        if not saved:
+            try:
+                wb.close()
+            except (OSError, RuntimeError, ValueError) as exc:
+                _log_event("warning", context, op_id, "No se pudo cerrar workbook tras fallo en update_row: %s", exc)
 
 
 
 
 
 def delete_row(original: dict) -> None:
-
-    wb, targets = _load_excel()
-
-    found_any = False
-
-    for ws, headers, normalized_headers in targets:
-
-        target_row = _find_target_row(ws, original, headers, normalized_headers)
-
-        if target_row is None:
-
-            continue
-
-        for col_idx in range(1, len(headers) + 1):
-
-            ws.cell(row=target_row, column=col_idx, value=None)
-
-        found_any = True
-
-    if not found_any:
-
-        raise RuntimeError("No se encontro la fila en Excel para eliminar")
-
-    _safe_save_workbook(wb)
+    op_id = _new_op_id()
+    context = "excel.delete"
+    wb, targets = _load_excel(op_id=op_id)
+    saved = False
+    try:
+        found_any = False
+        for ws, headers, normalized_headers in targets:
+            target_row = _find_target_row(ws, original, headers, normalized_headers)
+            if target_row is None:
+                continue
+            for col_idx in range(1, len(headers) + 1):
+                ws.cell(row=target_row, column=col_idx, value=None)
+            found_any = True
+        if not found_any:
+            raise RuntimeError("No se encontro la fila en Excel para eliminar")
+        _safe_save_workbook(wb, op_id=op_id)
+        saved = True
+    finally:
+        if not saved:
+            try:
+                wb.close()
+            except (OSError, RuntimeError, ValueError) as exc:
+                _log_event("warning", context, op_id, "No se pudo cerrar workbook tras fallo en delete_row: %s", exc)
 
 
 
@@ -713,6 +721,8 @@ def delete_row(original: dict) -> None:
 
 
 def rebuild_excel_from_supabase(rows: list[dict], create_backup: bool = True) -> dict:
+    op_id = _new_op_id()
+    context = "excel.rebuild"
 
     ensure_appdata_files()
 
@@ -722,13 +732,13 @@ def rebuild_excel_from_supabase(rows: list[dict], create_backup: bool = True) ->
 
         from openpyxl.utils import get_column_letter
 
-    except Exception as exc:  # pragma: no cover
+    except ImportError as exc:  # pragma: no cover
 
         raise RuntimeError("openpyxl no esta instalado") from exc
 
 
 
-    _logger.info("Rebuild Excel iniciado. Filas=%s", len(rows))
+    _log_event("info", context, op_id, "Rebuild Excel iniciado. Filas=%s", len(rows))
 
 
 
@@ -747,26 +757,31 @@ def rebuild_excel_from_supabase(rows: list[dict], create_backup: bool = True) ->
     template_path = resource_path("Excel/ods_2026.xlsx")
 
     wb = openpyxl.load_workbook(template_path)
+    saved = False
+    try:
+        targets = _get_target_sheets(wb, get_column_letter)
+        for ws, headers, normalized_headers in targets:
+            for row_idx in range(2, ws.max_row + 1):
+                for col_idx in range(1, len(headers) + 1):
+                    ws.cell(row=row_idx, column=col_idx, value=None)
 
-    targets = _get_target_sheets(wb, get_column_letter)
+            target_row = 2
+            for row in rows:
+                row_values = _build_row_values(row, headers, normalized_headers)
+                for col_idx, value in enumerate(row_values, start=1):
+                    ws.cell(row=target_row, column=col_idx, value=value)
+                target_row += 1
 
-    for ws, headers, normalized_headers in targets:
-        for row_idx in range(2, ws.max_row + 1):
-            for col_idx in range(1, len(headers) + 1):
-                ws.cell(row=row_idx, column=col_idx, value=None)
+        _safe_save_workbook(wb, op_id=op_id)
+        saved = True
+    finally:
+        if not saved:
+            try:
+                wb.close()
+            except (OSError, RuntimeError, ValueError) as exc:
+                _log_event("warning", context, op_id, "No se pudo cerrar workbook tras fallo en rebuild_excel_from_supabase: %s", exc)
 
-        target_row = 2
-        for row in rows:
-            row_values = _build_row_values(row, headers, normalized_headers)
-            for col_idx, value in enumerate(row_values, start=1):
-                ws.cell(row=target_row, column=col_idx, value=value)
-            target_row += 1
-
-
-
-    _safe_save_workbook(wb)
-
-    _logger.info("Rebuild Excel finalizado. Filas=%s", len(rows))
+    _log_event("info", context, op_id, "Rebuild Excel finalizado. Filas=%s", len(rows))
 
     return {"rows": len(rows), "backup": str(backup_path) if backup_path else ""}
 
@@ -774,18 +789,67 @@ def rebuild_excel_from_supabase(rows: list[dict], create_backup: bool = True) ->
 
 
 
-def rebuild_excel_from_supabase_query(create_backup: bool = True) -> None:
-
+def _fetch_all_ods_rows(page_size: int = 1000) -> list[dict]:
     from app.supabase_client import get_supabase_client
 
-
-
+    op_id = _new_op_id()
+    context = "excel.rebuild.fetch"
+    safe_page_size = max(1, int(page_size))
     client = get_supabase_client()
+    rows: list[dict] = []
+    last_id: int | None = None
 
-    response = client.table("ods").select("*").execute()
+    try:
+        while True:
+            query = client.table("ods").select("*").order("id").limit(safe_page_size)
+            if last_id is not None:
+                query = query.gt("id", last_id)
+            response = query.execute()
+            batch = list(response.data or [])
+            if not batch:
+                break
+            rows.extend(batch)
+            last_raw = batch[-1].get("id")
+            if last_raw in (None, ""):
+                raise RuntimeError("No se pudo paginar ODS por keyset: columna id ausente en respuesta.")
+            next_last_id = int(last_raw)
+            if last_id is not None and next_last_id <= last_id:
+                raise RuntimeError("No se pudo paginar ODS por keyset: id no monotono en respuesta.")
+            last_id = next_last_id
+            if len(batch) < safe_page_size:
+                break
+    except _SUPABASE_FETCH_ERRORS as exc:
+        _log_event(
+            "exception",
+            context,
+            op_id,
+            "Fallo leyendo ODS desde Supabase. LastId=%s PageSize=%s",
+            last_id,
+            safe_page_size,
+        )
+        raise RuntimeError(f"No se pudieron obtener filas de Supabase: {exc}") from exc
 
-    rows = response.data or []
+    _log_event(
+        "info",
+        context,
+        op_id,
+        "Filas ODS descargadas para rebuild: %s",
+        len(rows),
+    )
+    return rows
 
+
+def rebuild_excel_from_supabase_query(create_backup: bool = True) -> None:
+    op_id = _new_op_id()
+    context = "excel.rebuild.query"
+    rows = _fetch_all_ods_rows(page_size=1000)
+    _log_event(
+        "info",
+        context,
+        op_id,
+        "Iniciando rebuild desde query paginada. Filas=%s",
+        len(rows),
+    )
     rebuild_excel_from_supabase(rows, create_backup=create_backup)
 
 
@@ -793,6 +857,8 @@ def rebuild_excel_from_supabase_query(create_backup: bool = True) -> None:
 
 
 def queue_action(action: str, ods: dict, original: dict | None, reason: str, meta: dict | None = None) -> None:
+    op_id = _new_op_id()
+    context = "excel.queue"
 
     _EXCEL_QUEUE.parent.mkdir(parents=True, exist_ok=True)
 
@@ -816,7 +882,7 @@ def queue_action(action: str, ods: dict, original: dict | None, reason: str, met
 
         handle.write(json.dumps(record, ensure_ascii=True) + "\n")
 
-    _logger.info("Encolado Excel. Accion=%s Motivo=%s Ruta=%s", action, reason, _EXCEL_QUEUE)
+    _log_event("info", context, op_id, "Encolado Excel. Accion=%s Motivo=%s Ruta=%s", action, reason, _EXCEL_QUEUE)
 
 
 
@@ -832,58 +898,6 @@ def clear_queue() -> None:
 
 
 
-def _is_excel_locked() -> bool:
-
-    if not _EXCEL_PATH.exists():
-
-        return False
-
-    if os.name != "nt":
-
-        return False
-
-    try:
-
-        import msvcrt
-
-    except Exception:
-
-        return False
-
-    try:
-
-        handle = open(_EXCEL_PATH, "a")
-
-    except Exception:
-
-        return True
-
-    try:
-
-        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-
-        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-
-        handle.close()
-
-        return False
-
-    except Exception:
-
-        try:
-
-            handle.close()
-
-        except Exception:
-
-            pass
-
-        return True
-
-
-
-
-
 def get_queue_status() -> dict:
 
     pendientes = 0
@@ -894,17 +908,18 @@ def get_queue_status() -> dict:
 
         pendientes = len([line for line in lines if line.strip()])
 
-    return {"pendientes": pendientes, "locked": _is_excel_locked()}
+    return {"pendientes": pendientes}
 
 
 
 
 
 def flush_queue() -> dict:
+    op_id = _new_op_id()
+    context = "excel.flush"
 
     if not _EXCEL_QUEUE.exists():
-
-        _logger.info("Flush Excel sin cola. Ruta=%s", _EXCEL_QUEUE)
+        _log_event("info", context, op_id, "Flush Excel sin cola. Ruta=%s", _EXCEL_QUEUE)
 
         return {"procesados": 0, "pendientes": 0}
 
@@ -913,8 +928,7 @@ def flush_queue() -> dict:
     lines = _EXCEL_QUEUE.read_text(encoding="utf-8").splitlines()
 
     if not lines:
-
-        _logger.info("Flush Excel sin lineas. Ruta=%s", _EXCEL_QUEUE)
+        _log_event("info", context, op_id, "Flush Excel sin lineas. Ruta=%s", _EXCEL_QUEUE)
 
         return {"procesados": 0, "pendientes": 0}
 
@@ -924,11 +938,11 @@ def flush_queue() -> dict:
 
     procesados = 0
 
-    _logger.info("Flush Excel iniciado. Total=%s", len(lines))
+    _log_event("info", context, op_id, "Flush Excel iniciado. Total=%s", len(lines))
 
 
 
-    for line in lines:
+    for idx, line in enumerate(lines):
 
         try:
 
@@ -936,7 +950,7 @@ def flush_queue() -> dict:
 
         except json.JSONDecodeError:
 
-            _logger.warning("Linea invalida en cola. Ruta=%s", _EXCEL_QUEUE)
+            _log_event("warning", context, op_id, "Linea invalida en cola. Ruta=%s", _EXCEL_QUEUE)
 
             pendientes.append(line)
 
@@ -974,21 +988,21 @@ def flush_queue() -> dict:
 
             procesados += 1
 
-            _logger.info("Flush Excel procesado. Accion=%s", action)
+            _log_event("info", context, op_id, "Flush Excel procesado. Accion=%s", action)
 
         except PermissionError:
 
-            _logger.warning("Flush Excel detenido por archivo abierto.")
+            _log_event("warning", context, op_id, "Flush Excel detenido por archivo abierto.")
 
             pendientes.append(line)
 
-            pendientes.extend(lines[lines.index(line) + 1 :])
+            pendientes.extend(lines[idx + 1 :])
 
             break
 
-        except Exception:
+        except (RuntimeError, OSError, ValueError, TypeError):
 
-            _logger.exception("Flush Excel fallo. Accion=%s", action)
+            _log_event("exception", context, op_id, "Flush Excel fallo. Accion=%s", action)
 
             pendientes.append(line)
 
@@ -996,7 +1010,9 @@ def flush_queue() -> dict:
 
     _EXCEL_QUEUE.write_text("\n".join(pendientes) + ("\n" if pendientes else ""), encoding="utf-8")
 
-    _logger.info("Flush Excel terminado. Procesados=%s Pendientes=%s", procesados, len(pendientes))
+    _log_event("info", context, op_id, "Flush Excel terminado. Procesados=%s Pendientes=%s", procesados, len(pendientes))
 
     return {"procesados": procesados, "pendientes": len(pendientes)}
+
+
 

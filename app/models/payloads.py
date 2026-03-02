@@ -1,7 +1,9 @@
 from datetime import date
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+
+from app.utils.text import normalize_spaces
 
 
 class UsuarioNuevo(BaseModel):
@@ -18,7 +20,7 @@ class UsuarioNuevo(BaseModel):
         normalized = {}
         for key, value in data.items():
             if isinstance(value, str):
-                normalized[key] = " ".join(value.strip().split())
+                normalized[key] = normalize_spaces(value)
             else:
                 normalized[key] = value
         return normalized
@@ -58,7 +60,7 @@ class OdsPayload(BaseModel):
     observacion_agencia: str | None = None
     seguimiento_servicio: str | None = None
     mes_servicio: int
-    ano_servicio: int = Field(alias="año_servicio")
+    ano_servicio: int
 
     @model_validator(mode="before")
     @classmethod
@@ -69,15 +71,16 @@ class OdsPayload(BaseModel):
         alt_ano_keys = {
             "ano_servicio",
             "año_servicio",
+            "a\u00c3\u00b1o_servicio",
             "a?o_servicio",
-            "a�o_servicio",
-            "aÃ±o_servicio",
+            "a\u00ef\u00bf\u00bdo_servicio",
+            "a\u00c3\u0192\u00c2\u00b1o_servicio",
         }
         for key, value in data.items():
             if key in alt_ano_keys:
-                key = "año_servicio"
+                key = "ano_servicio"
             if isinstance(value, str):
-                value = " ".join(value.strip().split())
+                value = normalize_spaces(value)
             normalized[key] = value
         return normalized
 
@@ -115,10 +118,6 @@ class OdsPayload(BaseModel):
             raise ValueError("valor_total no coincide con la suma de los valores")
         return self
 
-    @model_validator(mode="after")
-    def _validar_total_personas(self) -> "OdsPayload":
-        return self
-
 
 class TerminarServicioRequest(BaseModel):
     ods: OdsPayload
@@ -130,4 +129,4 @@ class ResumenFinalRequest(BaseModel):
 
 
 def dump_ods_for_rpc(ods: OdsPayload) -> dict[str, Any]:
-    return ods.model_dump(by_alias=True)
+    return ods.model_dump()

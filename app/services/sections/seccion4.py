@@ -1,12 +1,13 @@
 from pydantic import BaseModel
 
-from app.services.errors import ServiceError
+from app.services.errors import SUPABASE_ERRORS, ServiceError
 from app.supabase_client import get_supabase_client
+from app.utils.text import normalize_key
 
 DISCAPACIDADES = {
     "intelectual": "Intelectual",
-    "multiple": "Múltiple",
-    "fisica": "Física",
+    "multiple": "M\u00faltiple",
+    "fisica": "F\u00edsica",
     "visual": "Visual",
     "auditiva": "Auditiva",
     "psicosocial": "Psicosocial",
@@ -21,30 +22,49 @@ GENEROS = {
 
 TIPOS_CONTRATO = ["Laboral", "Contrato Aprendiz Especial"]
 
-
-def _normalize_key(value: str) -> str:
-    clean = " ".join(value.strip().lower().split())
-    clean = clean.replace("mカltiple", "multiple").replace("fヴsica", "fisica")
-    import unicodedata
-
-    clean = "".join(ch for ch in unicodedata.normalize("NFKD", clean) if not unicodedata.combining(ch))
-    clean = "".join(ch for ch in clean if ch.isalnum() or ch == "/")
-    return clean
-
+_USUARIOS_PAGE_SIZE = 1000
 
 def get_usuarios_reca() -> dict:
     client = get_supabase_client()
+    rows: list[dict] = []
+    last_cedula: str | None = None
     try:
-        response = (
-            client.table("usuarios_reca")
-            .select("nombre_usuario,cedula_usuario,discapacidad_usuario,genero_usuario")
-            .order("cedula_usuario")
-            .execute()
-        )
-    except Exception as exc:
+        while True:
+            query = (
+                client.table("usuarios_reca")
+                .select("nombre_usuario,cedula_usuario,discapacidad_usuario,genero_usuario")
+                .order("cedula_usuario")
+                .limit(_USUARIOS_PAGE_SIZE)
+            )
+            if last_cedula:
+                query = query.gt("cedula_usuario", last_cedula)
+
+            response = query.execute()
+            batch = list(response.data or [])
+            if not batch:
+                break
+
+            rows.extend(batch)
+            if len(batch) < _USUARIOS_PAGE_SIZE:
+                break
+
+            raw_last = batch[-1].get("cedula_usuario")
+            if raw_last in (None, ""):
+                raise ServiceError(
+                    "No se pudo paginar usuarios_reca: cedula_usuario ausente.",
+                    status_code=502,
+                )
+            next_last = str(raw_last)
+            if last_cedula is not None and next_last <= last_cedula:
+                raise ServiceError(
+                    "No se pudo paginar usuarios_reca: secuencia no monotona.",
+                    status_code=502,
+                )
+            last_cedula = next_last
+    except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
-    return {"data": response.data}
+    return {"data": rows}
 
 
 def get_usuario_por_cedula(cedula: str) -> dict:
@@ -57,7 +77,7 @@ def get_usuario_por_cedula(cedula: str) -> dict:
             .limit(1)
             .execute()
         )
-    except Exception as exc:
+    except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
     return {"data": response.data}
@@ -73,7 +93,7 @@ def verificar_usuario_existe(cedula: str) -> dict:
             .limit(1)
             .execute()
         )
-    except Exception as exc:
+    except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
     existe = bool(response.data)
@@ -103,8 +123,8 @@ class CrearUsuarioRequest(BaseModel):
 
 
 def crear_usuario(payload: CrearUsuarioRequest) -> dict:
-    discapacidad_key = _normalize_key(payload.discapacidad_usuario)
-    genero_key = _normalize_key(payload.genero_usuario)
+    discapacidad_key = normalize_key(payload.discapacidad_usuario, keep_chars="/")
+    genero_key = normalize_key(payload.genero_usuario, keep_chars="/")
 
     if discapacidad_key not in DISCAPACIDADES:
         raise ServiceError("discapacidad_usuario invalida", status_code=422)

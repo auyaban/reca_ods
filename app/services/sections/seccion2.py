@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 
-from app.services.errors import ServiceError
+from app.services.errors import SUPABASE_ERRORS, ServiceError
 from app.supabase_client import get_supabase_client
 
 
@@ -22,7 +22,7 @@ def get_empresas() -> dict:
             if len(batch) < page_size:
                 break
             offset += page_size
-    except Exception as exc:
+    except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
     return {"data": rows}
@@ -40,7 +40,7 @@ def get_empresa_por_nit(nit: str) -> dict:
             .limit(1)
             .execute()
         )
-    except Exception as exc:
+    except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
     return {"data": response.data}

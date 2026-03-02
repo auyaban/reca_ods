@@ -11,6 +11,8 @@ from app.services.sections import (
     terminar,
 )
 from app.services.background import InlineBackgroundTasks
+from app.config import clear_settings_cache
+from app.supabase_client import clear_supabase_client_cache
 
 
 def get_orden_clausulada_opciones() -> dict:
@@ -159,7 +161,7 @@ def listar_actas_finalizadas(params: dict | None = None) -> dict:
     params = params or {}
     try:
         limit = int(params.get("limit", 500))
-    except Exception:
+    except (TypeError, ValueError):
         limit = 500
     return actas_finalizadas.listar_actas_finalizadas(limit=limit)
 
@@ -172,5 +174,8 @@ def actualizar_acta_revisado(payload: dict) -> dict:
     req = actas_finalizadas.ActaRevisadoRequest(**payload)
     return actas_finalizadas.actualizar_revisado(req)
 
-
- 
+def reset_runtime_caches() -> None:
+    clear_settings_cache(reload_env=True)
+    clear_supabase_client_cache()
+    editar_entrada.clear_schema_cache()
+    terminar.clear_schema_cache()

@@ -1,4 +1,4 @@
-from functools import lru_cache
+﻿from functools import lru_cache
 from typing import Any
 
 import requests
@@ -14,8 +14,9 @@ from app.excel_sync import (
     rebuild_excel_from_supabase,
     rebuild_excel_from_supabase_query,
 )
-from app.services.errors import ServiceError
+from app.services.errors import RUNTIME_ERRORS, SUPABASE_ERRORS, ServiceError
 from app.supabase_client import get_supabase_client
+from app.utils.cache import ttl_bucket
 
 
 class OdsFiltro(BaseModel):
@@ -38,16 +39,28 @@ class OdsEliminarRequest(BaseModel):
     original: dict | None = None
 
 
+_ODS_SCHEMA_CACHE_TTL_SECONDS = 180
+_YEAR_FIELD_ALIASES = (
+    "ano_servicio",
+    "año_servicio",
+    "a\u00c3\u00b1o_servicio",
+    "a?o_servicio",
+    "a\u00ef\u00bf\u00bdo_servicio",
+    "a\u00c3\u0192\u00c2\u00b1o_servicio",
+)
+
+
 @lru_cache
-def _fetch_ods_schema() -> dict[str, dict[str, Any]]:
-    settings = get_settings()
-    if not settings.supabase_url or not settings.supabase_anon_key:
+def _fetch_ods_schema_cached(
+    supabase_url: str, supabase_anon_key: str, _ttl_bucket: int
+) -> dict[str, dict[str, Any]]:
+    if not supabase_url or not supabase_anon_key:
         return {}
 
-    url = settings.supabase_url.rstrip("/") + "/rest/v1/"
+    url = supabase_url.rstrip("/") + "/rest/v1/"
     headers = {
-        "apikey": settings.supabase_anon_key,
-        "Authorization": f"Bearer {settings.supabase_anon_key}",
+        "apikey": supabase_anon_key,
+        "Authorization": f"Bearer {supabase_anon_key}",
     }
     try:
         response = requests.get(url, headers=headers, timeout=10)
@@ -64,6 +77,19 @@ def _fetch_ods_schema() -> dict[str, dict[str, Any]]:
     if not schema:
         return {}
     return schema.get("properties", {}) or {}
+
+
+def _fetch_ods_schema() -> dict[str, dict[str, Any]]:
+    settings = get_settings()
+    return _fetch_ods_schema_cached(
+        settings.supabase_url,
+        settings.supabase_anon_key,
+        ttl_bucket(_ODS_SCHEMA_CACHE_TTL_SECONDS),
+    )
+
+
+def clear_schema_cache() -> None:
+    _fetch_ods_schema_cached.cache_clear()
 
 
 def _require_filtro(filtro: OdsFiltro) -> None:
@@ -105,7 +131,7 @@ def _normalize_value(value: Any) -> Any:
     return value
 
 
-def _coerce_update_value(value: Any, schema: dict[str, Any]) -> Any:
+def _coerce_update_value(field: str, value: Any, schema: dict[str, Any]) -> Any:
     expected = schema.get("type")
     fmt = schema.get("format", "")
 
@@ -119,29 +145,48 @@ def _coerce_update_value(value: Any, schema: dict[str, Any]) -> Any:
             return bool(value)
         if isinstance(value, str):
             clean = value.strip().lower()
+            if clean == "":
+                return None
             if clean in {"si", "true", "1"}:
                 return True
             if clean in {"no", "false", "0"}:
                 return False
-        return value
+        raise ValueError(f"{field}: valor booleano invalido ({value!r})")
 
     if expected == "integer":
+        if isinstance(value, bool):
+            raise ValueError(f"{field}: no se permite bool para entero")
         if isinstance(value, int):
             return value
-        if isinstance(value, (float, str)):
+        if isinstance(value, float):
+            if value.is_integer():
+                return int(value)
+            raise ValueError(f"{field}: el valor {value!r} no es entero")
+        if isinstance(value, str):
+            clean = value.strip()
+            if clean == "":
+                return None
             try:
-                return int(float(value))
+                parsed = float(clean)
             except (TypeError, ValueError):
-                return value
+                raise ValueError(f"{field}: valor entero invalido ({value!r})")
+            if not parsed.is_integer():
+                raise ValueError(f"{field}: el valor {value!r} no es entero")
+            return int(parsed)
+        raise ValueError(f"{field}: tipo invalido para entero ({type(value).__name__})")
 
     if expected == "number":
         if isinstance(value, (int, float)):
             return float(value)
         if isinstance(value, str):
+            clean = value.strip()
+            if clean == "":
+                return None
             try:
-                return float(value)
+                return float(clean)
             except ValueError:
-                return value
+                raise ValueError(f"{field}: valor numerico invalido ({value!r})")
+        raise ValueError(f"{field}: tipo invalido para numero ({type(value).__name__})")
 
     if expected == "string" and fmt == "date" and isinstance(value, str):
         parts = [item.strip() for item in value.replace(";", ",").split(",")]
@@ -160,11 +205,28 @@ def _filter_update_fields(datos: dict) -> dict:
     schema = _fetch_ods_schema()
     if not schema:
         return datos
+
+    year_schema_key = next((name for name in _YEAR_FIELD_ALIASES if name in schema), None)
+    normalized_datos = dict(datos)
+    if year_schema_key:
+        year_value = None
+        for key in _YEAR_FIELD_ALIASES:
+            if key in normalized_datos:
+                year_value = normalized_datos[key]
+                break
+        if year_value is not None:
+            for key in _YEAR_FIELD_ALIASES:
+                normalized_datos.pop(key, None)
+            normalized_datos[year_schema_key] = year_value
+
     filtered = {}
-    for key, value in datos.items():
+    for key, value in normalized_datos.items():
         if key not in schema:
             continue
-        filtered[key] = _coerce_update_value(value, schema[key])
+        try:
+            filtered[key] = _coerce_update_value(key, value, schema[key])
+        except ValueError as exc:
+            raise ServiceError(str(exc), status_code=422) from exc
     return filtered
 
 
@@ -189,17 +251,17 @@ def buscar_entradas(
         )
         query = _apply_filters(query, filtro, partial=True)
         response = query.execute()
-    except Exception as exc:
+    except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
     return {"data": response.data}
 
 
-def listar_entradas_monitor(limit: int = 1000):
+def listar_entradas_monitor(limit: int = 1000) -> dict:
     client = get_supabase_client()
     try:
         safe_limit = max(1, min(int(limit), 5000))
-    except Exception:
+    except (TypeError, ValueError):
         safe_limit = 1000
     try:
         count_response = client.table("ods").select("id", count="exact").limit(1).execute()
@@ -218,7 +280,7 @@ def listar_entradas_monitor(limit: int = 1000):
             .limit(safe_limit)
             .execute()
         )
-    except Exception as exc:
+    except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
     rows = response.data or []
     return {
@@ -250,7 +312,7 @@ def obtener_entrada(
         query = client.table("ods").select("*")
         query = _apply_filters(query, filtro, partial=False)
         response = query.execute()
-    except Exception as exc:
+    except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
     if not response.data:
@@ -270,7 +332,7 @@ def _rebuild_excel_now_or_queue() -> tuple[str, str | None]:
     except PermissionError:
         queue_action("rebuild", {}, None, "archivo_abierto")
         return "pendiente", "archivo_abierto"
-    except Exception as exc:
+    except RUNTIME_ERRORS as exc:
         queue_action("rebuild", {}, None, "error_guardado")
         return "error", str(exc)
 
@@ -280,7 +342,7 @@ def _delete_excel_background(original: dict) -> None:
         delete_row(original)
     except PermissionError:
         queue_action("delete", original, original, "archivo_abierto")
-    except Exception:
+    except RUNTIME_ERRORS:
         queue_action("delete", original, original, "error_guardado")
 
 
@@ -294,7 +356,7 @@ def actualizar_entrada(payload: OdsActualizarRequest, background_tasks) -> dict:
         query = client.table("ods").select("*")
         query = _apply_filters(query, payload.filtro, partial=False)
         current = query.execute()
-    except Exception as exc:
+    except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
     if not current.data:
@@ -323,7 +385,7 @@ def actualizar_entrada(payload: OdsActualizarRequest, background_tasks) -> dict:
         query = client.table("ods").update(cambios)
         query = _apply_filters(query, payload.filtro, partial=False)
         updated = query.execute()
-    except Exception as exc:
+    except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
     excel_status, excel_error = _rebuild_excel_now_or_queue()
@@ -344,7 +406,7 @@ def eliminar_entrada(payload: OdsEliminarRequest, background_tasks) -> dict:
         query = client.table("ods").select("id")
         query = _apply_filters(query, payload.filtro, partial=False)
         current = query.execute()
-    except Exception as exc:
+    except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
     if not current.data:
@@ -359,7 +421,7 @@ def eliminar_entrada(payload: OdsEliminarRequest, background_tasks) -> dict:
         query = client.table("ods").delete()
         query = _apply_filters(query, payload.filtro, partial=False)
         response = query.execute()
-    except Exception as exc:
+    except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
     original = payload.original or current.data[0]
@@ -381,24 +443,18 @@ def excel_status() -> dict:
 
 
 def rebuild_excel() -> dict:
-    status = get_queue_status()
-    if status.get("locked"):
-        raise ServiceError(
-            "El archivo Excel esta abierto. Cierralo antes de reconstruir.",
-            status_code=423,
-        )
-
     client = get_supabase_client()
     try:
         response = client.table("ods").select("*").execute()
-    except Exception as exc:
+    except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
     rows = response.data or []
     try:
         result = rebuild_excel_from_supabase(rows)
         clear_queue()
-    except Exception as exc:
+    except RUNTIME_ERRORS as exc:
         raise ServiceError(f"No se pudo reconstruir el Excel: {exc}", status_code=500) from exc
 
     return {"data": result}
+

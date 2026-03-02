@@ -5,9 +5,13 @@ import subprocess
 import tkinter as tk
 from tkinter import ttk
 
+from app.logging_utils import LOGGER_GUI, get_logger
+
+_LOGGER = get_logger(LOGGER_GUI)
+
 
 class Splash(tk.Toplevel):
-    def __init__(self, parent):
+    def __init__(self, parent) -> None:
         super().__init__(parent)
         self.title("SISTEMA DE GESTION ODS - RECA")
         self.resizable(False, False)
@@ -16,7 +20,7 @@ class Splash(tk.Toplevel):
         try:
             self.attributes("-topmost", True)
         except tk.TclError:
-            pass
+            _LOGGER.debug("No se pudo marcar splash como topmost.")
 
         container = tk.Frame(self, bg="white")
         container.pack(fill=tk.BOTH, expand=True, padx=24, pady=20)
@@ -26,7 +30,7 @@ class Splash(tk.Toplevel):
         if os.path.exists(logo_path):
             try:
                 self.logo_image = tk.PhotoImage(file=logo_path).subsample(4)
-            except Exception:
+            except (tk.TclError, OSError, RuntimeError):
                 self.logo_image = None
         if self.logo_image:
             tk.Label(container, image=self.logo_image, bg="white").pack(pady=(0, 8))
@@ -43,7 +47,7 @@ class Splash(tk.Toplevel):
         try:
             style.theme_use("clam")
         except tk.TclError:
-            pass
+            _LOGGER.debug("No se pudo aplicar tema clam en splash.")
         style.configure(
             "Reca.Horizontal.TProgressbar",
             background="#07B499",
@@ -75,7 +79,7 @@ class Splash(tk.Toplevel):
         self.lift()
         self.update_idletasks()
 
-    def _center_window(self, width, height):
+    def _center_window(self, width: int, height: int) -> None:
         self.update_idletasks()
         screen_w = self.winfo_screenwidth()
         screen_h = self.winfo_screenheight()
@@ -113,8 +117,8 @@ def main() -> None:
         from app.storage import ensure_appdata_files
 
         ensure_appdata_files()
-    except Exception:
-        pass
+    except (OSError, RuntimeError, ValueError) as exc:
+        _LOGGER.warning("No se pudo asegurar estructura local de appdata: %s", exc)
 
     if "--run-gui" in sys.argv:
         import main_gui
@@ -128,7 +132,22 @@ def main() -> None:
 
     splash.set_status("Iniciando aplicacion...")
     cmd = [sys.executable, "--run-gui"]
-    subprocess.Popen(cmd, cwd=os.path.dirname(__file__))
+    try:
+        process = subprocess.Popen(cmd, cwd=os.path.dirname(__file__))
+    except OSError as exc:
+        splash.close()
+        root.destroy()
+        raise RuntimeError(f"No se pudo iniciar la interfaz principal: {exc}") from exc
+
+    # Valida arranque temprano para evitar procesos fallidos silenciosos.
+    for _ in range(10):
+        time.sleep(0.1)
+        if process.poll() is not None:
+            splash.close()
+            root.destroy()
+            raise RuntimeError(
+                f"La interfaz termino antes de iniciar correctamente. Codigo={process.returncode}"
+            )
 
     splash.set_status("Iniciando interfaz...")
     time.sleep(0.5)

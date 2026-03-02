@@ -2,7 +2,7 @@ from pathlib import Path
 
 try:
     from PIL import Image
-except Exception as exc:  # pragma: no cover
+except ImportError as exc:  # pragma: no cover
     raise SystemExit("Pillow no esta instalado") from exc
 
 

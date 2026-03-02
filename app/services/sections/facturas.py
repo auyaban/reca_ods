@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 
 from app.excel_sync import update_factura_sheet
-from app.services.errors import ServiceError
+from app.services.errors import RUNTIME_ERRORS, ServiceError
 
 
 class CrearFacturaRequest(BaseModel):
@@ -24,7 +24,7 @@ def crear_factura(payload: CrearFacturaRequest) -> dict:
             "El archivo Excel esta abierto. Cierralo antes de crear la factura.",
             status_code=423,
         ) from exc
-    except Exception as exc:
+    except RUNTIME_ERRORS as exc:
         raise ServiceError(f"No se pudo crear la factura: {exc}", status_code=500) from exc
 
     return {"data": {"mes": payload.mes, "ano": payload.ano, "tipo": tipo}}

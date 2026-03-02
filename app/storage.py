@@ -1,19 +1,12 @@
 import os
 from pathlib import Path
-import logging
 import shutil
 
+from app.logging_utils import LOGGER_EXCEL, get_file_logger
 from app.paths import app_data_dir, resource_path
 
 _LOG_FILE = app_data_dir() / "logs" / "excel.log"
-_logger = logging.getLogger("reca_ods_excel")
-if not _logger.handlers:
-    _LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(_LOG_FILE, encoding="utf-8")
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
-    handler.setFormatter(formatter)
-    _logger.addHandler(handler)
-_logger.setLevel(logging.INFO)
+_logger = get_file_logger(LOGGER_EXCEL, _LOG_FILE)
 
 
 def _desktop_excel_dir() -> Path:

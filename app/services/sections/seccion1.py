@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 
-from app.services.errors import ServiceError
+from app.services.errors import SUPABASE_ERRORS, ServiceError
 from app.supabase_client import get_supabase_client
 
 _PROGRAMAS = {
@@ -35,7 +35,7 @@ def get_profesionales(programa: str | None = None) -> dict:
                 .select("nombre")
                 .execute()
             ).data or []
-    except Exception as exc:
+    except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
     nombres = []
@@ -101,7 +101,7 @@ def crear_profesional(payload: CrearProfesionalRequest) -> dict:
         next_id = int(last.data[0]["id"]) + 1 if last.data else 1
         payload_db = {"id": next_id, "nombre_profesional": nombre, "programa": programa}
         client.table("profesionales").insert(payload_db).execute()
-    except Exception as exc:
+    except SUPABASE_ERRORS as exc:
         message = str(exc)
         if "duplicate key value" in message and programa.lower() != "interprete":
             try:
@@ -115,7 +115,7 @@ def crear_profesional(payload: CrearProfesionalRequest) -> dict:
                 next_id = int(last.data[0]["id"]) + 1 if last.data else 1
                 payload_db = {"id": next_id, "nombre_profesional": nombre, "programa": programa}
                 client.table("profesionales").insert(payload_db).execute()
-            except Exception as exc2:
+            except SUPABASE_ERRORS as exc2:
                 raise ServiceError(f"Supabase error: {exc2}", status_code=502) from exc2
         else:
             raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc

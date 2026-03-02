@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.12
+- Remediacion integral frontend: monitor en tiempo real thread-safe (estado tipado, limpieza de traces y callbacks).
+- Carga no bloqueante al iniciar y al abrir "Crear nueva entrada", con timeout y opcion de reintento.
+- Paridad de calculos GUI/backend en Seccion 3 usando modulo compartido de dominio.
+- Endurecimiento de errores UI (mensaje sanitizado con codigo) y apertura segura de rutas en Actas Terminadas.
+- Control anti doble accion en menu principal durante operaciones criticas.
+
 ## 2.0.11
 - Importador de actas Excel en "Crear nueva entrada" con vista previa antes de aplicar.
 - Mapeo base: NIT, fecha de visita y profesional desde seccion de asistentes (con match parcial/similar contra BD).

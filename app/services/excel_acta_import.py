@@ -1,23 +1,15 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
-import unicodedata
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from app.utils.text import normalize_text
 
 MAX_SCAN_ROWS = 260
 MAX_SCAN_COLS = 70
 
-
-def _norm(value: Any) -> str:
-    text = "" if value is None else str(value).strip()
-    text = text.lower()
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    text = re.sub(r"\s+", " ", text)
-    return text
 
 
 def _clean_text(value: Any) -> str:
@@ -66,17 +58,20 @@ def _to_iso_date(value: Any) -> str:
 def _sheet_matrix(path: str) -> list[tuple[str, list[list[Any]]]]:
     try:
         from openpyxl import load_workbook
-    except Exception as exc:  # pragma: no cover - runtime dependency
+    except ImportError as exc:  # pragma: no cover - runtime dependency
         raise RuntimeError("No se pudo importar openpyxl.") from exc
 
     wb = load_workbook(path, data_only=True, read_only=True)
-    result: list[tuple[str, list[list[Any]]]] = []
-    for ws in wb.worksheets:
-        rows: list[list[Any]] = []
-        for row in ws.iter_rows(min_row=1, max_row=MAX_SCAN_ROWS, max_col=MAX_SCAN_COLS, values_only=True):
-            rows.append(list(row))
-        result.append((ws.title, rows))
-    return result
+    try:
+        result: list[tuple[str, list[list[Any]]]] = []
+        for ws in wb.worksheets:
+            rows: list[list[Any]] = []
+            for row in ws.iter_rows(min_row=1, max_row=MAX_SCAN_ROWS, max_col=MAX_SCAN_COLS, values_only=True):
+                rows.append(list(row))
+            result.append((ws.title, rows))
+        return result
+    finally:
+        wb.close()
 
 
 def _is_likely_label(text: str) -> bool:
@@ -95,7 +90,7 @@ def _first_neighbor_value(rows: list[list[Any]], r: int, c: int) -> Any:
             break
         value = rows[r][cc]
         if _clean_text(value):
-            norm = _norm(value)
+            norm = normalize_text(value)
             if not _is_likely_label(norm):
                 return value
 
@@ -110,7 +105,7 @@ def _first_neighbor_value(rows: list[list[Any]], r: int, c: int) -> Any:
                 continue
             value = rows[rr][cc]
             if _clean_text(value):
-                norm = _norm(value)
+                norm = normalize_text(value)
                 if not _is_likely_label(norm):
                     return value
     return None
@@ -119,7 +114,7 @@ def _first_neighbor_value(rows: list[list[Any]], r: int, c: int) -> Any:
 def _find_labeled_value(rows: list[list[Any]], label_tokens: tuple[str, ...], starts_with: bool = False) -> Any:
     for r, row in enumerate(rows):
         for c, value in enumerate(row):
-            norm = _norm(value)
+            norm = normalize_text(value)
             if not norm:
                 continue
             if len(norm) > 55:
@@ -138,7 +133,7 @@ def _is_person_candidate(value: Any) -> bool:
     text = _clean_text(value)
     if not text or len(text) < 3:
         return False
-    norm = _norm(text)
+    norm = normalize_text(text)
     if re.search(r"(https?://|www\.|@[a-z0-9._-]+|\.com\b|\.org\b|\.net\b|\.co\b)", norm):
         return False
     banned = (
@@ -160,7 +155,8 @@ def _is_person_candidate(value: Any) -> bool:
     )
     if any(token in norm for token in banned):
         return False
-    return bool(re.search(r"[a-zA-ZáéíóúñÁÉÍÓÚÑ]", text))
+    # Acepta cualquier letra Unicode valida (incluye acentos y ñ) y evita mojibake.
+    return any(ch.isalpha() for ch in text)
 
 
 def _extract_profesional(rows: list[list[Any]]) -> str:
@@ -170,7 +166,7 @@ def _extract_profesional(rows: list[list[Any]]) -> str:
     )
     for r, row in enumerate(rows):
         for c, value in enumerate(row):
-            norm = _norm(value)
+            norm = normalize_text(value)
             if not norm or len(norm) > 60:
                 continue
             if not any(norm == token or norm.startswith(token + ":") for token in labels):
@@ -185,7 +181,7 @@ def _extract_profesional_from_asistentes(rows: list[list[Any]]) -> str:
     asist_row = -1
     for r, row in enumerate(rows):
         for value in row:
-            norm = _norm(value)
+            norm = normalize_text(value)
             if not norm:
                 continue
             if re.search(r"\b\d+\s*\.\s*asistentes\b", norm) or norm == "asistentes" or norm.endswith(" asistentes"):
@@ -201,7 +197,7 @@ def _extract_profesional_from_asistentes(rows: list[list[Any]]) -> str:
         row = rows[rr]
         if not row:
             continue
-        row_norm = [_norm(cell) for cell in row]
+        row_norm = [normalize_text(cell) for cell in row]
         has_nombre_label = any("nombre completo" in cell for cell in row_norm if cell)
         if not has_nombre_label:
             continue
@@ -209,7 +205,7 @@ def _extract_profesional_from_asistentes(rows: list[list[Any]]) -> str:
         # Case 1: inline text "Nombre completo: Juan Perez"
         for raw in row:
             text = _clean_text(raw)
-            norm = _norm(raw)
+            norm = normalize_text(raw)
             if "nombre completo" in norm and ":" in text:
                 inline = text.split(":", 1)[1].strip()
                 if _is_person_candidate(inline):
@@ -218,7 +214,7 @@ def _extract_profesional_from_asistentes(rows: list[list[Any]]) -> str:
         # Case 2: value in adjacent columns in same row
         for raw in row:
             value = _clean_text(raw)
-            norm = _norm(raw)
+            norm = normalize_text(raw)
             if not value:
                 continue
             if "nombre completo" in norm:
@@ -235,7 +231,7 @@ def _extract_nit(rows: list[list[Any]]) -> str:
     for r, row in enumerate(rows):
         for c, value in enumerate(row):
             raw = _clean_text(value)
-            norm = _norm(value)
+            norm = normalize_text(value)
             if not raw:
                 continue
             if len(norm) > 55:
@@ -275,7 +271,7 @@ def _extract_participants(rows: list[list[Any]]) -> list[dict[str, str]]:
     ced_headers = ("cedula", "c.c", "cc", "documento")
 
     for idx, row in enumerate(rows):
-        normalized = [_norm(cell) for cell in row]
+        normalized = [normalize_text(cell) for cell in row]
         name_col = next((i for i, cell in enumerate(normalized) if any(token in cell for token in name_headers)), None)
         if name_col is None:
             continue
@@ -379,3 +375,4 @@ def parse_acta_excel(file_path: str) -> dict:
         "participantes": participants,
         "warnings": warnings,
     }
+
