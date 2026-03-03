@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.13
+- Hotfix GUI: correccion de textos con mojibake (GESTION/Si/Ano/Bogota/Inclusion).
+- Popup de agregar profesional mejorado con validaciones, carga visible y mensaje de exito.
+- Guardado de profesional mas robusto ante valores de programa con codificacion inconsistente.
+
 ## 2.0.12
 - Remediacion integral frontend: monitor en tiempo real thread-safe (estado tipado, limpieza de traces y callbacks).
 - Carga no bloqueante al iniciar y al abrir "Crear nueva entrada", con timeout y opcion de reintento.

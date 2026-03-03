@@ -318,7 +318,7 @@ class ScrollableFrame(ttk.Frame):
 class StartupSplash(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
-        self.title("SISTEMA DE GESTIÃ“N ODS - RECA")
+        self.title("SISTEMA DE GESTIÓN ODS - RECA")
         self.resizable(False, False)
         self.configure(bg="white")
         self.protocol("WM_DELETE_WINDOW", lambda: None)
@@ -649,7 +649,7 @@ class Seccion1Frame(BaseSection):
 
     def set_data(self, data: dict) -> None:
         orden = str(data.get("orden_clausulada", "")).strip().lower()
-        self.orden_var.set("SÃ­" if orden.startswith("s") or orden == "true" else "No")
+        self.orden_var.set("Sí" if orden.startswith("s") or orden == "true" else "No")
         self.prof_var.set(data.get("nombre_profesional", ""))
 
     def _open_add_profesional(self) -> None:
@@ -668,21 +668,34 @@ class Seccion1Frame(BaseSection):
         programa_combo = ttk.Combobox(
             dialog,
             textvariable=programa_var,
-            values=["InclusiÃ³n Laboral", "Interprete"],
+            values=["Inclusión Laboral", "Interprete"],
             state="readonly",
             width=20,
         )
         programa_combo.grid(row=1, column=1, padx=10, pady=8, sticky="w")
-        programa_combo.set("InclusiÃ³n Laboral")
+        programa_combo.set("Inclusión Laboral")
 
         def on_save():
+            nombre_limpio = " ".join(nombre_var.get().split())
+            programa_limpio = " ".join(programa_var.get().split())
+            if not nombre_limpio:
+                messagebox.showerror("Error", "Nombre profesional es obligatorio.")
+                return
+            if not programa_limpio:
+                messagebox.showerror("Error", "Programa es obligatorio.")
+                return
+
+            loading = LoadingDialog(dialog, "Guardando profesional...", determinate=True)
+            loading.set_status("Enviando datos...", 40)
             payload = {
-                "nombre_profesional": nombre_var.get(),
-                "programa": programa_var.get(),
+                "nombre_profesional": nombre_limpio,
+                "programa": programa_limpio,
             }
             try:
                 data = self.api.post("/wizard/seccion-1/profesionales", payload)
+                loading.set_status("Actualizando lista...", 80)
             except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+                loading.close()
                 log_and_show_error(exc, "No se pudo guardar el profesional", title="Error")
                 return
 
@@ -692,13 +705,23 @@ class Seccion1Frame(BaseSection):
                 nombre = nuevo.get("nombre_profesional", "").strip()
             elif isinstance(nuevo, list) and nuevo:
                 nombre = (nuevo[0].get("nombre_profesional") or "").strip()
-            self.api.invalidate("/wizard/seccion-1/profesionales")
-            prof_data = self.api.get("/wizard/seccion-1/profesionales")
-            prof_labels = sorted([item["nombre_profesional"] for item in prof_data["data"]])
-            self.prof_combo.configure(values=prof_labels)
-            self.prof_combo._all_values = prof_labels
+            try:
+                self.api.invalidate("/wizard/seccion-1/profesionales")
+                prof_data = self.api.get("/wizard/seccion-1/profesionales")
+                prof_labels = sorted([item["nombre_profesional"] for item in prof_data["data"]])
+                self.prof_combo.configure(values=prof_labels)
+                self.prof_combo._all_values = prof_labels
+            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+                loading.close()
+                log_and_show_error(exc, "El profesional se guardo, pero no se pudo refrescar la lista", title="Aviso")
+                return
+            finally:
+                if loading.winfo_exists():
+                    loading.close()
+
             if nombre:
                 self.prof_var.set(nombre)
+            messagebox.showinfo("Éxito", "Profesional guardado correctamente.")
             dialog.destroy()
 
         tk.Button(
@@ -1993,6 +2016,10 @@ class LiveMonitorPanel(tk.Toplevel):
             row_state.suspend_counter = max(0, row_state.suspend_counter - 1)
 
     def _on_close(self) -> None:
+        for row_id in list(self._rows_by_id.keys()):
+            state = self._rows_by_id.get(row_id)
+            if state:
+                self._remove_row_widget(state)
         self.destroy()
 
     def _initial_load(self) -> None:
@@ -2463,10 +2490,6 @@ class ActasTerminadasPanel(tk.Toplevel):
         self.refresh()
 
     def _on_close(self) -> None:
-        for row_id in list(self._rows_by_id.keys()):
-            state = self._rows_by_id.get(row_id)
-            if state:
-                self._remove_row_widget(state)
         self.destroy()
 
     def _format_fecha(self, row: dict) -> str:
@@ -2630,7 +2653,7 @@ class WizardApp:
         self._initial_data_ready = False
         self._initial_data_loading = False
 
-        self.root.title("SISTEMA DE GESTIÃ“N ODS - RECA")
+        self.root.title("SISTEMA DE GESTIÓN ODS - RECA")
         self._set_window_size()
 
         self.header = tk.Frame(self.root, bg=COLOR_PURPLE, height=82 if self._is_small_screen else 96)
@@ -3101,7 +3124,7 @@ class WizardApp:
         mes_combo.grid(row=0, column=1, sticky="w", pady=4)
         configure_combobox(mes_combo, meses)
 
-        ttk.Label(container, text="AÃ±o").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Label(container, text="Año").grid(row=1, column=0, sticky="w", pady=4)
         anos = [str(year) for year in range(2020, 2031)]
         ano_combo = ttk.Combobox(container, textvariable=ano_var, values=anos, width=10, state="readonly")
         ano_combo.grid(row=1, column=1, sticky="w", pady=4)
@@ -3131,7 +3154,7 @@ class WizardApp:
             try:
                 ano = int(ano_raw)
             except ValueError:
-                messagebox.showerror("Error", "Selecciona un aÃ±o valido")
+                messagebox.showerror("Error", "Selecciona un año valido")
                 return
             mes = meses.index(mes_nombre) + 1
             dialog.destroy()
@@ -4005,10 +4028,10 @@ class WizardApp:
             self.seccion3.modalidad_var.set("Todas las modalidades")
             seccion3_payload = self.seccion3.get_payload()
         elif "fuera" in modalidad_txt or "otro" in modalidad_txt:
-            self.seccion3.modalidad_var.set("Fuera de BogotÃ¡")
+            self.seccion3.modalidad_var.set("Fuera de Bogotá")
             seccion3_payload = self.seccion3.get_payload()
         elif "bogota" in modalidad_txt:
-            self.seccion3.modalidad_var.set("BogotÃ¡")
+            self.seccion3.modalidad_var.set("Bogotá")
             seccion3_payload = self.seccion3.get_payload()
         elif "virtual" in modalidad_txt:
             self.seccion3.modalidad_var.set("Virtual")

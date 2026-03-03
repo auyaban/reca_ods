@@ -1,15 +1,26 @@
+import re
+
 from pydantic import BaseModel
 
 from app.services.errors import SUPABASE_ERRORS, ServiceError
 from app.supabase_client import get_supabase_client
+from app.utils.text import normalize_text
 
-_PROGRAMAS = {
-    "inclusion laboral": "Inclusión Laboral",
-    "inclusión laboral": "Inclusión Laboral",
-    "interprete": "Interprete",
-    "intérprete": "Interprete",
-}
+_PROGRAMA_INCLUSION = "Inclusión Laboral"
+_PROGRAMA_INTERPRETE = "Interprete"
 
+
+def _resolve_programa(value: str) -> str | None:
+    key = normalize_text(value or "", lowercase=True)
+    key = re.sub(r"[^a-z\s]", " ", key)
+    key = re.sub(r"\s+", " ", key).strip()
+    if not key:
+        return None
+    if ("inclus" in key or "inclu" in key) and "labor" in key:
+        return _PROGRAMA_INCLUSION
+    if "interp" in key or ("int" in key and "rpret" in key):
+        return _PROGRAMA_INTERPRETE
+    return None
 
 
 def get_orden_clausulada_opciones() -> dict:
@@ -23,18 +34,16 @@ def get_orden_clausulada_opciones() -> dict:
 def get_profesionales(programa: str | None = None) -> dict:
     client = get_supabase_client()
     try:
+        programa_resuelto = _resolve_programa(programa or "")
+
         profesionales_query = client.table("profesionales").select("nombre_profesional")
-        if programa:
-            profesionales_query = profesionales_query.eq("programa", programa)
+        if programa_resuelto:
+            profesionales_query = profesionales_query.eq("programa", programa_resuelto)
         profesionales = profesionales_query.execute().data or []
 
         interpretes = []
-        if not programa or programa.lower().strip() in {"interprete", "intérprete"}:
-            interpretes = (
-                client.table("interpretes")
-                .select("nombre")
-                .execute()
-            ).data or []
+        if not programa or programa_resuelto == _PROGRAMA_INTERPRETE:
+            interpretes = client.table("interpretes").select("nombre").execute().data or []
     except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
@@ -81,16 +90,16 @@ def crear_profesional(payload: CrearProfesionalRequest) -> dict:
         raise ServiceError("nombre_profesional es obligatorio", status_code=422)
     nombre = " ".join([part.capitalize() for part in nombre.split(" ")])
 
-    programa_key = " ".join(payload.programa.strip().lower().split())
-    programa = _PROGRAMAS.get(programa_key)
+    programa = _resolve_programa(payload.programa)
     if not programa:
         raise ServiceError("programa invalido", status_code=422)
 
     client = get_supabase_client()
     try:
-        if programa.lower() == "interprete":
+        if programa == _PROGRAMA_INTERPRETE:
             client.table("interpretes").insert({"nombre": nombre}).execute()
             return {"data": {"nombre_profesional": nombre}}
+
         last = (
             client.table("profesionales")
             .select("id")
@@ -103,7 +112,7 @@ def crear_profesional(payload: CrearProfesionalRequest) -> dict:
         client.table("profesionales").insert(payload_db).execute()
     except SUPABASE_ERRORS as exc:
         message = str(exc)
-        if "duplicate key value" in message and programa.lower() != "interprete":
+        if "duplicate key value" in message and programa != _PROGRAMA_INTERPRETE:
             try:
                 last = (
                     client.table("profesionales")
