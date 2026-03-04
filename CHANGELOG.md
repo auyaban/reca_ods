@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.14
+- Autenticacion Supabase automatica al iniciar (usuario tecnico) para mantener compatibilidad con politicas `authenticated`.
+- Configuracion de credenciales tecnicas por defecto y soporte por variables `SUPABASE_AUTH_EMAIL` / `SUPABASE_AUTH_PASSWORD`.
+- Mejora de usabilidad en selectores de fecha (campos mas grandes y con mejor area de clic).
+- Correccion de textos con mojibake pendientes en confirmaciones de GUI.
+
 ## 2.0.13
 - Hotfix GUI: correccion de textos con mojibake (GESTION/Si/Ano/Bogota/Inclusion).
 - Popup de agregar profesional mejorado con validaciones, carga visible y mensaje de exito.

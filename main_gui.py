@@ -996,12 +996,13 @@ class Seccion3Frame(BaseSection):
                 self.body,
                 date_pattern="yyyy-mm-dd",
                 textvariable=self.fecha_var,
-                width=18,
+                width=24,
+                font=("Arial", 11),
             )
         else:
-            self.fecha_widget = ttk.Entry(self.body, textvariable=self.fecha_var, width=20)
+            self.fecha_widget = ttk.Entry(self.body, textvariable=self.fecha_var, width=24)
             self.fecha_var.set(date.today().isoformat())
-        self.fecha_widget.grid(row=0, column=1, sticky="w")
+        self.fecha_widget.grid(row=0, column=1, sticky="w", ipady=2)
 
         ttk.Label(self.body, text="Codigo Servicio").grid(row=1, column=0, sticky="w")
         self.codigo_combo = ttk.Combobox(self.body, textvariable=self.codigo_var, state="normal", width=20)
@@ -1388,11 +1389,12 @@ class PersonaRow(ttk.Frame):
                 self,
                 date_pattern="yyyy-mm-dd",
                 textvariable=self.fecha_ingreso_var,
-                width=12,
+                width=18,
+                font=("Arial", 10),
             )
         else:
-            self.fecha_ingreso_widget = ttk.Entry(self, textvariable=self.fecha_ingreso_var, width=14)
-        self.fecha_ingreso_widget.grid(row=2, column=1, sticky="w")
+            self.fecha_ingreso_widget = ttk.Entry(self, textvariable=self.fecha_ingreso_var, width=18)
+        self.fecha_ingreso_widget.grid(row=2, column=1, sticky="w", ipady=2)
         self.fecha_ingreso_var.set("")
         if hasattr(self.fecha_ingreso_widget, "delete"):
             try:
@@ -2217,12 +2219,18 @@ class LiveMonitorPanel(tk.Toplevel):
         if key in self.DATE_KEYS:
             DateEntry = _get_date_entry()
             if DateEntry:
-                editor_widget = DateEntry(frame, date_pattern="yyyy-mm-dd", textvariable=editor_var, width=18)
+                editor_widget = DateEntry(
+                    frame,
+                    date_pattern="yyyy-mm-dd",
+                    textvariable=editor_var,
+                    width=24,
+                    font=("Arial", 11),
+                )
             else:
-                editor_widget = ttk.Entry(frame, textvariable=editor_var, width=28)
+                editor_widget = ttk.Entry(frame, textvariable=editor_var, width=30)
         else:
             editor_widget = ttk.Entry(frame, textvariable=editor_var, width=36)
-        editor_widget.pack(anchor="w")
+        editor_widget.pack(anchor="w", ipady=2)
 
         def _apply():
             raw = editor_var.get().strip()
@@ -3044,7 +3052,7 @@ class WizardApp:
     def _rebuild_excel_from_supabase(self) -> None:
         confirm = messagebox.askyesno(
             "Reconstruir Excel",
-            "Â¿Estas seguro de que deseas reconstruir el Excel desde Supabase?",
+            "¿Estas seguro de que deseas reconstruir el Excel desde Supabase?",
         )
         if not confirm:
             return
@@ -3052,7 +3060,7 @@ class WizardApp:
             "Confirmacion final",
             "Este proceso BORRARA el contenido actual del Excel y lo recreara desde Supabase.\n"
             "Si el Excel tenia cambios no guardados, se perderan.\n"
-            "Â¿Deseas continuar?",
+            "¿Deseas continuar?",
         )
         if not confirm2:
             return
