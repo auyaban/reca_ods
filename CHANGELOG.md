@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.15
+- Importador de actas: mejora en deteccion de profesional desde la seccion de asistentes con multiples candidatos y matching por similitud contra profesionales RECA.
+- Importador de actas: mejor deteccion de NIT en celdas vecinas y filas cercanas, incluyendo valores con separadores.
+- Importador de actas: ajuste en extraccion de participantes (incluye cabecera de nombre oferente) y evita capturar textos largos no utiles.
+
 ## 2.0.14
 - Autenticacion Supabase automatica al iniciar (usuario tecnico) para mantener compatibilidad con politicas `authenticated`.
 - Configuracion de credenciales tecnicas por defecto y soporte por variables `SUPABASE_AUTH_EMAIL` / `SUPABASE_AUTH_PASSWORD`.

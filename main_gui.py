@@ -3529,34 +3529,50 @@ class WizardApp:
             return None
         return result["value"]
 
-    def _resolve_profesional_import(self, profesional: str) -> str:
-        profesional = (profesional or "").strip()
-        if not profesional:
-            return ""
-        prof_values = list(getattr(self.seccion1.prof_combo, "_all_values", []) or [])
-        if profesional in prof_values:
-            return profesional
+    def _resolve_profesional_import(self, profesional: str, candidatos: list[str] | None = None) -> str:
+        """Busca el profesional RECA que mejor coincide con los candidatos del acta.
 
-        src = normalize_search_text(profesional)
-        if not src:
+        Compara todos los nombres encontrados en la sección de asistentes contra la
+        tabla de profesionales y retorna el de mayor puntaje de similitud.
+        """
+        prof_values = list(getattr(self.seccion1.prof_combo, "_all_values", []) or [])
+
+        # Construir lista de fuentes a comparar: primero los candidatos del acta,
+        # luego el nombre_profesional como fallback.
+        sources: list[str] = []
+        for c in (candidatos or []):
+            c = (c or "").strip()
+            if c:
+                sources.append(c)
+        fallback = (profesional or "").strip()
+        if fallback and fallback not in sources:
+            sources.append(fallback)
+
+        if not sources:
             return ""
-        src_tokens = set(src.split())
 
         best_item = ""
         best_score = 0.0
-        for item in prof_values:
-            norm_item = normalize_search_text(item)
-            if not norm_item:
+        for src_raw in sources:
+            if src_raw in prof_values:
+                return src_raw
+            src = normalize_search_text(src_raw)
+            if not src:
                 continue
-            if src in norm_item or norm_item in src:
-                return item
-            item_tokens = set(norm_item.split())
-            overlap = len(src_tokens & item_tokens) / max(len(src_tokens), 1)
-            ratio = difflib.SequenceMatcher(None, src, norm_item).ratio()
-            score = max(overlap, ratio)
-            if score > best_score:
-                best_score = score
-                best_item = item
+            src_tokens = set(src.split())
+            for item in prof_values:
+                norm_item = normalize_search_text(item)
+                if not norm_item:
+                    continue
+                if src in norm_item or norm_item in src:
+                    return item
+                item_tokens = set(norm_item.split())
+                overlap = len(src_tokens & item_tokens) / max(len(src_tokens), 1)
+                ratio = difflib.SequenceMatcher(None, src, norm_item).ratio()
+                score = max(overlap, ratio)
+                if score > best_score:
+                    best_score = score
+                    best_item = item
 
         if best_score >= 0.55:
             return best_item
@@ -3593,7 +3609,8 @@ class WizardApp:
         map_scroll.grid(row=0, column=1, sticky="ns")
 
         raw_prof = (parsed.get("nombre_profesional") or "").strip()
-        resolved_prof = self._resolve_profesional_import(raw_prof)
+        candidatos_prof = parsed.get("candidatos_profesional") or []
+        resolved_prof = self._resolve_profesional_import(raw_prof, candidatos_prof)
         modalidad = (parsed.get("modalidad_servicio") or "").strip()
         nombre_empresa = (parsed.get("nombre_empresa") or "").strip()
         empresa_bd_nombre = (parsed.get("_empresa_bd_nombre") or "").strip()
@@ -3700,7 +3717,10 @@ class WizardApp:
         if fecha:
             self.seccion3.fecha_var.set(fecha)
 
-        selected_prof = self._resolve_profesional_import((parsed.get("nombre_profesional") or "").strip())
+        selected_prof = self._resolve_profesional_import(
+            (parsed.get("nombre_profesional") or "").strip(),
+            parsed.get("candidatos_profesional") or [],
+        )
         if selected_prof:
             self.seccion1.prof_var.set(selected_prof)
 

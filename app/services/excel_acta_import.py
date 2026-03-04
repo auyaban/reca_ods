@@ -84,12 +84,14 @@ def _is_likely_label(text: str) -> bool:
 
 def _first_neighbor_value(rows: list[list[Any]], r: int, c: int) -> Any:
     # Right side first.
-    for dc in range(1, 9):
+    for dc in range(1, 16):
         cc = c + dc
         if cc >= len(rows[r]):
             break
         value = rows[r][cc]
         if _clean_text(value):
+            if len(_clean_text(value)) > 60:
+                continue
             norm = normalize_text(value)
             if not _is_likely_label(norm):
                 return value
@@ -177,7 +179,8 @@ def _extract_profesional(rows: list[list[Any]]) -> str:
     return ""
 
 
-def _extract_profesional_from_asistentes(rows: list[list[Any]]) -> str:
+def _extract_asistentes_candidates(rows: list[list[Any]]) -> list[str]:
+    """Devuelve todos los nombres encontrados en la sección de asistentes."""
     asist_row = -1
     for r, row in enumerate(rows):
         for value in row:
@@ -191,9 +194,10 @@ def _extract_profesional_from_asistentes(rows: list[list[Any]]) -> str:
             break
 
     if asist_row < 0:
-        return ""
+        return []
 
-    for rr in range(asist_row + 1, min(asist_row + 14, len(rows))):
+    candidates: list[str] = []
+    for rr in range(asist_row + 1, min(asist_row + 30, len(rows))):
         row = rows[rr]
         if not row:
             continue
@@ -209,7 +213,8 @@ def _extract_profesional_from_asistentes(rows: list[list[Any]]) -> str:
             if "nombre completo" in norm and ":" in text:
                 inline = text.split(":", 1)[1].strip()
                 if _is_person_candidate(inline):
-                    return inline
+                    candidates.append(inline)
+                    break
 
         # Case 2: value in adjacent columns in same row
         for raw in row:
@@ -219,11 +224,18 @@ def _extract_profesional_from_asistentes(rows: list[list[Any]]) -> str:
                 continue
             if "nombre completo" in norm:
                 continue
-            if "cargo" in norm:
+            if "cargo" in norm or "firma" in norm:
                 continue
-            if _is_person_candidate(value):
-                return value
-    return ""
+            if _is_person_candidate(value) and value not in candidates:
+                candidates.append(value)
+                break
+
+    return candidates
+
+
+def _extract_profesional_from_asistentes(rows: list[list[Any]]) -> str:
+    candidates = _extract_asistentes_candidates(rows)
+    return candidates[0] if candidates else ""
 
 
 def _extract_nit(rows: list[list[Any]]) -> str:
@@ -245,14 +257,14 @@ def _extract_nit(rows: list[list[Any]]) -> str:
                 cc = c + dc
                 if cc >= len(row):
                     break
-                candidate = _clean_nit(row[cc])
+                candidate = re.sub(r"[.\s]", "", _clean_nit(row[cc]))
                 if re.fullmatch(r"\d{6,12}(?:-\d)?", candidate):
                     return candidate
-            for dr in range(1, 2):
+            for dr in range(1, 4):
                 rr = r + dr
                 if rr >= len(rows):
                     break
-                candidate = _clean_nit(rows[rr][c] if c < len(rows[rr]) else "")
+                candidate = re.sub(r"[.\s]", "", _clean_nit(rows[rr][c] if c < len(rows[rr]) else ""))
                 if re.fullmatch(r"\d{6,12}(?:-\d)?", candidate):
                     return candidate
     return ""
@@ -267,6 +279,7 @@ def _extract_participants(rows: list[list[Any]]) -> list[dict[str, str]]:
         "nombre del vinculado",
         "nombre usuario",
         "nombre participante",
+        "nombre oferente",
     )
     ced_headers = ("cedula", "c.c", "cc", "documento")
 
@@ -327,6 +340,7 @@ def parse_acta_excel(file_path: str) -> dict:
     profesional = ""
     modalidad = ""
     participants: list[dict[str, str]] = []
+    candidatos_profesional: list[str] = []
 
     for _, rows in sheets:
         if not nit:
@@ -345,8 +359,12 @@ def parse_acta_excel(file_path: str) -> dict:
                 starts_with=True,
             )
             fecha_servicio = _to_iso_date(fecha_value)
+        sheet_candidates = _extract_asistentes_candidates(rows)
+        for c in sheet_candidates:
+            if c not in candidatos_profesional:
+                candidatos_profesional.append(c)
         if not profesional:
-            profesional = _extract_profesional_from_asistentes(rows) or _extract_profesional(rows)
+            profesional = sheet_candidates[0] if sheet_candidates else _extract_profesional(rows)
         if not modalidad:
             modalidad_value = _find_labeled_value(
                 rows,
@@ -371,6 +389,7 @@ def parse_acta_excel(file_path: str) -> dict:
         "nombre_empresa": empresa,
         "fecha_servicio": fecha_servicio,
         "nombre_profesional": profesional,
+        "candidatos_profesional": candidatos_profesional,
         "modalidad_servicio": modalidad,
         "participantes": participants,
         "warnings": warnings,
