@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.16
+- Nueva instrumentacion de trazas del flujo de "Crear nueva entrada" en `Desktop\\log ods.log` (inicio, validaciones por seccion, resumen, guardado, timeout/errores).
+- Guardado final de `terminar_servicio` movido a background task para evitar congelamiento de UI en la ventana de procesamiento.
+- Manejo de errores robusto en tareas en segundo plano y en cliente API para excepciones de servicio (`ServiceError`).
+- Consulta de estado de "Actas Terminadas" en carga asíncrona al abrir la pantalla inicial, evitando bloqueos en el arranque.
+
 ## 2.0.15
 - Importador de actas: mejora en deteccion de profesional desde la seccion de asistentes con multiples candidatos y matching por similitud contra profesionales RECA.
 - Importador de actas: mejor deteccion de NIT en celdas vecinas y filas cercanas, incluyendo valores con separadores.

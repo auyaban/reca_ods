@@ -11,6 +11,7 @@ from collections import OrderedDict
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -19,7 +20,8 @@ import tkinter.font as tkfont
 import threading
 
 from app.domain.service_calculation import CalculoServicioInput, calcular_servicio
-from app.logging_utils import LOGGER_GUI, get_logger
+from app.logging_utils import LOGGER_GUI, get_file_logger, get_logger
+from app.services.errors import ServiceError
 from app.utils.text import normalize_search_text, normalize_text
 
 COLOR_PURPLE = "#7C3D96"
@@ -31,6 +33,24 @@ _MAX_LOGO_CACHE_ENTRIES = 8
 _MAX_API_CACHE_ENTRIES = 256
 _DATE_ENTRY_CLS = None
 _GLOBAL_STATE_LOCK = threading.RLock()
+
+
+def _desktop_dir() -> Path:
+    one_drive = os.getenv("OneDrive")
+    if one_drive:
+        for folder in ("Desktop", "Escritorio"):
+            candidate = Path(one_drive) / folder
+            if candidate.exists():
+                return candidate
+    for folder in ("Desktop", "Escritorio"):
+        candidate = Path.home() / folder
+        if candidate.exists():
+            return candidate
+    return Path.home()
+
+
+_ODS_FLOW_LOG_FILE = _desktop_dir() / "log ods.log"
+_ODS_FLOW_LOGGER = get_file_logger("reca.ods.flow", _ODS_FLOW_LOG_FILE, announce=True)
 
 
 def log_and_show_error(exc: Exception, context: str, title: str = "Error") -> None:
@@ -125,7 +145,17 @@ class ApiClient:
                 while len(self._cache) > _MAX_API_CACHE_ENTRIES:
                     self._cache.popitem(last=False)
             return data
-        except (RuntimeError, ValueError, TypeError, OSError, KeyError, IndexError, AttributeError, tk.TclError) as exc:
+        except (
+            RuntimeError,
+            ValueError,
+            TypeError,
+            OSError,
+            KeyError,
+            IndexError,
+            AttributeError,
+            tk.TclError,
+            ServiceError,
+        ) as exc:
             detail = getattr(exc, "detail", None) or str(exc)
             raise RuntimeError(detail) from exc
 
@@ -174,7 +204,17 @@ class ApiClient:
     def post(self, path: str, payload: dict | None = None, timeout: int | float = 10) -> dict:
         try:
             return self._dispatch_post(path, payload or {})
-        except (RuntimeError, ValueError, TypeError, OSError, KeyError, IndexError, AttributeError, tk.TclError) as exc:
+        except (
+            RuntimeError,
+            ValueError,
+            TypeError,
+            OSError,
+            KeyError,
+            IndexError,
+            AttributeError,
+            tk.TclError,
+            ServiceError,
+        ) as exc:
             detail = getattr(exc, "detail", None) or str(exc)
             raise RuntimeError(detail) from exc
 
@@ -2660,6 +2700,8 @@ class WizardApp:
         self._startup_status_var = tk.StringVar(value="Cargando datos iniciales...")
         self._initial_data_ready = False
         self._initial_data_loading = False
+        self._creation_trace_id: str | None = None
+        self._creation_started_at: float | None = None
 
         self.root.title("SISTEMA DE GESTIÓN ODS - RECA")
         self._set_window_size()
@@ -2857,7 +2899,7 @@ class WizardApp:
         elif not self._initial_data_ready:
             # Permitimos acciones auxiliares, pero forzamos recarga de datos para nueva entrada.
             self._set_main_actions_enabled(True)
-        self._refresh_actas_alert(silent=True)
+        self._refresh_actas_alert_async(silent=True)
 
     def _scaled_font(self, base_size: int, min_size: int = 9) -> int:
         return max(min_size, int(round(base_size * self._ui_scale)))
@@ -2893,6 +2935,30 @@ class WizardApp:
     def _report_error(self, context: str, exc: Exception, title: str = "Error") -> None:
         log_and_show_error(exc, context, title=title)
 
+    def _ensure_creation_trace(self) -> str:
+        if not self._creation_trace_id:
+            self._creation_trace_id = f"ods-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
+        if self._creation_started_at is None:
+            self._creation_started_at = time.time()
+        return self._creation_trace_id
+
+    def _log_creation_flow(self, event: str, **details) -> None:
+        trace_id = self._ensure_creation_trace()
+        parts = [f"trace_id={trace_id}", f"event={event}"]
+        if self._creation_started_at is not None:
+            elapsed = time.time() - self._creation_started_at
+            parts.append(f"elapsed_s={elapsed:.3f}")
+        for key, value in details.items():
+            if value is None:
+                continue
+            parts.append(f"{key}={value!r}")
+        _ODS_FLOW_LOGGER.info(" | ".join(parts))
+
+    def _finish_creation_trace(self, final_event: str, **details) -> None:
+        self._log_creation_flow(final_event, **details)
+        self._creation_trace_id = None
+        self._creation_started_at = None
+
     def _run_background_task(
         self,
         worker,
@@ -2916,7 +2982,17 @@ class WizardApp:
         def _runner() -> None:
             try:
                 result = worker()
-            except (RuntimeError, ValueError, TypeError, OSError, KeyError, IndexError, AttributeError, tk.TclError) as exc:
+            except (
+                RuntimeError,
+                ValueError,
+                TypeError,
+                OSError,
+                KeyError,
+                IndexError,
+                AttributeError,
+                tk.TclError,
+                ServiceError,
+            ) as exc:
                 events.put(("error", exc))
                 return
             events.put(("ok", result))
@@ -2964,6 +3040,10 @@ class WizardApp:
             return
         self.monitor_panel = LiveMonitorPanel(self.root, self.api)
 
+    def _return_to_menu_from_form(self) -> None:
+        self._finish_creation_trace("cancelado_volver_menu")
+        self.show_initial_screen()
+
     def _set_actas_pending(self, pendientes: int) -> None:
         self._actas_pending = max(0, int(pendientes or 0))
         btn = self._actas_alert_button
@@ -2992,6 +3072,30 @@ class WizardApp:
         except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
             if not silent:
                 log_and_show_error(exc, "No se pudo cargar el estado de actas", title="Actas Terminadas")
+
+    def _refresh_actas_alert_async(self, silent: bool = False) -> None:
+        def _worker() -> int:
+            payload = self.api.get("/wizard/actas-finalizadas/status")
+            data = payload.get("data", {})
+            return int(data.get("pendientes", 0) or 0)
+
+        def _on_success(pendientes: int) -> None:
+            self._set_actas_pending(pendientes)
+
+        def _on_error(exc: Exception) -> None:
+            if not silent:
+                self._report_error("No se pudo cargar el estado de actas", exc, title="Actas Terminadas")
+
+        self._run_background_task(
+            _worker,
+            _on_success,
+            _on_error,
+            timeout_sec=30,
+            timeout_message="No se pudo consultar el estado de actas a tiempo.",
+            poll_ms=200,
+            operation_name=None,
+            disable_main_actions=False,
+        )
 
     def _prefetch_initial_data_async(self, silent: bool = False) -> None:
         if self._initial_data_loading:
@@ -3231,6 +3335,9 @@ class WizardApp:
 
     def start_new_service(self) -> None:
         try:
+            self._creation_trace_id = f"ods-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
+            self._creation_started_at = time.time()
+            self._log_creation_flow("inicio_nueva_entrada")
             self.state.reset_service()
             for child in self.main_frame.winfo_children():
                 child.destroy()
@@ -3248,7 +3355,7 @@ class WizardApp:
             tk.Button(
                 nav,
                 text="Volver",
-                command=self.show_initial_screen,
+                command=self._return_to_menu_from_form,
                 bg=COLOR_PURPLE,
                 fg="white",
                 padx=12,
@@ -3299,6 +3406,7 @@ class WizardApp:
                 self._bind_summary_updates()
                 self._refresh_summary()
                 self._update_queue_status()
+                self._log_creation_flow("formulario_cargado")
                 loading.set_status("Listo", 100)
                 loading.close()
 
@@ -3307,6 +3415,7 @@ class WizardApp:
                 self._initial_data_ready = False
                 self._startup_status_var.set("Sin conexion con Supabase. Usa 'Reintentar carga'.")
                 self.show_initial_screen()
+                self._finish_creation_trace("error_inicio_formulario", error=str(exc))
                 self._report_error("No se pudo iniciar el formulario", exc)
 
             self._run_background_task(
@@ -3319,6 +3428,7 @@ class WizardApp:
                 operation_name="start_new_service_load",
             )
         except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+            self._finish_creation_trace("error_inicio_formulario", error=str(exc))
             self._report_error("No se pudo iniciar el formulario", exc)
 
     def _importar_acta_excel(self) -> None:
@@ -4047,9 +4157,13 @@ class WizardApp:
         return ods
 
     def _validar_secciones(self) -> dict:
+        self._log_creation_flow("validacion_secciones_inicio")
         self.seccion3.ensure_tarifa_loaded()
+        self._log_creation_flow("validando_seccion_1")
         seccion1 = self.api.post("/wizard/seccion-1/confirmar", self.seccion1.get_payload())["data"]
+        self._log_creation_flow("validando_seccion_2")
         seccion2 = self.api.post("/wizard/seccion-2/confirmar", self.seccion2.get_payload())["data"]
+        self._log_creation_flow("validando_seccion_3")
         seccion3_payload = self.seccion3.get_payload()
         modalidad_txt = seccion3_payload.get("modalidad_servicio", "").lower()
         if "toda" in modalidad_txt and "modalidad" in modalidad_txt:
@@ -4085,7 +4199,9 @@ class WizardApp:
                 self.seccion3.valor_base_display_var.set(format_currency(valor_base))
                 seccion3_payload = self.seccion3.get_payload()
         seccion3 = self.api.post("/wizard/seccion-3/confirmar", seccion3_payload)["data"]
+        self._log_creation_flow("validando_seccion_4")
         seccion4 = self.api.post("/wizard/seccion-4/confirmar", self.seccion4.get_payload())["data"]
+        self._log_creation_flow("validando_seccion_5")
         seccion5_payload = self.seccion5.get_payload()
         seccion5_payload["fecha_servicio"] = seccion3_payload["fecha_servicio"]
         seccion5 = self.api.post("/wizard/seccion-5/confirmar", seccion5_payload)["data"]
@@ -4097,14 +4213,23 @@ class WizardApp:
             "seccion4": seccion4,
             "seccion5": seccion5,
         }
+        self._log_creation_flow("validacion_secciones_ok")
         return self._build_ods_payload()
 
     def terminar_servicio(self) -> None:
+        self._log_creation_flow("terminar_servicio_click")
         try:
             status = self.api.get("/wizard/editar/excel/status").get("data", {})
-        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
+            self._log_creation_flow(
+                "estado_cola_excel",
+                pendientes=int(status.get("pendientes", 0) or 0),
+                locked=status.get("locked"),
+            )
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+            self._log_creation_flow("estado_cola_excel_error", error=str(exc))
             status = {}
         if int(status.get("pendientes", 0) or 0) > 0:
+            self._log_creation_flow("bloqueado_por_cola_excel")
             messagebox.showwarning(
                 "Pendientes en Excel",
                 "Hay registros pendientes por escribir en Excel. "
@@ -4115,16 +4240,20 @@ class WizardApp:
         self.root.update_idletasks()
         try:
             ods = self._validar_secciones()
+            self._log_creation_flow("payload_ods_generado", campos=len(ods.keys()))
         except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
             loading.close()
+            self._log_creation_flow("error_validacion", error=str(exc))
             self._report_error("No se pudo validar la informacion", exc)
             return
 
         try:
             resumen = self.api.post("/wizard/resumen-final", {"ods": ods}, timeout=30)["data"]
             self.resumen.update_summary(resumen)
+            self._log_creation_flow("resumen_generado")
         except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
             loading.close()
+            self._log_creation_flow("error_resumen", error=str(exc))
             self._report_error("No se pudo generar el resumen", exc)
             return
         loading.close()
@@ -4134,45 +4263,72 @@ class WizardApp:
             "Resumen generado. Deseas terminar y guardar el servicio?",
         )
         if not continuar:
+            self._finish_creation_trace("cancelado_por_usuario")
             return
 
         loading = LoadingDialog(self.root, "Guardando servicio en la base de datos...")
         self.root.update_idletasks()
         loading.set_status("Guardando servicio...", None)
         payload = {"ods": ods, "usuarios_nuevos": self.state.usuarios_nuevos}
-        try:
-            response = self.api.post("/wizard/terminar-servicio", payload, timeout=120)
-        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
-            loading.close()
-            self._report_error("No se pudo terminar el servicio", exc)
-            return
-        loading.close()
-        if response.get("excel_status") == "background":
-            messagebox.showinfo(
-                "Servicio guardado",
-                "Servicio guardado. El Excel se actualiza en segundo plano.",
-            )
-        elif response.get("excel_status") == "pendiente":
-            messagebox.showwarning(
-                "Aviso",
-                "El archivo Excel estaba abierto. Se guardo la fila en cola.",
-            )
-        elif response.get("excel_status") == "error":
-            messagebox.showwarning(
-                "Aviso",
-                f"No se pudo actualizar el Excel: {response.get('excel_error')}",
-            )
-        self._notify_monitor_refresh()
-        self.show_initial_screen()
-
-        add_another = messagebox.askyesno(
-            "Servicio terminado",
-            "Servicio guardado. Deseas agregar otro servicio?",
+        self._log_creation_flow(
+            "guardado_bd_inicio",
+            usuarios_nuevos=len(self.state.usuarios_nuevos),
         )
-        if add_another:
-            self.start_new_service()
-        else:
-            self.show_initial_screen()
+
+        def _worker() -> dict:
+            return self.api.post("/wizard/terminar-servicio", payload, timeout=120)
+
+        def _on_success(response: dict) -> None:
+            loading.close()
+            excel_status = response.get("excel_status")
+            self._log_creation_flow(
+                "guardado_bd_ok",
+                excel_status=excel_status,
+                excel_error=response.get("excel_error"),
+            )
+            if excel_status == "background":
+                messagebox.showinfo(
+                    "Servicio guardado",
+                    "Servicio guardado. El Excel se actualiza en segundo plano.",
+                )
+            elif excel_status == "pendiente":
+                messagebox.showwarning(
+                    "Aviso",
+                    "El archivo Excel estaba abierto. Se guardo la fila en cola.",
+                )
+            elif excel_status == "error":
+                messagebox.showwarning(
+                    "Aviso",
+                    f"No se pudo actualizar el Excel: {response.get('excel_error')}",
+                )
+            self._notify_monitor_refresh()
+
+            add_another = messagebox.askyesno(
+                "Servicio terminado",
+                "Servicio guardado. Deseas agregar otro servicio?",
+            )
+            if add_another:
+                self._finish_creation_trace("servicio_guardado_agregar_otro")
+                self.start_new_service()
+            else:
+                self._finish_creation_trace("servicio_guardado_fin")
+                self.show_initial_screen()
+
+        def _on_error(exc: Exception) -> None:
+            loading.close()
+            self._finish_creation_trace("error_guardado_bd", error=str(exc))
+            self._report_error("No se pudo terminar el servicio", exc)
+
+        self._run_background_task(
+            _worker,
+            _on_success,
+            _on_error,
+            timeout_sec=180,
+            timeout_message="El guardado del servicio excedio el tiempo esperado.",
+            poll_ms=200,
+            operation_name="terminar_servicio_guardar",
+            disable_main_actions=False,
+        )
 
 def main() -> None:
     try:
@@ -4250,4 +4406,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
