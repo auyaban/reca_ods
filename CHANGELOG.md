@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.17
+- Seccion 3: cambio de fecha de servicio a tres campos independientes (dia editable, mes y ano desplegables).
+- Fecha vacia por defecto al crear nueva entrada.
+- Construccion y validacion de fecha en formato `YYYY-MM-DD` antes de confirmar/guardar.
+- Compatibilidad actualizada con importacion de actas y resumen para el nuevo esquema de fecha.
+
 ## 2.0.16
 - Nueva instrumentacion de trazas del flujo de "Crear nueva entrada" en `Desktop\\log ods.log` (inicio, validaciones por seccion, resumen, guardado, timeout/errores).
 - Guardado final de `terminar_servicio` movido a background task para evitar congelamiento de UI en la ventana de procesamiento.

@@ -1009,10 +1009,29 @@ class Seccion2Frame(BaseSection):
 
 
 class Seccion3Frame(BaseSection):
+    _MESES = [
+        "Enero",
+        "Febrero",
+        "Marzo",
+        "Abril",
+        "Mayo",
+        "Junio",
+        "Julio",
+        "Agosto",
+        "Septiembre",
+        "Octubre",
+        "Noviembre",
+        "Diciembre",
+    ]
+    _MES_TO_NUM = {mes: index for index, mes in enumerate(_MESES, start=1)}
+    _ANIOS = ["2025", "2026", "2027"]
+
     def __init__(self, parent, api: ApiClient):
         super().__init__(parent, "Seccion 3 - Informacion del servicio")
         self.api = api
-        self.fecha_var = tk.StringVar()
+        self.fecha_dia_var = tk.StringVar()
+        self.fecha_mes_var = tk.StringVar()
+        self.fecha_ano_var = tk.StringVar()
         self.codigo_var = tk.StringVar()
         self.referencia_var = tk.StringVar()
         self.descripcion_var = tk.StringVar()
@@ -1029,20 +1048,28 @@ class Seccion3Frame(BaseSection):
         self._last_codigo: str | None = None
         self._codigos_popup: tk.Toplevel | None = None
 
-        ttk.Label(self.body, text="Fecha Servicio (YYYY-MM-DD)").grid(row=0, column=0, sticky="w")
-        DateEntry = _get_date_entry()
-        if DateEntry:
-            self.fecha_widget = DateEntry(
-                self.body,
-                date_pattern="yyyy-mm-dd",
-                textvariable=self.fecha_var,
-                width=24,
-                font=("Arial", 11),
-            )
-        else:
-            self.fecha_widget = ttk.Entry(self.body, textvariable=self.fecha_var, width=24)
-            self.fecha_var.set(date.today().isoformat())
-        self.fecha_widget.grid(row=0, column=1, sticky="w", ipady=2)
+        ttk.Label(self.body, text="Fecha Servicio").grid(row=0, column=0, sticky="w")
+        fecha_frame = ttk.Frame(self.body)
+        fecha_frame.grid(row=0, column=1, sticky="w")
+        ttk.Entry(fecha_frame, textvariable=self.fecha_dia_var, width=6).grid(row=0, column=0, sticky="w")
+        self.fecha_mes_combo = ttk.Combobox(
+            fecha_frame,
+            textvariable=self.fecha_mes_var,
+            values=self._MESES,
+            state="readonly",
+            width=14,
+        )
+        self.fecha_mes_combo.grid(row=0, column=1, sticky="w", padx=(6, 0))
+        configure_combobox(self.fecha_mes_combo, self._MESES)
+        self.fecha_ano_combo = ttk.Combobox(
+            fecha_frame,
+            textvariable=self.fecha_ano_var,
+            values=self._ANIOS,
+            state="readonly",
+            width=8,
+        )
+        self.fecha_ano_combo.grid(row=0, column=2, sticky="w", padx=(6, 0))
+        configure_combobox(self.fecha_ano_combo, self._ANIOS)
 
         ttk.Label(self.body, text="Codigo Servicio").grid(row=1, column=0, sticky="w")
         self.codigo_combo = ttk.Combobox(self.body, textvariable=self.codigo_var, state="normal", width=20)
@@ -1126,11 +1153,69 @@ class Seccion3Frame(BaseSection):
             raise ValueError(f"{field_name}: valor no finito")
         return float(value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
+    def get_fecha_servicio(self, *, validate: bool = False) -> str:
+        dia_txt = self.fecha_dia_var.get().strip()
+        mes_txt = self.fecha_mes_var.get().strip()
+        ano_txt = self.fecha_ano_var.get().strip()
+        if not dia_txt and not mes_txt and not ano_txt:
+            return ""
+        if not dia_txt or not mes_txt or not ano_txt:
+            if validate:
+                raise ValueError("Fecha servicio incompleta. Selecciona dia, mes y ano.")
+            return ""
+        if not dia_txt.isdigit():
+            if validate:
+                raise ValueError("Dia invalido. Debe ser un numero entre 1 y 31.")
+            return ""
+        dia = int(dia_txt)
+        if dia < 1 or dia > 31:
+            if validate:
+                raise ValueError("Dia invalido. Debe estar entre 1 y 31.")
+            return ""
+        mes_num = self._MES_TO_NUM.get(mes_txt)
+        if mes_num is None:
+            if validate:
+                raise ValueError("Mes invalido. Selecciona un mes de la lista.")
+            return ""
+        if ano_txt not in self._ANIOS:
+            if validate:
+                raise ValueError("Ano invalido. Selecciona 2025, 2026 o 2027.")
+            return ""
+        ano = int(ano_txt)
+        try:
+            fecha = date(ano, mes_num, dia)
+        except ValueError as exc:
+            if validate:
+                raise ValueError("Fecha invalida. Verifica dia, mes y ano.") from exc
+            return ""
+        return fecha.isoformat()
+
+    def set_fecha_servicio(self, value: str) -> None:
+        raw = (value or "").strip()
+        if not raw:
+            self.fecha_dia_var.set("")
+            self.fecha_mes_var.set("")
+            self.fecha_ano_var.set("")
+            return
+        try:
+            parsed = datetime.strptime(raw, "%Y-%m-%d").date()
+        except ValueError:
+            self.fecha_dia_var.set("")
+            self.fecha_mes_var.set("")
+            self.fecha_ano_var.set("")
+            return
+        self.fecha_dia_var.set(str(parsed.day))
+        self.fecha_mes_var.set(self._MESES[parsed.month - 1])
+        if str(parsed.year) in self._ANIOS:
+            self.fecha_ano_var.set(str(parsed.year))
+        else:
+            self.fecha_ano_var.set("")
+
     def _build_calculo_input(self) -> CalculoServicioInput:
         horas_raw = self.horas_var.get().strip()
         minutos_raw = self.minutos_var.get().strip()
         return CalculoServicioInput(
-            fecha_servicio=self.fecha_var.get().strip(),
+            fecha_servicio=self.get_fecha_servicio(validate=False),
             codigo_servicio=self.codigo_var.get().strip(),
             modalidad_servicio=self.modalidad_var.get().strip(),
             valor_base=self.valor_base_var.get().strip() or "0",
@@ -1168,12 +1253,9 @@ class Seccion3Frame(BaseSection):
         self.codigo_combo._all_values = self._codigos
 
     def reset_for_new_entry(self) -> None:
-        self.fecha_var.set("")
-        try:
-            if hasattr(self.fecha_widget, "delete"):
-                self.fecha_widget.delete(0, "end")
-        except tk.TclError:
-            _LOGGER.debug("No se pudo limpiar fecha en Seccion3.")
+        self.fecha_dia_var.set("")
+        self.fecha_mes_var.set("")
+        self.fecha_ano_var.set("")
         self.codigo_var.set("")
         self.codigo_combo.configure(values=self._codigos)
         self.referencia_var.set("")
@@ -1322,9 +1404,14 @@ class Seccion3Frame(BaseSection):
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
 
+        try:
+            fecha_servicio = self.get_fecha_servicio(validate=True)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+
         valor_base = safe_decimal(self.valor_base_var.get()).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         payload = {
-            "fecha_servicio": self.fecha_var.get().strip(),
+            "fecha_servicio": fecha_servicio,
             "codigo_servicio": self.codigo_var.get().strip(),
             "referencia_servicio": self.referencia_var.get().strip(),
             "descripcion_servicio": self.descripcion_var.get().strip(),
@@ -1340,7 +1427,7 @@ class Seccion3Frame(BaseSection):
         return payload
 
     def set_data(self, data: dict) -> None:
-        self.fecha_var.set(data.get("fecha_servicio", ""))
+        self.set_fecha_servicio(data.get("fecha_servicio", ""))
         codigo = str(data.get("codigo_servicio", "")).strip()
         self.codigo_var.set(codigo)
         self.referencia_var.set(data.get("referencia_servicio", ""))
@@ -3825,7 +3912,7 @@ class WizardApp:
 
         fecha = (parsed.get("fecha_servicio") or "").strip()
         if fecha:
-            self.seccion3.fecha_var.set(fecha)
+            self.seccion3.set_fecha_servicio(fecha)
 
         selected_prof = self._resolve_profesional_import(
             (parsed.get("nombre_profesional") or "").strip(),
@@ -4117,7 +4204,9 @@ class WizardApp:
 
         self.seccion1.prof_var.trace_add("write", update)
         self.seccion2.nombre_var.trace_add("write", update)
-        self.seccion3.fecha_var.trace_add("write", update)
+        self.seccion3.fecha_dia_var.trace_add("write", update)
+        self.seccion3.fecha_mes_var.trace_add("write", update)
+        self.seccion3.fecha_ano_var.trace_add("write", update)
         self.seccion3.codigo_var.trace_add("write", update)
         self.seccion3.horas_var.trace_add("write", update)
         self.seccion3.minutos_var.trace_add("write", update)
@@ -4128,7 +4217,7 @@ class WizardApp:
         self._summary_after_id = None
         self.seccion3.ensure_tarifa_loaded()
         data = {
-            "fecha_servicio": self.seccion3.fecha_var.get().strip(),
+            "fecha_servicio": self.seccion3.get_fecha_servicio(validate=False),
             "nombre_profesional": self.seccion1.prof_var.get().strip(),
             "nombre_empresa": self.seccion2.nombre_var.get().strip(),
             "codigo_servicio": self.seccion3.codigo_var.get().strip(),
