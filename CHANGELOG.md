@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.18
+- Rotacion de credencial tecnica Supabase para el usuario `test@reca.local`.
+- Actualizacion del password tecnico por defecto en configuracion local.
+- Compatibilidad retroactiva: si se detecta el password tecnico anterior en `SUPABASE_AUTH_PASSWORD`, se reemplaza automaticamente por el nuevo.
+
 ## 2.0.17
 - Seccion 3: cambio de fecha de servicio a tres campos independientes (dia editable, mes y ano desplegables).
 - Fecha vacia por defecto al crear nueva entrada.

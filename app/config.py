@@ -10,7 +10,10 @@ from app.utils.cache import ttl_bucket
 _ENV_PATH = app_data_dir() / ".env"
 _SETTINGS_CACHE_TTL_SECONDS = 300
 _DEFAULT_SUPABASE_AUTH_EMAIL = "test@reca.local"
-_DEFAULT_SUPABASE_AUTH_PASSWORD = "Reca.Test.2026!"
+_DEFAULT_SUPABASE_AUTH_PASSWORD = "Reca.Test.2026!v3"
+_LEGACY_SUPABASE_AUTH_PASSWORDS = {
+    "Reca.Test.2026!",
+}
 
 
 def _load_env() -> None:
@@ -39,6 +42,8 @@ def _env_or_default(key: str, default: str) -> str:
     clean = _clean_env(raw)
     if clean == "":
         return default
+    if key == "SUPABASE_AUTH_PASSWORD" and clean in _LEGACY_SUPABASE_AUTH_PASSWORDS:
+        return _DEFAULT_SUPABASE_AUTH_PASSWORD
     return clean
 
 
