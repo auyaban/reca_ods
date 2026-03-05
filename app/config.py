@@ -47,6 +47,17 @@ def _env_or_default(key: str, default: str) -> str:
     return clean
 
 
+def _unique_ordered(values: list[str]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return tuple(ordered)
+
+
 class Settings:
     def __init__(self) -> None:
         self.supabase_url = _clean_env(os.getenv("SUPABASE_URL", ""))
@@ -56,6 +67,13 @@ class Settings:
         )
         self.supabase_auth_password = _env_or_default(
             "SUPABASE_AUTH_PASSWORD", _DEFAULT_SUPABASE_AUTH_PASSWORD
+        )
+        self.supabase_auth_password_candidates = _unique_ordered(
+            [
+                self.supabase_auth_password,
+                _DEFAULT_SUPABASE_AUTH_PASSWORD,
+                *_LEGACY_SUPABASE_AUTH_PASSWORDS,
+            ]
         )
         self.supabase_rpc_terminar_servicio = _clean_env(
             os.getenv("SUPABASE_RPC_TERMINAR_SERVICIO", "")
@@ -76,3 +94,35 @@ def clear_settings_cache(reload_env: bool = True) -> None:
     _get_settings_cached.cache_clear()
     if reload_env:
         _load_env()
+
+
+def persist_supabase_auth_credentials(email: str, password: str) -> None:
+    lines: list[str] = []
+    existing: list[str] = []
+    if _ENV_PATH.exists():
+        try:
+            existing = _ENV_PATH.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            existing = []
+
+    updated_email = False
+    updated_password = False
+    for line in existing:
+        if line.startswith("SUPABASE_AUTH_EMAIL="):
+            lines.append(f"SUPABASE_AUTH_EMAIL={email}")
+            updated_email = True
+            continue
+        if line.startswith("SUPABASE_AUTH_PASSWORD="):
+            lines.append(f"SUPABASE_AUTH_PASSWORD={password}")
+            updated_password = True
+            continue
+        lines.append(line)
+
+    if not updated_email:
+        lines.append(f"SUPABASE_AUTH_EMAIL={email}")
+    if not updated_password:
+        lines.append(f"SUPABASE_AUTH_PASSWORD={password}")
+
+    _ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _ENV_PATH.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    clear_settings_cache(reload_env=True)

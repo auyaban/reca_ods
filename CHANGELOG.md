@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.19
+- Autenticacion Supabase mas robusta: si la credencial tecnica configurada falla, la app reintenta con la vigente y passwords legacy conocidos.
+- Autocorreccion del `.env` local en AppData cuando se recupera una credencial tecnica valida.
+- Flujo de agregar interpretes endurecido ante problemas de permisos en tabla `interpretes`.
+
 ## 2.0.18
 - Rotacion de credencial tecnica Supabase para el usuario `test@reca.local`.
 - Actualizacion del password tecnico por defecto en configuracion local.

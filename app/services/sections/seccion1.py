@@ -1,13 +1,17 @@
-import re
+﻿import re
+from typing import Any
 
 from pydantic import BaseModel
 
+from app.logging_utils import LOGGER_BACKEND, get_logger
 from app.services.errors import SUPABASE_ERRORS, ServiceError
 from app.supabase_client import get_supabase_client
 from app.utils.text import normalize_text
 
-_PROGRAMA_INCLUSION = "Inclusión Laboral"
+_PROGRAMA_INCLUSION = "InclusiÃ³n Laboral"
 _PROGRAMA_INTERPRETE = "Interprete"
+
+_logger = get_logger(LOGGER_BACKEND)
 
 
 def _resolve_programa(value: str) -> str | None:
@@ -23,9 +27,35 @@ def _resolve_programa(value: str) -> str | None:
     return None
 
 
+def _is_interpretes_permission_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return ("42501" in text) or ("permission denied" in text and "interpretes" in text)
+
+
+def _insert_profesional(client: Any, *, nombre: str, programa: str) -> None:
+    for _ in range(3):
+        try:
+            last = (
+                client.table("profesionales")
+                .select("id")
+                .order("id", desc=True)
+                .limit(1)
+                .execute()
+            )
+            next_id = int(last.data[0]["id"]) + 1 if last.data else 1
+            payload_db = {"id": next_id, "nombre_profesional": nombre, "programa": programa}
+            client.table("profesionales").insert(payload_db).execute()
+            return
+        except SUPABASE_ERRORS as exc:
+            if "duplicate key value" in str(exc).lower():
+                continue
+            raise
+    raise ServiceError("No se pudo crear profesional por conflicto de id", status_code=409)
+
+
 def get_orden_clausulada_opciones() -> dict:
     opciones = [
-        {"id": "si", "label": "Sí"},
+        {"id": "si", "label": "Si"},
         {"id": "no", "label": "No"},
     ]
     return {"data": opciones}
@@ -33,19 +63,30 @@ def get_orden_clausulada_opciones() -> dict:
 
 def get_profesionales(programa: str | None = None) -> dict:
     client = get_supabase_client()
-    try:
-        programa_resuelto = _resolve_programa(programa or "")
+    programa_resuelto = _resolve_programa(programa or "")
+    profesionales: list[dict[str, str]] = []
+    interpretes: list[dict[str, str]] = []
 
+    try:
         profesionales_query = client.table("profesionales").select("nombre_profesional")
         if programa_resuelto:
             profesionales_query = profesionales_query.eq("programa", programa_resuelto)
         profesionales = profesionales_query.execute().data or []
-
-        interpretes = []
-        if not programa or programa_resuelto == _PROGRAMA_INTERPRETE:
-            interpretes = client.table("interpretes").select("nombre").execute().data or []
     except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
+
+    if not programa or programa_resuelto == _PROGRAMA_INTERPRETE:
+        try:
+            interpretes = client.table("interpretes").select("nombre").execute().data or []
+        except SUPABASE_ERRORS as exc:
+            if _is_interpretes_permission_error(exc):
+                _logger.warning(
+                    "Sin permiso para leer tabla interpretes; se usa solo profesionales. Error=%s",
+                    exc,
+                )
+                interpretes = []
+            else:
+                raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
     nombres = []
     for item in profesionales:
@@ -97,36 +138,20 @@ def crear_profesional(payload: CrearProfesionalRequest) -> dict:
     client = get_supabase_client()
     try:
         if programa == _PROGRAMA_INTERPRETE:
-            client.table("interpretes").insert({"nombre": nombre}).execute()
+            try:
+                client.table("interpretes").insert({"nombre": nombre}).execute()
+            except SUPABASE_ERRORS as exc:
+                if not _is_interpretes_permission_error(exc):
+                    raise
+                _logger.warning(
+                    "Sin permiso para insertar en interpretes; fallback a profesionales. Error=%s",
+                    exc,
+                )
+                _insert_profesional(client, nombre=nombre, programa=_PROGRAMA_INTERPRETE)
             return {"data": {"nombre_profesional": nombre}}
 
-        last = (
-            client.table("profesionales")
-            .select("id")
-            .order("id", desc=True)
-            .limit(1)
-            .execute()
-        )
-        next_id = int(last.data[0]["id"]) + 1 if last.data else 1
-        payload_db = {"id": next_id, "nombre_profesional": nombre, "programa": programa}
-        client.table("profesionales").insert(payload_db).execute()
+        _insert_profesional(client, nombre=nombre, programa=programa)
     except SUPABASE_ERRORS as exc:
-        message = str(exc)
-        if "duplicate key value" in message and programa != _PROGRAMA_INTERPRETE:
-            try:
-                last = (
-                    client.table("profesionales")
-                    .select("id")
-                    .order("id", desc=True)
-                    .limit(1)
-                    .execute()
-                )
-                next_id = int(last.data[0]["id"]) + 1 if last.data else 1
-                payload_db = {"id": next_id, "nombre_profesional": nombre, "programa": programa}
-                client.table("profesionales").insert(payload_db).execute()
-            except SUPABASE_ERRORS as exc2:
-                raise ServiceError(f"Supabase error: {exc2}", status_code=502) from exc2
-        else:
-            raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
+        raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
     return {"data": {"nombre_profesional": nombre}}
