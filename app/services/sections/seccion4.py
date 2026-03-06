@@ -20,7 +20,7 @@ GENEROS = {
     "otro": "Otro",
 }
 
-TIPOS_CONTRATO = ["Laboral", "Contrato Aprendiz Especial"]
+TIPOS_CONTRATO = ["Laboral", "Contrato Aprendiz Especial", "Orientación Laboral"]
 
 _USUARIOS_PAGE_SIZE = 1000
 

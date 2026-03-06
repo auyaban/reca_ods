@@ -1,5 +1,8 @@
 # Changelog
 
+## 2.0.20
+- Se agrega `Orientacion Laboral` a la lista desplegable de `Tipo de contrato`.
+
 ## 2.0.19
 - Autenticacion Supabase mas robusta: si la credencial tecnica configurada falla, la app reintenta con la vigente y passwords legacy conocidos.
 - Autocorreccion del `.env` local en AppData cuando se recupera una credencial tecnica valida.
