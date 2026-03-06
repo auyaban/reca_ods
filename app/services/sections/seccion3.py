@@ -86,6 +86,14 @@ def confirmar_seccion_3(payload: Seccion3ConfirmarRequest) -> dict:
             "fecha_servicio debe tener formato YYYY-MM-DD", status_code=422
         ) from exc
 
+    horas = int(payload.horas_interprete or 0)
+    minutos = int(payload.minutos_interprete or 0)
+    if payload.servicio_interpretacion and horas <= 0 and minutos <= 0:
+        raise ServiceError(
+            "Debe ingresar horas o minutos de interpretacion.",
+            status_code=422,
+        )
+
     try:
         resultado = calcular_servicio(
             CalculoServicioInput(

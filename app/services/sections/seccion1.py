@@ -105,18 +105,26 @@ def get_profesionales(programa: str | None = None) -> dict:
     except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
-    nombres = []
+    nombres_meta: dict[str, dict[str, Any]] = {}
     for item in profesionales:
         nombre = (item.get("nombre_profesional") or "").strip()
         if nombre:
-            nombres.append(nombre)
+            nombres_meta[nombre] = {
+                "nombre_profesional": nombre,
+                "programa": _PROGRAMA_INCLUSION,
+                "es_interprete": False,
+            }
     for item in interpretes:
         nombre = (item.get("nombre") or "").strip()
         if nombre:
-            nombres.append(nombre)
+            nombres_meta[nombre] = {
+                "nombre_profesional": nombre,
+                "programa": _PROGRAMA_INTERPRETE,
+                "es_interprete": True,
+            }
 
-    nombres = sorted(set(nombres), key=lambda value: value.lower())
-    return {"data": [{"nombre_profesional": nombre} for nombre in nombres]}
+    nombres = sorted(nombres_meta.keys(), key=lambda value: value.lower())
+    return {"data": [nombres_meta[nombre] for nombre in nombres]}
 
 
 class Seccion1ConfirmarRequest(BaseModel):

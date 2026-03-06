@@ -655,6 +655,7 @@ class Seccion1Frame(BaseSection):
         self.state = state
         self.orden_var = tk.StringVar()
         self.prof_var = tk.StringVar()
+        self._profesionales_meta_by_nombre: dict[str, dict] = {}
         ttk.Label(self.body, text="Orden Clausulada").grid(row=0, column=0, sticky="w")
         self.orden_combo = ttk.Combobox(self.body, textvariable=self.orden_var, state="readonly", width=20)
         self.orden_combo.grid(row=0, column=1, sticky="w")
@@ -681,9 +682,24 @@ class Seccion1Frame(BaseSection):
         self.orden_combo._all_values = orden_labels
 
         prof_data = self.api.get_cached("/wizard/seccion-1/profesionales")
-        prof_labels = [item["nombre_profesional"] for item in prof_data["data"]]
+        self._apply_profesionales_data(prof_data["data"])
+
+    def _apply_profesionales_data(self, rows: list[dict]) -> None:
+        self._profesionales_meta_by_nombre = {}
+        prof_labels: list[str] = []
+        for item in rows or []:
+            nombre = (item.get("nombre_profesional") or "").strip()
+            if not nombre:
+                continue
+            prof_labels.append(nombre)
+            self._profesionales_meta_by_nombre[nombre] = dict(item)
         self.prof_combo.configure(values=prof_labels)
         self.prof_combo._all_values = prof_labels
+
+    def selected_profesional_is_interprete(self) -> bool:
+        nombre = self.prof_var.get().strip()
+        meta = self._profesionales_meta_by_nombre.get(nombre) or {}
+        return bool(meta.get("es_interprete"))
 
     def reset_for_new_entry(self) -> None:
         self.orden_var.set("")
@@ -758,9 +774,7 @@ class Seccion1Frame(BaseSection):
             try:
                 self.api.invalidate("/wizard/seccion-1/profesionales")
                 prof_data = self.api.get("/wizard/seccion-1/profesionales")
-                prof_labels = sorted([item["nombre_profesional"] for item in prof_data["data"]])
-                self.prof_combo.configure(values=prof_labels)
-                self.prof_combo._all_values = prof_labels
+                self._apply_profesionales_data(prof_data["data"])
             except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
                 loading.close()
                 log_and_show_error(exc, "El profesional se guardo, pero no se pudo refrescar la lista", title="Aviso")
@@ -1053,6 +1067,7 @@ class Seccion3Frame(BaseSection):
         self.minutos_var = tk.StringVar()
         self.horas_decimal_var = tk.StringVar()
         self.total_calculado_var = tk.StringVar()
+        self._interprete_required = False
         self._codigos: list[str] = []
         self._tarifas_by_codigo: dict[str, dict] = {}
         self._last_codigo: str | None = None
@@ -1119,12 +1134,13 @@ class Seccion3Frame(BaseSection):
             row=5, column=1, sticky="w"
         )
 
-        ttk.Checkbutton(
+        self.interpretacion_check = ttk.Checkbutton(
             self.body,
             text="Servicio de interpretacion",
             variable=self.interpretacion_var,
             command=self._toggle_interprete,
-        ).grid(row=6, column=0, sticky="w", pady=(6, 0))
+        )
+        self.interpretacion_check.grid(row=6, column=0, sticky="w", pady=(6, 0))
 
         self.interprete_frame = ttk.Frame(self.body)
         ttk.Label(self.interprete_frame, text="Horas").grid(row=0, column=0, sticky="w")
@@ -1235,6 +1251,8 @@ class Seccion3Frame(BaseSection):
         )
 
     def _toggle_interprete(self) -> None:
+        if self._interprete_required and not self.interpretacion_var.get():
+            self.interpretacion_var.set(True)
         if self.interpretacion_var.get():
             self.interprete_frame.grid()
             self.horas_entry.configure(state="normal")
@@ -1250,6 +1268,30 @@ class Seccion3Frame(BaseSection):
             self.horas_decimal_var.set("")
             self.total_calculado_var.set("")
 
+    def set_interprete_required(self, required: bool) -> None:
+        self._interprete_required = bool(required)
+        if self._interprete_required:
+            self.interpretacion_var.set(True)
+            try:
+                self.interpretacion_check.configure(state="disabled")
+            except tk.TclError:
+                _LOGGER.debug("No se pudo bloquear check de interpretacion.")
+            self._toggle_interprete()
+        else:
+            try:
+                self.interpretacion_check.configure(state="normal")
+            except tk.TclError:
+                _LOGGER.debug("No se pudo desbloquear check de interpretacion.")
+            self._toggle_interprete()
+
+    def _validate_interpretacion_required(self, calculo_input: CalculoServicioInput) -> None:
+        if not self.interpretacion_var.get():
+            return
+        horas = int(calculo_input.horas_interprete or 0)
+        minutos = int(calculo_input.minutos_interprete or 0)
+        if horas <= 0 and minutos <= 0:
+            raise RuntimeError("Debes ingresar horas o minutos de interpretacion.")
+
     def load_data(self) -> None:
         data = self.api.get_cached("/wizard/seccion-3/tarifas")
         self._tarifas_by_codigo = {}
@@ -1263,6 +1305,11 @@ class Seccion3Frame(BaseSection):
         self.codigo_combo._all_values = self._codigos
 
     def reset_for_new_entry(self) -> None:
+        self._interprete_required = False
+        try:
+            self.interpretacion_check.configure(state="normal")
+        except tk.TclError:
+            _LOGGER.debug("No se pudo restaurar check de interpretacion.")
         self.fecha_dia_var.set("")
         self.fecha_mes_var.set("")
         self.fecha_ano_var.set("")
@@ -1409,6 +1456,7 @@ class Seccion3Frame(BaseSection):
 
     def get_payload(self) -> dict:
         calculo_input = self._build_calculo_input()
+        self._validate_interpretacion_required(calculo_input)
         try:
             result = calcular_servicio(calculo_input)
         except ValueError as exc:
@@ -2032,7 +2080,8 @@ class LiveMonitorPanel(tk.Toplevel):
         "valor_interprete",
         "valor_total",
     }
-    INT_KEYS = {"horas_interprete"}
+    INT_KEYS = set()
+    DECIMAL_KEYS = {"horas_interprete"}
 
     def __init__(self, root: tk.Tk, api: ApiClient):
         super().__init__(root)
@@ -2326,6 +2375,13 @@ class LiveMonitorPanel(tk.Toplevel):
                 return format_currency(value)
             except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
                 return str(value)
+        if key in self.DECIMAL_KEYS:
+            try:
+                amount = safe_decimal(value)
+                normalized = amount.normalize()
+                return format(normalized, "f").rstrip("0").rstrip(".") or "0"
+            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
+                return str(value)
         if key in self.INT_KEYS:
             try:
                 return str(int(safe_decimal(value)))
@@ -2339,6 +2395,11 @@ class LiveMonitorPanel(tk.Toplevel):
     def _parse_for_save(self, key: str, text: str):
         if key in self.MONEY_KEYS:
             return float(self._parse_money(text))
+        if key in self.DECIMAL_KEYS:
+            clean = str(text).strip()
+            if not clean:
+                return 0.0
+            return float(safe_decimal(clean))
         if key in self.INT_KEYS:
             clean = str(text).strip()
             if not clean:
@@ -2389,6 +2450,12 @@ class LiveMonitorPanel(tk.Toplevel):
                     raw = self._display_value(key, self._parse_money(raw))
                 except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
                     messagebox.showerror("Monitor", "Valor monetario invalido.")
+                    return
+            if key in self.DECIMAL_KEYS and raw:
+                try:
+                    raw = self._display_value(key, safe_decimal(raw))
+                except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
+                    messagebox.showerror("Monitor", "El valor debe ser numerico decimal.")
                     return
             if key in self.INT_KEYS and raw:
                 try:
@@ -2449,6 +2516,11 @@ class LiveMonitorPanel(tk.Toplevel):
         if key in self.MONEY_KEYS:
             try:
                 return self._parse_money(text)
+            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
+                return Decimal("0")
+        if key in self.DECIMAL_KEYS:
+            try:
+                return safe_decimal(text or 0)
             except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
                 return Decimal("0")
         if key in self.INT_KEYS:
@@ -4220,12 +4292,16 @@ class WizardApp:
         self.resumen.grid()
 
     def _bind_summary_updates(self) -> None:
+        def sync_interprete(*_args):
+            self.seccion3.set_interprete_required(self.seccion1.selected_profesional_is_interprete())
+            update()
+
         def update(*_args):
             if self._summary_after_id is not None:
                 self.root.after_cancel(self._summary_after_id)
             self._summary_after_id = self.root.after(300, self._refresh_summary)
 
-        self.seccion1.prof_var.trace_add("write", update)
+        self.seccion1.prof_var.trace_add("write", sync_interprete)
         self.seccion2.nombre_var.trace_add("write", update)
         self.seccion3.fecha_dia_var.trace_add("write", update)
         self.seccion3.fecha_mes_var.trace_add("write", update)
@@ -4235,6 +4311,7 @@ class WizardApp:
         self.seccion3.minutos_var.trace_add("write", update)
         self.seccion3.interpretacion_var.trace_add("write", update)
         self.seccion3.total_calculado_var.trace_add("write", update)
+        sync_interprete()
 
     def _refresh_summary(self) -> None:
         self._summary_after_id = None
