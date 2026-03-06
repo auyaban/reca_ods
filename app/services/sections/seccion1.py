@@ -3,15 +3,12 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from app.logging_utils import LOGGER_BACKEND, get_logger
 from app.services.errors import SUPABASE_ERRORS, ServiceError
 from app.supabase_client import get_supabase_client
 from app.utils.text import normalize_text
 
 _PROGRAMA_INCLUSION = "InclusiÃ³n Laboral"
 _PROGRAMA_INTERPRETE = "Interprete"
-
-_logger = get_logger(LOGGER_BACKEND)
 
 
 def _resolve_programa(value: str) -> str | None:
@@ -25,11 +22,6 @@ def _resolve_programa(value: str) -> str | None:
     if "interp" in key or ("int" in key and "rpret" in key):
         return _PROGRAMA_INTERPRETE
     return None
-
-
-def _is_interpretes_permission_error(exc: Exception) -> bool:
-    text = str(exc).lower()
-    return ("42501" in text) or ("permission denied" in text and "interpretes" in text)
 
 
 def _insert_profesional(client: Any, *, nombre: str, programa: str) -> None:
@@ -68,25 +60,22 @@ def get_profesionales(programa: str | None = None) -> dict:
     interpretes: list[dict[str, str]] = []
 
     try:
-        profesionales_query = client.table("profesionales").select("nombre_profesional")
-        if programa_resuelto:
-            profesionales_query = profesionales_query.eq("programa", programa_resuelto)
-        profesionales = profesionales_query.execute().data or []
+        if programa_resuelto == _PROGRAMA_INTERPRETE:
+            interpretes = client.table("interpretes").select("nombre").execute().data or []
+        elif programa_resuelto == _PROGRAMA_INCLUSION:
+            profesionales = (
+                client.table("profesionales")
+                .select("nombre_profesional")
+                .eq("programa", _PROGRAMA_INCLUSION)
+                .execute()
+                .data
+                or []
+            )
+        else:
+            profesionales = client.table("profesionales").select("nombre_profesional").execute().data or []
+            interpretes = client.table("interpretes").select("nombre").execute().data or []
     except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
-
-    if not programa or programa_resuelto == _PROGRAMA_INTERPRETE:
-        try:
-            interpretes = client.table("interpretes").select("nombre").execute().data or []
-        except SUPABASE_ERRORS as exc:
-            if _is_interpretes_permission_error(exc):
-                _logger.warning(
-                    "Sin permiso para leer tabla interpretes; se usa solo profesionales. Error=%s",
-                    exc,
-                )
-                interpretes = []
-            else:
-                raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
     nombres = []
     for item in profesionales:
@@ -138,16 +127,7 @@ def crear_profesional(payload: CrearProfesionalRequest) -> dict:
     client = get_supabase_client()
     try:
         if programa == _PROGRAMA_INTERPRETE:
-            try:
-                client.table("interpretes").insert({"nombre": nombre}).execute()
-            except SUPABASE_ERRORS as exc:
-                if not _is_interpretes_permission_error(exc):
-                    raise
-                _logger.warning(
-                    "Sin permiso para insertar en interpretes; fallback a profesionales. Error=%s",
-                    exc,
-                )
-                _insert_profesional(client, nombre=nombre, programa=_PROGRAMA_INTERPRETE)
+            client.table("interpretes").insert({"nombre": nombre}).execute()
             return {"data": {"nombre_profesional": nombre}}
 
         _insert_profesional(client, nombre=nombre, programa=programa)
