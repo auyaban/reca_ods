@@ -1,21 +1,23 @@
 from pydantic import BaseModel
 
 from app.services.errors import SUPABASE_ERRORS, ServiceError
-from app.supabase_client import get_supabase_client
+from app.supabase_client import execute_with_reauth
 
 
 def get_empresas() -> dict:
-    client = get_supabase_client()
     try:
         page_size = 1000
         offset = 0
         rows = []
         while True:
-            response = (
-                client.table("empresas")
-                .select("nit_empresa,nombre_empresa,caja_compensacion,asesor,sede_empresa")
-                .range(offset, offset + page_size - 1)
-                .execute()
+            response = execute_with_reauth(
+                lambda client: (
+                    client.table("empresas")
+                    .select("nit_empresa,nombre_empresa,caja_compensacion,asesor,sede_empresa")
+                    .range(offset, offset + page_size - 1)
+                    .execute()
+                ),
+                context="seccion2.get_empresas",
             )
             batch = list(response.data or [])
             rows.extend(batch)
@@ -29,16 +31,18 @@ def get_empresas() -> dict:
 
 
 def get_empresa_por_nit(nit: str) -> dict:
-    client = get_supabase_client()
     try:
-        response = (
-            client.table("empresas")
-            .select(
-                "nit_empresa,nombre_empresa,caja_compensacion,asesor,sede_empresa"
-            )
-            .eq("nit_empresa", nit)
-            .limit(1)
-            .execute()
+        response = execute_with_reauth(
+            lambda client: (
+                client.table("empresas")
+                .select(
+                    "nit_empresa,nombre_empresa,caja_compensacion,asesor,sede_empresa"
+                )
+                .eq("nit_empresa", nit)
+                .limit(1)
+                .execute()
+            ),
+            context="seccion2.get_empresa_por_nit",
         )
     except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc

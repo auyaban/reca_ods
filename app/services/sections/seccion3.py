@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from app.logging_utils import LOGGER_BACKEND, get_file_logger
 from app.domain.service_calculation import CalculoServicioInput, calcular_servicio
 from app.services.errors import SUPABASE_ERRORS, ServiceError
-from app.supabase_client import get_supabase_client
+from app.supabase_client import execute_with_reauth
 
 _ROOT_DIR = Path(__file__).resolve().parents[3]
 _LOG_FILE = _ROOT_DIR / "logs" / "backend.log"
@@ -29,14 +29,16 @@ def _to_decimal(value: float | int | str) -> Decimal:
 
 
 def get_codigos_servicio() -> dict:
-    client = get_supabase_client()
     try:
-        response = (
-            client.table("tarifas")
-            .select(
-                "codigo_servicio,referencia_servicio,descripcion_servicio,modalidad_servicio,valor_base"
-            )
-            .execute()
+        response = execute_with_reauth(
+            lambda client: (
+                client.table("tarifas")
+                .select(
+                    "codigo_servicio,referencia_servicio,descripcion_servicio,modalidad_servicio,valor_base"
+                )
+                .execute()
+            ),
+            context="seccion3.get_codigos_servicio",
         )
     except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
@@ -45,16 +47,18 @@ def get_codigos_servicio() -> dict:
 
 
 def get_tarifa_por_codigo(codigo: str) -> dict:
-    client = get_supabase_client()
     try:
-        response = (
-            client.table("tarifas")
-            .select(
-                "codigo_servicio,referencia_servicio,descripcion_servicio,modalidad_servicio,valor_base"
-            )
-            .eq("codigo_servicio", codigo)
-            .limit(1)
-            .execute()
+        response = execute_with_reauth(
+            lambda client: (
+                client.table("tarifas")
+                .select(
+                    "codigo_servicio,referencia_servicio,descripcion_servicio,modalidad_servicio,valor_base"
+                )
+                .eq("codigo_servicio", codigo)
+                .limit(1)
+                .execute()
+            ),
+            context="seccion3.get_tarifa_por_codigo",
         )
     except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc

@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 
 from app.services.errors import SUPABASE_ERRORS, ServiceError
-from app.supabase_client import get_supabase_client
+from app.supabase_client import execute_with_reauth
 from app.utils.text import normalize_key
 
 DISCAPACIDADES = {
@@ -25,21 +25,27 @@ TIPOS_CONTRATO = ["Laboral", "Contrato Aprendiz Especial", "Orientación Laboral
 _USUARIOS_PAGE_SIZE = 1000
 
 def get_usuarios_reca() -> dict:
-    client = get_supabase_client()
     rows: list[dict] = []
     last_cedula: str | None = None
     try:
         while True:
-            query = (
-                client.table("usuarios_reca")
-                .select("nombre_usuario,cedula_usuario,discapacidad_usuario,genero_usuario")
-                .order("cedula_usuario")
-                .limit(_USUARIOS_PAGE_SIZE)
+            response = execute_with_reauth(
+                lambda client: (
+                    client.table("usuarios_reca")
+                    .select("nombre_usuario,cedula_usuario,discapacidad_usuario,genero_usuario")
+                    .order("cedula_usuario")
+                    .gt("cedula_usuario", last_cedula)
+                    .limit(_USUARIOS_PAGE_SIZE)
+                    .execute()
+                    if last_cedula
+                    else client.table("usuarios_reca")
+                    .select("nombre_usuario,cedula_usuario,discapacidad_usuario,genero_usuario")
+                    .order("cedula_usuario")
+                    .limit(_USUARIOS_PAGE_SIZE)
+                    .execute()
+                ),
+                context="seccion4.get_usuarios_reca",
             )
-            if last_cedula:
-                query = query.gt("cedula_usuario", last_cedula)
-
-            response = query.execute()
             batch = list(response.data or [])
             if not batch:
                 break
@@ -68,14 +74,16 @@ def get_usuarios_reca() -> dict:
 
 
 def get_usuario_por_cedula(cedula: str) -> dict:
-    client = get_supabase_client()
     try:
-        response = (
-            client.table("usuarios_reca")
-            .select("nombre_usuario,cedula_usuario,discapacidad_usuario,genero_usuario")
-            .eq("cedula_usuario", cedula)
-            .limit(1)
-            .execute()
+        response = execute_with_reauth(
+            lambda client: (
+                client.table("usuarios_reca")
+                .select("nombre_usuario,cedula_usuario,discapacidad_usuario,genero_usuario")
+                .eq("cedula_usuario", cedula)
+                .limit(1)
+                .execute()
+            ),
+            context="seccion4.get_usuario_por_cedula",
         )
     except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
@@ -84,14 +92,16 @@ def get_usuario_por_cedula(cedula: str) -> dict:
 
 
 def verificar_usuario_existe(cedula: str) -> dict:
-    client = get_supabase_client()
     try:
-        response = (
-            client.table("usuarios_reca")
-            .select("cedula_usuario")
-            .eq("cedula_usuario", cedula)
-            .limit(1)
-            .execute()
+        response = execute_with_reauth(
+            lambda client: (
+                client.table("usuarios_reca")
+                .select("cedula_usuario")
+                .eq("cedula_usuario", cedula)
+                .limit(1)
+                .execute()
+            ),
+            context="seccion4.verificar_usuario_existe",
         )
     except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc

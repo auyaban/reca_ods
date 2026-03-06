@@ -4,7 +4,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.services.errors import SUPABASE_ERRORS, ServiceError
-from app.supabase_client import get_supabase_client
+from app.supabase_client import execute_with_reauth
 from app.utils.text import normalize_text
 
 _PROGRAMA_INCLUSION = "InclusiÃ³n Laboral"
@@ -24,19 +24,25 @@ def _resolve_programa(value: str) -> str | None:
     return None
 
 
-def _insert_profesional(client: Any, *, nombre: str, programa: str) -> None:
+def _insert_profesional(*, nombre: str, programa: str) -> None:
     for _ in range(3):
         try:
-            last = (
-                client.table("profesionales")
-                .select("id")
-                .order("id", desc=True)
-                .limit(1)
-                .execute()
+            last = execute_with_reauth(
+                lambda retry_client: (
+                    retry_client.table("profesionales")
+                    .select("id")
+                    .order("id", desc=True)
+                    .limit(1)
+                    .execute()
+                ),
+                context="seccion1.insert_profesional.fetch_last_id",
             )
             next_id = int(last.data[0]["id"]) + 1 if last.data else 1
             payload_db = {"id": next_id, "nombre_profesional": nombre, "programa": programa}
-            client.table("profesionales").insert(payload_db).execute()
+            execute_with_reauth(
+                lambda retry_client: retry_client.table("profesionales").insert(payload_db).execute(),
+                context="seccion1.insert_profesional.insert",
+            )
             return
         except SUPABASE_ERRORS as exc:
             if "duplicate key value" in str(exc).lower():
@@ -54,26 +60,48 @@ def get_orden_clausulada_opciones() -> dict:
 
 
 def get_profesionales(programa: str | None = None) -> dict:
-    client = get_supabase_client()
     programa_resuelto = _resolve_programa(programa or "")
     profesionales: list[dict[str, str]] = []
     interpretes: list[dict[str, str]] = []
 
     try:
         if programa_resuelto == _PROGRAMA_INTERPRETE:
-            interpretes = client.table("interpretes").select("nombre").execute().data or []
+            interpretes = (
+                execute_with_reauth(
+                    lambda retry_client: retry_client.table("interpretes").select("nombre").execute(),
+                    context="seccion1.get_profesionales.interpretes",
+                ).data
+                or []
+            )
         elif programa_resuelto == _PROGRAMA_INCLUSION:
             profesionales = (
-                client.table("profesionales")
-                .select("nombre_profesional")
-                .eq("programa", _PROGRAMA_INCLUSION)
-                .execute()
+                execute_with_reauth(
+                    lambda retry_client: (
+                        retry_client.table("profesionales")
+                        .select("nombre_profesional")
+                        .eq("programa", _PROGRAMA_INCLUSION)
+                        .execute()
+                    ),
+                    context="seccion1.get_profesionales.inclusion",
+                )
                 .data
                 or []
             )
         else:
-            profesionales = client.table("profesionales").select("nombre_profesional").execute().data or []
-            interpretes = client.table("interpretes").select("nombre").execute().data or []
+            profesionales = (
+                execute_with_reauth(
+                    lambda retry_client: retry_client.table("profesionales").select("nombre_profesional").execute(),
+                    context="seccion1.get_profesionales.all_profesionales",
+                ).data
+                or []
+            )
+            interpretes = (
+                execute_with_reauth(
+                    lambda retry_client: retry_client.table("interpretes").select("nombre").execute(),
+                    context="seccion1.get_profesionales.all_interpretes",
+                ).data
+                or []
+            )
     except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
@@ -124,13 +152,15 @@ def crear_profesional(payload: CrearProfesionalRequest) -> dict:
     if not programa:
         raise ServiceError("programa invalido", status_code=422)
 
-    client = get_supabase_client()
     try:
         if programa == _PROGRAMA_INTERPRETE:
-            client.table("interpretes").insert({"nombre": nombre}).execute()
+            execute_with_reauth(
+                lambda retry_client: retry_client.table("interpretes").insert({"nombre": nombre}).execute(),
+                context="seccion1.crear_profesional.interprete",
+            )
             return {"data": {"nombre_profesional": nombre}}
 
-        _insert_profesional(client, nombre=nombre, programa=programa)
+        _insert_profesional(nombre=nombre, programa=programa)
     except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 

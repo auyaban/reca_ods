@@ -22,6 +22,7 @@ import threading
 from app.domain.service_calculation import CalculoServicioInput, calcular_servicio
 from app.logging_utils import LOGGER_GUI, get_file_logger, get_logger
 from app.services.errors import ServiceError
+from app.supabase_client import classify_supabase_error
 from app.utils.text import normalize_search_text, normalize_text
 
 COLOR_PURPLE = "#7C3D96"
@@ -56,9 +57,18 @@ _ODS_FLOW_LOGGER = get_file_logger("reca.ods.flow", _ODS_FLOW_LOG_FILE, announce
 def log_and_show_error(exc: Exception, context: str, title: str = "Error") -> None:
     error_code = f"E-{int(time.time() * 1000) % 1_000_000:06d}"
     _LOGGER.exception("[%s] %s: %s", error_code, context, exc)
+    category = classify_supabase_error(exc)
+    if category == "auth":
+        user_message = "No se pudo autenticar con la base de datos."
+    elif category == "permission":
+        user_message = "La aplicacion no tiene permisos para realizar esta operacion."
+    elif category == "connectivity":
+        user_message = "No se pudo conectar con Supabase en este momento."
+    else:
+        user_message = context
     messagebox.showerror(
         title,
-        f"{context}.\nIntenta nuevamente o contacta soporte.\nCodigo: {error_code}",
+        f"{user_message}\nIntenta nuevamente o contacta soporte.\nCodigo: {error_code}",
     )
 
 

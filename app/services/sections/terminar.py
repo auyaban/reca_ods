@@ -7,7 +7,7 @@ from app.models.payloads import TerminarServicioRequest, dump_ods_for_rpc
 from app.config import get_settings
 from app.logging_utils import LOGGER_BACKEND_INSERT, get_logger
 from app.services.errors import SUPABASE_ERRORS, ServiceError
-from app.supabase_client import get_supabase_client
+from app.supabase_client import execute_with_reauth
 from app.utils.cache import ttl_bucket
 
 _logger = get_logger(LOGGER_BACKEND_INSERT)
@@ -180,23 +180,28 @@ def _apply_schema(ods_data: dict[str, Any]) -> dict[str, Any]:
 
 
 def terminar_servicio(payload: TerminarServicioRequest, background_tasks) -> dict:
-    client = get_supabase_client()
     try:
         if payload.usuarios_nuevos:
             nuevos = [item.model_dump() for item in payload.usuarios_nuevos]
             cedulas = [item["cedula_usuario"] for item in nuevos if item.get("cedula_usuario")]
             existentes = set()
             if cedulas:
-                existente_resp = (
-                    client.table("usuarios_reca")
-                    .select("cedula_usuario")
-                    .in_("cedula_usuario", cedulas)
-                    .execute()
+                existente_resp = execute_with_reauth(
+                    lambda retry_client: (
+                        retry_client.table("usuarios_reca")
+                        .select("cedula_usuario")
+                        .in_("cedula_usuario", cedulas)
+                        .execute()
+                    ),
+                    context="terminar_servicio.fetch_existing_users",
                 )
                 existentes = {item["cedula_usuario"] for item in (existente_resp.data or [])}
             to_insert = [item for item in nuevos if item.get("cedula_usuario") not in existentes]
             if to_insert:
-                client.table("usuarios_reca").insert(to_insert).execute()
+                execute_with_reauth(
+                    lambda retry_client: retry_client.table("usuarios_reca").insert(to_insert).execute(),
+                    context="terminar_servicio.insert_new_users",
+                )
 
         ods_data = dump_ods_for_rpc(payload.ods)
         fecha_ingreso = ods_data.get("fecha_ingreso")
@@ -207,7 +212,10 @@ def terminar_servicio(payload: TerminarServicioRequest, background_tasks) -> dic
         ods_data = _apply_schema(ods_data)
 
         _logger.info("ODS payload keys=%s", list(ods_data.keys()))
-        response = client.table("ods").insert(ods_data).execute()
+        response = execute_with_reauth(
+            lambda retry_client: retry_client.table("ods").insert(ods_data).execute(),
+            context="terminar_servicio.insert_ods",
+        )
         if response.data:
             inserted = response.data[0]
             if isinstance(inserted, dict) and inserted.get("id"):
