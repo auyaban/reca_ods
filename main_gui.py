@@ -1896,9 +1896,17 @@ class Seccion5Frame(BaseSection):
 
 
 class ResumenFrame(ttk.Frame):
-    def __init__(self, parent, on_terminar, on_retry_queue=None, show_terminar: bool = True):
+    def __init__(
+        self,
+        parent,
+        on_terminar,
+        on_retry_queue=None,
+        show_terminar: bool = True,
+        show_excel_queue: bool = True,
+    ):
         super().__init__(parent)
         self.on_terminar = on_terminar
+        self.queue_label = None
         self.vars = {
             "fecha_servicio": tk.StringVar(),
             "nombre_profesional": tk.StringVar(),
@@ -1936,19 +1944,20 @@ class ResumenFrame(ttk.Frame):
             self._terminar_btn.grid(row=row, column=0, pady=(10, 8), sticky="w")
 
         row += 1
-        self.queue_label = ttk.Label(self, text="", foreground=COLOR_TEAL)
-        self.queue_label.grid(row=row, column=0, columnspan=2, sticky="w")
-        row += 1
-        if on_retry_queue:
-            tk.Button(
-                self,
-                text="Reintentar cola Excel",
-                command=on_retry_queue,
-                bg=COLOR_TEAL,
-                fg="white",
-                padx=10,
-                pady=4,
-            ).grid(row=row, column=0, pady=(6, 0), sticky="w")
+        if show_excel_queue:
+            self.queue_label = ttk.Label(self, text="", foreground=COLOR_TEAL)
+            self.queue_label.grid(row=row, column=0, columnspan=2, sticky="w")
+            row += 1
+            if on_retry_queue:
+                tk.Button(
+                    self,
+                    text="Reintentar cola Excel",
+                    command=on_retry_queue,
+                    bg=COLOR_TEAL,
+                    fg="white",
+                    padx=10,
+                    pady=4,
+                ).grid(row=row, column=0, pady=(6, 0), sticky="w")
 
     def update_summary(self, data: dict) -> None:
         for key, var in self.vars.items():
@@ -3473,7 +3482,12 @@ class WizardApp:
             self.seccion5 = Seccion5Frame(main_col, self.api)
             self.seccion5.grid(row=5, column=0, sticky="ew", pady=8)
 
-            self.resumen = ResumenFrame(main_col, self.terminar_servicio, self._flush_excel_queue)
+            self.resumen = ResumenFrame(
+                main_col,
+                self.terminar_servicio,
+                self._flush_excel_queue,
+                show_excel_queue=False,
+            )
             self.resumen.grid(row=6, column=0, sticky="ew", pady=8)
 
             loading = LoadingDialog(self.root, "Cargando datos del formulario...", determinate=True)
@@ -3492,7 +3506,6 @@ class WizardApp:
                 self._lock_sections()
                 self._bind_summary_updates()
                 self._refresh_summary()
-                self._update_queue_status()
                 self._log_creation_flow("formulario_cargado")
                 loading.set_status("Listo", 100)
                 loading.close()
@@ -4237,7 +4250,6 @@ class WizardApp:
             )
             data["valor_total"] = base if base else ""
         self.resumen.update_summary(data)
-        self._update_queue_status()
 
     def _build_ods_payload(self) -> dict:
         ods = {}
@@ -4307,24 +4319,6 @@ class WizardApp:
 
     def terminar_servicio(self) -> None:
         self._log_creation_flow("terminar_servicio_click")
-        try:
-            status = self.api.get("/wizard/editar/excel/status").get("data", {})
-            self._log_creation_flow(
-                "estado_cola_excel",
-                pendientes=int(status.get("pendientes", 0) or 0),
-                locked=status.get("locked"),
-            )
-        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
-            self._log_creation_flow("estado_cola_excel_error", error=str(exc))
-            status = {}
-        if int(status.get("pendientes", 0) or 0) > 0:
-            self._log_creation_flow("bloqueado_por_cola_excel")
-            messagebox.showwarning(
-                "Pendientes en Excel",
-                "Hay registros pendientes por escribir en Excel. "
-                "Usa 'Reintentar cola Excel' y espera a que termine antes de guardar otro servicio.",
-            )
-            return
         loading = LoadingDialog(self.root, "Preparando servicio...")
         self.root.update_idletasks()
         try:
@@ -4375,21 +4369,10 @@ class WizardApp:
                 excel_status=excel_status,
                 excel_error=response.get("excel_error"),
             )
-            if excel_status == "background":
-                messagebox.showinfo(
-                    "Servicio guardado",
-                    "Servicio guardado. El Excel se actualiza en segundo plano.",
-                )
-            elif excel_status == "pendiente":
-                messagebox.showwarning(
-                    "Aviso",
-                    "El archivo Excel estaba abierto. Se guardo la fila en cola.",
-                )
-            elif excel_status == "error":
-                messagebox.showwarning(
-                    "Aviso",
-                    f"No se pudo actualizar el Excel: {response.get('excel_error')}",
-                )
+            messagebox.showinfo(
+                "Servicio guardado",
+                "Servicio guardado en Supabase. El Excel no se actualiza automaticamente.",
+            )
             self._notify_monitor_refresh()
 
             add_another = messagebox.askyesno(

@@ -5,9 +5,8 @@ import requests
 
 from app.models.payloads import TerminarServicioRequest, dump_ods_for_rpc
 from app.config import get_settings
-from app.excel_sync import append_row, queue_action
 from app.logging_utils import LOGGER_BACKEND_INSERT, get_logger
-from app.services.errors import RUNTIME_ERRORS, SUPABASE_ERRORS, ServiceError
+from app.services.errors import SUPABASE_ERRORS, ServiceError
 from app.supabase_client import get_supabase_client
 from app.utils.cache import ttl_bucket
 
@@ -180,17 +179,6 @@ def _apply_schema(ods_data: dict[str, Any]) -> dict[str, Any]:
     return filtered
 
 
-def _persist_excel_background(ods_data: dict) -> None:
-    try:
-        append_row(ods_data)
-    except PermissionError:
-        _logger.warning("Excel en uso; enviando registro a cola.")
-        queue_action("append", ods_data, None, "archivo_abierto")
-    except RUNTIME_ERRORS as exc:
-        _logger.exception("Fallo inesperado escribiendo Excel; encolando registro: %s", exc)
-        queue_action("append", ods_data, None, "error_guardado")
-
-
 def terminar_servicio(payload: TerminarServicioRequest, background_tasks) -> dict:
     client = get_supabase_client()
     try:
@@ -229,6 +217,4 @@ def terminar_servicio(payload: TerminarServicioRequest, background_tasks) -> dic
     except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
-    background_tasks.add_task(_persist_excel_background, ods_data)
-
-    return {"data": response.data, "excel_status": "background", "excel_error": None}
+    return {"data": response.data, "excel_status": "disabled", "excel_error": None}
