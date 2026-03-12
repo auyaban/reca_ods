@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.1.0
+- Migracion operativa de ODS a Google Drive / Google Sheets con sincronizacion mensual por Shared Drive.
+- Nuevo flujo `Actualizar Supabase` desde `ODS_CALCULADA` con preview, comparacion por `id` y aplicacion parcial robusta.
+- Remocion completa de factura, reconstruccion desde Supabase y monitor en tiempo real, junto con sus dependencias de Excel local.
+- Limpieza de almacenamiento y build: sin plantillas Excel/factura locales ni runtime ligado a `app/excel_sync.py`.
+- `Actas Terminadas` ahora soporta enlaces de Google Drive/Sheets y puede abrir/preparar una nueva entrada al marcar un acta como revisada.
+- Importacion de actas extendida a Google Sheets/Drive, con validacion fuera del hilo principal y cobertura de pruebas ampliada.
+
 ## 2.0.20
 - Se agrega `Orientacion Laboral` a la lista desplegable de `Tipo de contrato`.
 

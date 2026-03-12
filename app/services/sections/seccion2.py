@@ -13,7 +13,7 @@ def get_empresas() -> dict:
             response = execute_with_reauth(
                 lambda client: (
                     client.table("empresas")
-                    .select("nit_empresa,nombre_empresa,caja_compensacion,asesor,sede_empresa")
+                    .select("nit_empresa,nombre_empresa,caja_compensacion,asesor,zona_empresa")
                     .range(offset, offset + page_size - 1)
                     .execute()
                 ),
@@ -36,7 +36,7 @@ def get_empresa_por_nit(nit: str) -> dict:
             lambda client: (
                 client.table("empresas")
                 .select(
-                    "nit_empresa,nombre_empresa,caja_compensacion,asesor,sede_empresa"
+                    "nit_empresa,nombre_empresa,caja_compensacion,asesor,zona_empresa"
                 )
                 .eq("nit_empresa", nit)
                 .limit(1)

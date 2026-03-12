@@ -3,3 +3,5 @@ python-dotenv
 requests
 tkcalendar
 openpyxl
+google-api-python-client
+google-auth

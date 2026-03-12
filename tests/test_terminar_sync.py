@@ -1,0 +1,125 @@
+from __future__ import annotations
+
+import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from app.models.payloads import OdsPayload, TerminarServicioRequest
+from app.services.sections import terminar
+
+
+def _request() -> TerminarServicioRequest:
+    ods = OdsPayload(
+        orden_clausulada="si",
+        nombre_profesional="Ana Perez",
+        nit_empresa="900123456",
+        nombre_empresa="Empresa Demo",
+        caja_compensacion="Compensar",
+        asesor_empresa="Asesor Demo",
+        sede_empresa="Principal",
+        fecha_servicio="2026-03-12",
+        codigo_servicio="COD-001",
+        referencia_servicio="REF-1",
+        descripcion_servicio="Servicio Demo",
+        modalidad_servicio="Virtual",
+        valor_virtual=100.0,
+        valor_bogota=0.0,
+        valor_otro=0.0,
+        todas_modalidades=0.0,
+        horas_interprete=2.5,
+        valor_interprete=0.0,
+        valor_total=100.0,
+        nombre_usuario="Carlos Ruiz",
+        cedula_usuario="123456",
+        discapacidad_usuario="Auditiva",
+        genero_usuario="Masculino",
+        fecha_ingreso="2026-03-01",
+        tipo_contrato="Laboral",
+        cargo_servicio="Analista",
+        total_personas=1,
+        observaciones="Sin novedad",
+        observacion_agencia="Ninguna",
+        seguimiento_servicio="Pendiente",
+        mes_servicio=3,
+        ano_servicio=2026,
+    )
+    return TerminarServicioRequest(ods=ods, usuarios_nuevos=[])
+
+
+def _inserted_row() -> dict:
+    payload = _request().ods.model_dump()
+    payload["id"] = "ods-1"
+    payload["orden_clausulada"] = True
+    return payload
+
+
+class TerminarServicioSyncTests(unittest.TestCase):
+    @patch("app.services.sections.terminar.sync_new_ods_record")
+    @patch("app.services.sections.terminar.execute_with_reauth")
+    @patch("app.services.sections.terminar._fetch_ods_schema")
+    def test_returns_ok_sync_status(
+        self,
+        mock_schema,
+        mock_execute_with_reauth,
+        mock_sync_new_ods_record,
+    ) -> None:
+        mock_schema.return_value = {}
+        mock_execute_with_reauth.return_value = SimpleNamespace(data=[_inserted_row()])
+        mock_sync_new_ods_record.return_value = {
+            "sync_status": "ok",
+            "sync_error": None,
+            "sync_target": "ODS_MAR_2026",
+        }
+
+        response = terminar.terminar_servicio(_request(), background_tasks=None)
+
+        self.assertEqual(response["sync_status"], "ok")
+        self.assertEqual(response["sync_target"], "ODS_MAR_2026")
+
+    @patch("app.services.sections.terminar.sync_new_ods_record")
+    @patch("app.services.sections.terminar.execute_with_reauth")
+    @patch("app.services.sections.terminar._fetch_ods_schema")
+    def test_returns_pending_sync_status(
+        self,
+        mock_schema,
+        mock_execute_with_reauth,
+        mock_sync_new_ods_record,
+    ) -> None:
+        mock_schema.return_value = {}
+        mock_execute_with_reauth.return_value = SimpleNamespace(data=[_inserted_row()])
+        mock_sync_new_ods_record.return_value = {
+            "sync_status": "pending",
+            "sync_error": "retry later",
+            "sync_target": "ODS_MAR_2026",
+        }
+
+        response = terminar.terminar_servicio(_request(), background_tasks=None)
+
+        self.assertEqual(response["sync_status"], "pending")
+        self.assertEqual(response["sync_error"], "retry later")
+
+    @patch("app.services.sections.terminar.sync_new_ods_record")
+    @patch("app.services.sections.terminar.execute_with_reauth")
+    @patch("app.services.sections.terminar._fetch_ods_schema")
+    def test_returns_warning_sync_status(
+        self,
+        mock_schema,
+        mock_execute_with_reauth,
+        mock_sync_new_ods_record,
+    ) -> None:
+        mock_schema.return_value = {}
+        mock_execute_with_reauth.return_value = SimpleNamespace(data=[_inserted_row()])
+        mock_sync_new_ods_record.return_value = {
+            "sync_status": "warning",
+            "sync_error": "template missing",
+            "sync_target": "ODS_MAR_2026",
+        }
+
+        response = terminar.terminar_servicio(_request(), background_tasks=None)
+
+        self.assertEqual(response["sync_status"], "warning")
+        self.assertEqual(response["sync_error"], "template missing")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -7,7 +7,7 @@ from pathlib import Path
 _LOGGER_LOCK = threading.Lock()
 
 LOGGER_GUI = "reca.gui"
-LOGGER_EXCEL = "reca.excel"
+LOGGER_GOOGLE_DRIVE = "reca.google_drive"
 LOGGER_BACKEND = "reca.backend"
 LOGGER_BACKEND_INSERT = "reca.backend.insert"
 LOGGER_UPDATER = "reca.updater"

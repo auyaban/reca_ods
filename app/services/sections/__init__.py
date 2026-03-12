@@ -1,7 +1,7 @@
 from app.services.sections import (
     actas_finalizadas,
-    editar,
-    facturas,
+    google_drive,
+    google_sheet_supabase_sync,
     resumen_final,
     seccion1,
     seccion2,
@@ -13,8 +13,8 @@ from app.services.sections import (
 
 __all__ = [
     "actas_finalizadas",
-    "editar",
-    "facturas",
+    "google_drive",
+    "google_sheet_supabase_sync",
     "resumen_final",
     "seccion1",
     "seccion2",

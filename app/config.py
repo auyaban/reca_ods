@@ -16,10 +16,35 @@ _LEGACY_SUPABASE_AUTH_PASSWORDS = {
 }
 
 
+def _load_env_file(path: Path, *, override: bool) -> None:
+    if not path.exists():
+        return
+
+    try:
+        raw_lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return
+
+    for raw_line in raw_lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip().lstrip("\ufeff")
+        value = value.strip()
+        if not key:
+            continue
+        if not override and key in os.environ:
+            continue
+        os.environ[key] = value
+
+
 def _load_env() -> None:
+    _load_env_file(_ENV_PATH, override=True)
     load_dotenv(dotenv_path=_ENV_PATH, override=True)
     if not _ENV_PATH.exists():
         fallback = Path(__file__).resolve().parents[1] / ".env"
+        _load_env_file(fallback, override=False)
         load_dotenv(dotenv_path=fallback, override=False)
 
 
@@ -77,6 +102,18 @@ class Settings:
         )
         self.supabase_rpc_terminar_servicio = _clean_env(
             os.getenv("SUPABASE_RPC_TERMINAR_SERVICIO", "")
+        )
+        self.google_service_account_file = _clean_env(
+            os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "")
+        )
+        self.google_sheets_default_spreadsheet_id = _clean_env(
+            os.getenv("GOOGLE_SHEETS_DEFAULT_SPREADSHEET_ID", "")
+        )
+        self.google_drive_shared_folder_id = _clean_env(
+            os.getenv("GOOGLE_DRIVE_SHARED_FOLDER_ID", "")
+        )
+        self.google_drive_template_spreadsheet_name = _clean_env(
+            os.getenv("GOOGLE_DRIVE_TEMPLATE_SPREADSHEET_NAME", "")
         )
 
 

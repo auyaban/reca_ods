@@ -1,14 +1,22 @@
 ﻿from __future__ import annotations
 
 import re
+import tempfile
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from app.google_sheets_client import (
+    download_drive_file,
+    export_spreadsheet_to_excel,
+    extract_drive_file_id,
+    get_drive_file_metadata,
+)
 from app.utils.text import normalize_text
 
 MAX_SCAN_ROWS = 260
 MAX_SCAN_COLS = 70
+_GOOGLE_SPREADSHEET_MIME = "application/vnd.google-apps.spreadsheet"
 
 
 
@@ -395,3 +403,72 @@ def parse_acta_excel(file_path: str) -> dict:
         "warnings": warnings,
     }
 
+
+def _is_google_spreadsheet_reference(source: str) -> bool:
+    text = str(source or "").strip().lower()
+    return "/spreadsheets/d/" in text
+
+
+def _is_google_drive_reference(source: str) -> bool:
+    text = str(source or "").strip().lower()
+    return "drive.google.com" in text and ("/file/d/" in text or "id=" in text)
+
+
+def parse_acta_source(source: str) -> dict:
+    source_text = str(source or "").strip()
+    if not source_text:
+        raise RuntimeError("Debe indicar la ruta o URL del acta.")
+
+    local_path = Path(source_text).expanduser()
+    if local_path.exists():
+        return parse_acta_excel(str(local_path))
+
+    temp_path: Path | None = None
+    try:
+        if _is_google_spreadsheet_reference(source_text):
+            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+                temp_path = Path(tmp.name)
+            export_spreadsheet_to_excel(source_text, temp_path)
+            parsed = parse_acta_excel(str(temp_path))
+            parsed["file_path"] = source_text
+            parsed["source_type"] = "google_sheets"
+            return parsed
+
+        if _is_google_drive_reference(source_text):
+            file_id = extract_drive_file_id(source_text)
+            metadata = get_drive_file_metadata(file_id)
+            mime_type = str(metadata.get("mimeType") or "").strip().lower()
+            name = str(metadata.get("name") or "acta").strip()
+            suffix = Path(name).suffix.lower()
+
+            if mime_type == _GOOGLE_SPREADSHEET_MIME:
+                with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+                    temp_path = Path(tmp.name)
+                export_spreadsheet_to_excel(file_id, temp_path)
+                parsed = parse_acta_excel(str(temp_path))
+                parsed["file_path"] = source_text
+                parsed["source_type"] = "google_sheets"
+                return parsed
+
+            if suffix not in {".xlsx", ".xlsm"}:
+                raise RuntimeError(
+                    "El archivo de Drive no es un Google Sheet ni un Excel compatible (.xlsx/.xlsm)."
+                )
+
+            with tempfile.NamedTemporaryFile(suffix=suffix or ".xlsx", delete=False) as tmp:
+                temp_path = Path(tmp.name)
+            download_drive_file(file_id, temp_path)
+            parsed = parse_acta_excel(str(temp_path))
+            parsed["file_path"] = source_text
+            parsed["source_type"] = "google_drive_file"
+            return parsed
+    finally:
+        if temp_path and temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+
+    raise RuntimeError(
+        "No se pudo resolver el acta. Usa un archivo Excel local o una URL valida de Google Drive/Sheets."
+    )

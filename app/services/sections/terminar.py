@@ -5,6 +5,7 @@ import requests
 
 from app.models.payloads import TerminarServicioRequest, dump_ods_for_rpc
 from app.config import get_settings
+from app.google_drive_sync import sync_new_ods_record
 from app.logging_utils import LOGGER_BACKEND_INSERT, get_logger
 from app.services.errors import SUPABASE_ERRORS, ServiceError
 from app.supabase_client import execute_with_reauth
@@ -216,13 +217,27 @@ def terminar_servicio(payload: TerminarServicioRequest, background_tasks) -> dic
             lambda retry_client: retry_client.table("ods").insert(ods_data).execute(),
             context="terminar_servicio.insert_ods",
         )
+        sync_result = {
+            "sync_status": "warning",
+            "sync_error": "No se recibio la fila insertada desde Supabase.",
+            "sync_target": None,
+        }
         if response.data:
             inserted = response.data[0]
-            if isinstance(inserted, dict) and inserted.get("id"):
-                ods_data["id"] = inserted["id"]
+            if isinstance(inserted, dict):
+                if inserted.get("id"):
+                    ods_data["id"] = inserted["id"]
+                sync_result = sync_new_ods_record(inserted)
+        else:
+            sync_result = sync_new_ods_record(ods_data)
     except ServiceError:
         raise
     except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 
-    return {"data": response.data, "excel_status": "disabled", "excel_error": None}
+    return {
+        "data": response.data,
+        "sync_status": sync_result.get("sync_status"),
+        "sync_error": sync_result.get("sync_error"),
+        "sync_target": sync_result.get("sync_target"),
+    }

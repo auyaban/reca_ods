@@ -1,7 +1,7 @@
 from app.services.sections import (
     actas_finalizadas,
-    editar as editar_entrada,
-    facturas,
+    google_drive,
+    google_sheet_supabase_sync,
     resumen_final,
     seccion1,
     seccion2,
@@ -12,6 +12,7 @@ from app.services.sections import (
 )
 from app.services.background import InlineBackgroundTasks
 from app.config import clear_settings_cache
+from app.google_sheets_client import clear_google_sheets_service_cache
 from app.supabase_client import clear_supabase_client_cache
 
 
@@ -111,50 +112,22 @@ def terminar_servicio(payload: dict) -> dict:
     return response
 
 
-def buscar_entradas(params: dict) -> dict:
-    return editar_entrada.buscar_entradas(**params)
+def google_drive_flush() -> dict:
+    return google_drive.google_drive_flush()
 
 
-def listar_entradas_monitor(params: dict | None = None) -> dict:
-    params = params or {}
-    return editar_entrada.listar_entradas_monitor(limit=params.get("limit", 1000))
+def google_drive_status() -> dict:
+    return google_drive.google_drive_status()
 
 
-def obtener_entrada(params: dict) -> dict:
-    return editar_entrada.obtener_entrada(**params)
+def preview_google_sheet_supabase_sync(payload: dict) -> dict:
+    req = google_sheet_supabase_sync.GoogleSheetSupabaseSyncPreviewRequest(**payload)
+    return google_sheet_supabase_sync.preview_google_sheet_supabase_sync(req)
 
 
-def actualizar_entrada(payload: dict) -> dict:
-    req = editar_entrada.OdsActualizarRequest(**payload)
-    tasks = InlineBackgroundTasks()
-    response = editar_entrada.actualizar_entrada(req, tasks)
-    tasks.run()
-    return response
-
-
-def eliminar_entrada(payload: dict) -> dict:
-    req = editar_entrada.OdsEliminarRequest(**payload)
-    tasks = InlineBackgroundTasks()
-    response = editar_entrada.eliminar_entrada(req, tasks)
-    tasks.run()
-    return response
-
-
-def excel_flush() -> dict:
-    return editar_entrada.flush_excel_queue()
-
-
-def excel_status() -> dict:
-    return editar_entrada.excel_status()
-
-
-def excel_rebuild() -> dict:
-    return editar_entrada.rebuild_excel()
-
-
-def crear_factura(payload: dict) -> dict:
-    req = facturas.CrearFacturaRequest(**payload)
-    return facturas.crear_factura(req)
+def apply_google_sheet_supabase_sync(payload: dict) -> dict:
+    req = google_sheet_supabase_sync.GoogleSheetSupabaseSyncApplyRequest(**payload)
+    return google_sheet_supabase_sync.apply_google_sheet_supabase_sync(req)
 
 
 def listar_actas_finalizadas(params: dict | None = None) -> dict:
@@ -177,5 +150,5 @@ def actualizar_acta_revisado(payload: dict) -> dict:
 def reset_runtime_caches() -> None:
     clear_settings_cache(reload_env=True)
     clear_supabase_client_cache()
-    editar_entrada.clear_schema_cache()
+    clear_google_sheets_service_cache()
     terminar.clear_schema_cache()

@@ -6,7 +6,6 @@ import sys
 import time
 import webbrowser
 import difflib
-from contextlib import contextmanager
 from collections import OrderedDict
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from dataclasses import dataclass, field
@@ -255,18 +254,12 @@ class ApiClient:
             return self._svc.get_generos()
         if path == "/wizard/seccion-4/contratos":
             return self._svc.get_tipos_contrato()
-        if path == "/wizard/editar/buscar":
-            return self._svc.buscar_entradas(params)
-        if path == "/wizard/monitor/entradas":
-            return self._svc.listar_entradas_monitor(params)
         if path == "/wizard/actas-finalizadas":
             return self._svc.listar_actas_finalizadas(params)
         if path == "/wizard/actas-finalizadas/status":
             return self._svc.estado_actas_finalizadas()
-        if path == "/wizard/editar/entrada":
-            return self._svc.obtener_entrada(params)
-        if path == "/wizard/editar/excel/status":
-            return self._svc.excel_status()
+        if path == "/wizard/google-drive/status":
+            return self._svc.google_drive_status()
         raise RuntimeError(f"Endpoint no soportado: GET {path}")
 
     def _dispatch_post(self, path: str, payload: dict) -> dict:
@@ -288,16 +281,12 @@ class ApiClient:
             return self._svc.resumen_final_servicio(payload)
         if path == "/wizard/terminar-servicio":
             return self._svc.terminar_servicio(payload)
-        if path == "/wizard/editar/actualizar":
-            return self._svc.actualizar_entrada(payload)
-        if path == "/wizard/editar/eliminar":
-            return self._svc.eliminar_entrada(payload)
-        if path == "/wizard/editar/excel/flush":
-            return self._svc.excel_flush()
-        if path == "/wizard/editar/excel/rebuild":
-            return self._svc.excel_rebuild()
-        if path == "/wizard/facturas/crear":
-            return self._svc.crear_factura(payload)
+        if path == "/wizard/google-drive/flush":
+            return self._svc.google_drive_flush()
+        if path == "/wizard/google-sheet-sync/preview":
+            return self._svc.preview_google_sheet_supabase_sync(payload)
+        if path == "/wizard/google-sheet-sync/apply":
+            return self._svc.apply_google_sheet_supabase_sync(payload)
         if path == "/wizard/actas-finalizadas/revisado":
             return self._svc.actualizar_acta_revisado(payload)
         raise RuntimeError(f"Endpoint no soportado: POST {path}")
@@ -841,7 +830,7 @@ class Seccion2Frame(BaseSection):
             row=3, column=1, sticky="w"
         )
 
-        ttk.Label(self.body, text="Sede Empresa").grid(row=4, column=0, sticky="w")
+        ttk.Label(self.body, text="Zona Compensar").grid(row=4, column=0, sticky="w")
         ttk.Entry(self.body, textvariable=self.sede_var, state="readonly", width=40).grid(
             row=4, column=1, sticky="w"
         )
@@ -979,7 +968,7 @@ class Seccion2Frame(BaseSection):
         self.nombre_var.set(empresa.get("nombre_empresa", ""))
         self.caja_var.set(empresa.get("caja_compensacion", ""))
         self.asesor_var.set(empresa.get("asesor", ""))
-        self.sede_var.set(empresa.get("sede_empresa", ""))
+        self.sede_var.set(empresa.get("zona_empresa", ""))
         nit_value = str(empresa.get("nit_empresa", "")).strip()
         if nit_value:
             self.nit_var.set(nit_value)
@@ -1009,7 +998,7 @@ class Seccion2Frame(BaseSection):
         self.nombre_var.set(empresa.get("nombre_empresa", ""))
         self.caja_var.set(empresa.get("caja_compensacion", ""))
         self.asesor_var.set(empresa.get("asesor", ""))
-        self.sede_var.set(empresa.get("sede_empresa", ""))
+        self.sede_var.set(empresa.get("zona_empresa", ""))
         nit_value = str(empresa.get("nit_empresa", "")).strip()
         if nit_value:
             self.nit_var.set(nit_value)
@@ -2009,7 +1998,7 @@ class ResumenFrame(ttk.Frame):
             if on_retry_queue:
                 tk.Button(
                     self,
-                    text="Reintentar cola Excel",
+                    text="Reintentar cola Drive",
                     command=on_retry_queue,
                     bg=COLOR_TEAL,
                     fg="white",
@@ -2027,639 +2016,13 @@ class ResumenFrame(ttk.Frame):
                     value = format_currency(value)
             var.set(value)
 
-
-@dataclass
-class MonitorRowState:
-    row_id: str
-    frame: ttk.Frame
-    orig: dict[str, str] = field(default_factory=dict)
-    dirty: set[str] = field(default_factory=set)
-    created_at_raw: str | None = None
-    vars: dict[str, tk.StringVar] = field(default_factory=dict)
-    entries: dict[str, tk.Entry] = field(default_factory=dict)
-    trace_ids: dict[str, str] = field(default_factory=dict)
-    suspend_counter: int = 0
-
-
-class LiveMonitorPanel(tk.Toplevel):
-    COLUMNS = [
-        ("id", "ID", 70),
-        ("created_at_local", "CREADO (COL UTC-5)", 170),
-        ("nombre_profesional", "PROFESIONAL", 160),
-        ("codigo_servicio", "NUEVO CODIGO", 110),
-        ("nombre_empresa", "EMPRESA", 180),
-        ("nit_empresa", "NIT", 100),
-        ("caja_compensacion", "CCF", 100),
-        ("fecha_servicio", "FECHA", 110),
-        ("referencia_servicio", "REFERENCIA", 120),
-        ("descripcion_servicio", "NOMBRE", 160),
-        ("nombre_usuario", "OFERENTES", 140),
-        ("cedula_usuario", "CEDULA", 110),
-        ("discapacidad_usuario", "TIPO DISCAPACIDAD", 140),
-        ("fecha_ingreso", "FECHA INGRESO", 120),
-        ("valor_virtual", "VALOR SERVICIO VIRTUAL", 140),
-        ("valor_bogota", "VALOR SERVICIO BOGOTA", 140),
-        ("valor_otro", "VALOR FUERA DE BOGOTA", 155),
-        ("todas_modalidades", "TODAS LAS MODALIDADES", 165),
-        ("horas_interprete", "TOTAL HORAS", 100),
-        ("valor_interprete", "VALOR A PAGAR", 130),
-        ("valor_total", "TOTAL VALOR SERVICIO", 155),
-        ("observaciones", "OBSERVACIONES", 140),
-        ("asesor_empresa", "ASESOR", 120),
-        ("sede_empresa", "SEDE", 120),
-        ("modalidad_servicio", "MODALIDAD", 130),
-        ("observacion_agencia", "OBSERVACION AGENCIA", 165),
-    ]
-    EDITABLE_KEYS = {key for key, _title, _width in COLUMNS if key not in {"id", "created_at_local"}}
-    DATE_KEYS = {"fecha_servicio", "fecha_ingreso"}
-    MONEY_KEYS = {
-        "valor_virtual",
-        "valor_bogota",
-        "valor_otro",
-        "todas_modalidades",
-        "valor_interprete",
-        "valor_total",
-    }
-    INT_KEYS = set()
-    DECIMAL_KEYS = {"horas_interprete"}
-
-    def __init__(self, root: tk.Tk, api: ApiClient):
-        super().__init__(root)
-        self.root = root
-        self.api = api
-        self.title("Monitor en tiempo real")
-        self.geometry("1280x640")
-        self.configure(bg="white")
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
-
-        self._ui_thread_id = threading.get_ident()
-        self._rows_by_id: dict[str, MonitorRowState] = {}
-        self._syncing = False
-        self._server_total = 0
-        self._server_loaded = 0
-        self._sort_key: str | None = None
-        self._sort_desc = False
-        self._sort_buttons: dict[str, tk.Button] = {}
-        self._filter_vars: dict[str, tk.StringVar] = {key: tk.StringVar() for key, _t, _w in self.COLUMNS}
-
-        top = ttk.Frame(self, padding=(10, 8))
-        top.pack(fill=tk.X)
-        ttk.Label(
-            top,
-            text="Monitor editable (doble clic para editar, pendiente en amarillo)",
-            font=("Arial", 11, "bold"),
-        ).pack(side=tk.LEFT)
-
-        self.pending_var = tk.StringVar(value="Cambios pendientes: 0")
-        ttk.Label(top, textvariable=self.pending_var, foreground=COLOR_PURPLE).pack(side=tk.LEFT, padx=(14, 0))
-        self.records_var = tk.StringVar(value="Registros en Supabase: - | Cargados: - | Filtrados: -")
-        ttk.Label(top, textvariable=self.records_var, foreground="#2E86C1").pack(side=tk.LEFT, padx=(14, 0))
-
-        btns = ttk.Frame(top)
-        btns.pack(side=tk.RIGHT)
-        tk.Button(btns, text="Refrescar", command=self.force_refresh, bg="#2E86C1", fg="white", padx=10, pady=3).pack(
-            side=tk.LEFT, padx=(0, 6)
-        )
-        tk.Button(
-            btns,
-            text="Descartar cambios",
-            command=self.discard_changes,
-            bg=COLOR_PURPLE,
-            fg="white",
-            padx=10,
-            pady=3,
-        ).pack(side=tk.LEFT, padx=(0, 6))
-        tk.Button(
-            btns,
-            text="Guardar cambios",
-            command=self.save_changes,
-            bg=COLOR_TEAL,
-            fg="white",
-            padx=10,
-            pady=3,
-        ).pack(side=tk.LEFT)
-
-        table_wrap = ttk.Frame(self)
-        table_wrap.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
-
-        self.table_canvas = tk.Canvas(table_wrap, highlightthickness=0, bg="white")
-        self.table_x_scroll = ttk.Scrollbar(table_wrap, orient="horizontal", command=self.table_canvas.xview)
-        self.table_y_scroll = ttk.Scrollbar(table_wrap, orient="vertical", command=self.table_canvas.yview)
-        self.table_canvas.configure(
-            xscrollcommand=self.table_x_scroll.set,
-            yscrollcommand=self.table_y_scroll.set,
-        )
-        self.table_canvas.grid(row=0, column=0, sticky="nsew")
-        self.table_y_scroll.grid(row=0, column=1, sticky="ns")
-        self.table_x_scroll.grid(row=1, column=0, sticky="ew")
-        table_wrap.grid_rowconfigure(0, weight=1)
-        table_wrap.grid_columnconfigure(0, weight=1)
-
-        self.table_content = ttk.Frame(self.table_canvas)
-        self.table_canvas.create_window((0, 0), window=self.table_content, anchor="nw")
-        self.table_content.bind(
-            "<Configure>",
-            lambda _e: self.table_canvas.configure(scrollregion=self.table_canvas.bbox("all")),
-        )
-
-        header = ttk.Frame(self.table_content)
-        for key, title, width in self.COLUMNS:
-            col_w = max(8, int(width / 10))
-            cell = ttk.Frame(header)
-            cell.pack(side=tk.LEFT, padx=(0, 4))
-            title_row = ttk.Frame(cell)
-            title_row.pack(fill=tk.X)
-            ttk.Label(title_row, text=title, width=max(6, col_w - 2), anchor="w").pack(side=tk.LEFT)
-            sort_btn = tk.Button(
-                title_row,
-                text="â†•",
-                command=lambda k=key: self._toggle_sort(k),
-                bg=COLOR_PURPLE,
-                fg="white",
-                padx=2,
-                pady=0,
-                width=2,
-                font=("Arial", 8, "bold"),
-            )
-            sort_btn.pack(side=tk.LEFT, padx=(2, 0))
-            self._sort_buttons[key] = sort_btn
-
-            filter_entry = ttk.Entry(cell, textvariable=self._filter_vars[key], width=col_w)
-            filter_entry.pack(fill=tk.X, pady=(2, 0))
-            self._filter_vars[key].trace_add("write", lambda *_args: self._apply_filters_and_sort())
-
-        header.pack(fill=tk.X)
-
-        self.rows_container = ttk.Frame(self.table_content)
-        self.rows_container.pack(fill=tk.X, expand=True)
-
-        self._initial_load()
-
-    def _ensure_ui_thread(self) -> bool:
-        return threading.get_ident() == self._ui_thread_id
-
-    def _run_on_ui_thread(self, callback, *args, **kwargs) -> None:
-        if self._ensure_ui_thread():
-            callback(*args, **kwargs)
-            return
-        self.after(0, lambda: callback(*args, **kwargs))
-
-    @contextmanager
-    def _suspend_row_traces(self, row_state: MonitorRowState):
-        row_state.suspend_counter += 1
-        try:
-            yield
-        finally:
-            row_state.suspend_counter = max(0, row_state.suspend_counter - 1)
-
-    def _on_close(self) -> None:
-        for row_id in list(self._rows_by_id.keys()):
-            state = self._rows_by_id.get(row_id)
-            if state:
-                self._remove_row_widget(state)
-        self.destroy()
-
-    def _initial_load(self) -> None:
-        self.force_refresh()
-
-    def _fetch_rows(self) -> tuple[list[dict], int, int]:
-        payload = self.api.get("/wizard/monitor/entradas", params={"limit": 1000})
-        rows = list(payload.get("data", []) or [])
-        for row in rows:
-            row["created_at_local"] = self._format_created_at_es(row.get("created_at"))
-        total = int(payload.get("total", len(rows)) or 0)
-        shown = int(payload.get("shown", len(rows)) or 0)
-        return rows, total, shown
-
-    def _format_created_at_es(self, value) -> str:
-        raw = str(value or "").strip()
-        if not raw:
-            return ""
-        try:
-            if raw.endswith("Z"):
-                raw = raw[:-1] + "+00:00"
-            dt = datetime.fromisoformat(raw)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            col_tz = timezone(timedelta(hours=-5))
-            dt_col = dt.astimezone(col_tz)
-            meses = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
-            return (
-                f"{dt_col.day:02d} {meses[dt_col.month - 1]} {dt_col.year} "
-                f"{dt_col.hour:02d}:{dt_col.minute:02d}:{dt_col.second:02d}"
-            )
-        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
-            return str(value)
-
-    def force_refresh(self, silent: bool = False) -> None:
-        if not self._ensure_ui_thread():
-            self._run_on_ui_thread(self.force_refresh, silent=silent)
-            return
-        if self._syncing:
-            return
-        self._syncing = True
-        try:
-            rows, total, shown = self._fetch_rows()
-            self._merge_rows(rows)
-            self._server_total = total
-            self._server_loaded = shown
-            self._apply_filters_and_sort()
-            self._update_pending_label()
-        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
-            if not silent:
-                log_and_show_error(exc, "No se pudo refrescar el monitor", title="Monitor")
-        finally:
-            self._syncing = False
-
-    def _remove_row_widget(self, row_state: MonitorRowState) -> None:
-        for key, var in row_state.vars.items():
-            trace_id = row_state.trace_ids.get(key, "")
-            if trace_id:
-                try:
-                    var.trace_remove("write", trace_id)
-                except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
-                    _LOGGER.debug("No se pudo remover trace de fila %s campo %s", row_state.row_id, key)
-            entry = row_state.entries.get(key)
-            if entry:
-                try:
-                    entry.unbind("<Double-1>")
-                except tk.TclError:
-                    _LOGGER.debug("No se pudo limpiar bind de fila %s campo %s", row_state.row_id, key)
-        try:
-            row_state.frame.destroy()
-        except tk.TclError:
-            _LOGGER.debug("No se pudo destruir frame de fila %s", row_state.row_id)
-        self._rows_by_id.pop(row_state.row_id, None)
-
-    def _add_row_widget(self, data: dict) -> None:
-        row_id = str(data.get("id", "")).strip()
-        if not row_id:
-            return
-        row_frame = ttk.Frame(self.rows_container)
-        row_frame.pack(fill=tk.X, pady=1)
-
-        row_state = MonitorRowState(
-            row_id=row_id,
-            frame=row_frame,
-            created_at_raw=data.get("created_at"),
-        )
-        self._rows_by_id[row_id] = row_state
-
-        for key, _title, width in self.COLUMNS:
-            if key == "id":
-                lbl = ttk.Label(row_frame, text=row_id, width=max(8, int(width / 10)), anchor="w")
-                lbl.pack(side=tk.LEFT, padx=(0, 4))
-                continue
-            var = tk.StringVar()
-            entry = tk.Entry(row_frame, textvariable=var, width=max(8, int(width / 10)), relief="solid", bd=1)
-            entry.pack(side=tk.LEFT, padx=(0, 4))
-            entry.configure(state="readonly", readonlybackground="white")
-            if key in self.EDITABLE_KEYS:
-                entry.bind("<Double-1>", lambda _e, k=key, st=row_state: self._open_cell_editor(st, k))
-            row_state.vars[key] = var
-            row_state.entries[key] = entry
-
-            def _on_var_change(*_args, key_name=key, state: MonitorRowState = row_state):
-                if state.suspend_counter > 0:
-                    return
-                self._mark_dirty_state(state, key_name)
-
-            trace_id = var.trace_add("write", _on_var_change)
-            row_state.trace_ids[key] = trace_id
-
-        self._set_row_data(row_state, data, set_as_original=True)
-
-    def _set_row_data(self, row_state: MonitorRowState, data: dict, set_as_original: bool = False) -> None:
-        row_state.created_at_raw = data.get("created_at")
-        with self._suspend_row_traces(row_state):
-            for key, _title, _width in self.COLUMNS:
-                if key == "id":
-                    continue
-                value = self._display_value(key, data.get(key))
-                if key in row_state.vars:
-                    row_state.vars[key].set(value)
-                if set_as_original:
-                    row_state.orig[key] = value
-        if set_as_original:
-            row_state.dirty.clear()
-            self._refresh_row_colors(row_state)
-
-    def _mark_dirty_state(self, row_state: MonitorRowState, key: str) -> None:
-        if key not in row_state.vars:
-            return
-        current = row_state.vars[key].get()
-        original = row_state.orig.get(key, "")
-        if current != original:
-            row_state.dirty.add(key)
-        else:
-            row_state.dirty.discard(key)
-        self._refresh_row_colors(row_state)
-        self._apply_filters_and_sort()
-        self._update_pending_label()
-
-    def _refresh_row_colors(self, row_state: MonitorRowState) -> None:
-        for key, entry in row_state.entries.items():
-            try:
-                if key in row_state.dirty:
-                    entry.configure(readonlybackground="#FFF59D")
-                else:
-                    entry.configure(readonlybackground="white")
-            except tk.TclError:
-                continue
-
-    def _display_value(self, key: str, value) -> str:
-        if value in (None, ""):
-            return ""
-        if key in self.MONEY_KEYS:
-            try:
-                return format_currency(value)
-            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
-                return str(value)
-        if key in self.DECIMAL_KEYS:
-            try:
-                amount = safe_decimal(value)
-                normalized = amount.normalize()
-                return format(normalized, "f").rstrip("0").rstrip(".") or "0"
-            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
-                return str(value)
-        if key in self.INT_KEYS:
-            try:
-                return str(int(safe_decimal(value)))
-            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
-                return str(value)
-        return str(value)
-
-    def _parse_money(self, text: str) -> Decimal:
-        return safe_decimal(text)
-
-    def _parse_for_save(self, key: str, text: str):
-        if key in self.MONEY_KEYS:
-            return float(self._parse_money(text))
-        if key in self.DECIMAL_KEYS:
-            clean = str(text).strip()
-            if not clean:
-                return 0.0
-            return float(safe_decimal(clean))
-        if key in self.INT_KEYS:
-            clean = str(text).strip()
-            if not clean:
-                return 0
-            return int(safe_decimal(clean))
-        return text.strip()
-
-    def _open_cell_editor(self, row_state: MonitorRowState, key: str) -> None:
-        if key not in self.EDITABLE_KEYS:
-            return
-        current = row_state.vars[key].get()
-        dialog = tk.Toplevel(self)
-        dialog.title(f"Editar {key}")
-        dialog.resizable(False, False)
-        dialog.transient(self)
-        dialog.grab_set()
-
-        frame = ttk.Frame(dialog, padding=12)
-        frame.pack(fill=tk.BOTH, expand=True)
-        ttk.Label(frame, text=f"Campo: {key}", font=("Arial", 10, "bold")).pack(anchor="w", pady=(0, 8))
-
-        editor_var = tk.StringVar(value=current)
-        editor_widget = None
-        if key in self.DATE_KEYS:
-            DateEntry = _get_date_entry()
-            if DateEntry:
-                editor_widget = DateEntry(
-                    frame,
-                    date_pattern="yyyy-mm-dd",
-                    textvariable=editor_var,
-                    width=24,
-                    font=("Arial", 11),
-                )
-            else:
-                editor_widget = ttk.Entry(frame, textvariable=editor_var, width=30)
-        else:
-            editor_widget = ttk.Entry(frame, textvariable=editor_var, width=36)
-        editor_widget.pack(anchor="w", ipady=2)
-
-        def _apply():
-            raw = editor_var.get().strip()
-            if key in self.DATE_KEYS and raw:
-                if not re.match(r"^\d{4}-\d{2}-\d{2}$", raw):
-                    messagebox.showerror("Monitor", "La fecha debe estar en formato YYYY-MM-DD.")
-                    return
-            if key in self.MONEY_KEYS and raw:
-                try:
-                    raw = self._display_value(key, self._parse_money(raw))
-                except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
-                    messagebox.showerror("Monitor", "Valor monetario invalido.")
-                    return
-            if key in self.DECIMAL_KEYS and raw:
-                try:
-                    raw = self._display_value(key, safe_decimal(raw))
-                except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
-                    messagebox.showerror("Monitor", "El valor debe ser numerico decimal.")
-                    return
-            if key in self.INT_KEYS and raw:
-                try:
-                    raw = str(int(safe_decimal(raw)))
-                except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
-                    messagebox.showerror("Monitor", "El valor debe ser numerico entero.")
-                    return
-            row_state.vars[key].set(raw)
-            dialog.destroy()
-
-        btns = ttk.Frame(frame)
-        btns.pack(anchor="e", pady=(10, 0))
-        tk.Button(btns, text="Cancelar", command=dialog.destroy, bg=COLOR_PURPLE, fg="white", padx=8, pady=3).pack(
-            side=tk.RIGHT, padx=(8, 0)
-        )
-        tk.Button(btns, text="Aplicar", command=_apply, bg=COLOR_TEAL, fg="white", padx=8, pady=3).pack(side=tk.RIGHT)
-
-    def _merge_rows(self, rows: list[dict]) -> None:
-        seen_ids = set()
-        for row in rows:
-            row_id = str(row.get("id", "")).strip()
-            if not row_id:
-                continue
-            seen_ids.add(row_id)
-            if row_id not in self._rows_by_id:
-                self._add_row_widget(row)
-                continue
-            state = self._rows_by_id[row_id]
-            for key, _title, _width in self.COLUMNS:
-                if key == "id" or key not in state.vars:
-                    continue
-                incoming = self._display_value(key, row.get(key))
-                if key in state.dirty:
-                    continue
-                state.orig[key] = incoming
-                state.created_at_raw = row.get("created_at")
-                with self._suspend_row_traces(state):
-                    state.vars[key].set(incoming)
-            self._refresh_row_colors(state)
-
-        existing_ids = list(self._rows_by_id.keys())
-        for row_id in existing_ids:
-            if row_id in seen_ids:
-                continue
-            state = self._rows_by_id[row_id]
-            if state.dirty:
-                continue
-            self._remove_row_widget(state)
-        self._apply_filters_and_sort()
-
-    def _toggle_sort(self, key: str) -> None:
-        self._sort_key = "created_at_local"
-        self._sort_desc = False
-        self._apply_filters_and_sort()
-
-    def _sort_value(self, row_state: MonitorRowState, key: str):
-        text = row_state.vars.get(key).get() if key in row_state.vars else ""
-        if key in self.MONEY_KEYS:
-            try:
-                return self._parse_money(text)
-            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
-                return Decimal("0")
-        if key in self.DECIMAL_KEYS:
-            try:
-                return safe_decimal(text or 0)
-            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
-                return Decimal("0")
-        if key in self.INT_KEYS:
-            try:
-                return int(safe_decimal(text or 0))
-            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
-                return 0
-        if key in self.DATE_KEYS:
-            raw = (text or "").strip()
-            if re.match(r"^\d{4}-\d{2}-\d{2}$", raw):
-                return raw
-            return ""
-        return (text or "").strip().lower()
-
-    def _apply_filters_and_sort(self) -> None:
-        states = list(self._rows_by_id.values())
-
-        def _matches(state: MonitorRowState) -> bool:
-            for key, var in self._filter_vars.items():
-                needle = var.get().strip().lower()
-                if not needle:
-                    continue
-                value = state.vars.get(key).get().strip().lower() if key in state.vars else ""
-                if needle not in value:
-                    return False
-            return True
-
-        filtered = [state for state in states if _matches(state)]
-
-        def _created_sort(state: MonitorRowState):
-            raw = state.created_at_raw
-            if raw in (None, ""):
-                return datetime.min.replace(tzinfo=timezone.utc)
-            txt = str(raw).strip()
-            if txt.endswith("Z"):
-                txt = txt[:-1] + "+00:00"
-            try:
-                parsed = datetime.fromisoformat(txt)
-                if parsed.tzinfo is None:
-                    parsed = parsed.replace(tzinfo=timezone.utc)
-                return parsed
-            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
-                return datetime.min.replace(tzinfo=timezone.utc)
-
-        # Always oldest first, newest at the bottom.
-        filtered.sort(key=_created_sort, reverse=False)
-
-        for state in states:
-            try:
-                state.frame.pack_forget()
-            except tk.TclError:
-                continue
-        for state in filtered:
-            try:
-                state.frame.pack(fill=tk.X, pady=1)
-            except tk.TclError:
-                continue
-
-        for key, btn in self._sort_buttons.items():
-            if key == "created_at_local":
-                btn.configure(text="ASC", state="disabled")
-            else:
-                btn.configure(text="FIX", state="disabled")
-        self.records_var.set(
-            f"Registros en Supabase: {self._server_total} | Cargados: {self._server_loaded} | Filtrados: {len(filtered)}"
-        )
-
-    def _update_pending_label(self) -> None:
-        dirty_cells = 0
-        dirty_rows = 0
-        for state in self._rows_by_id.values():
-            if state.dirty:
-                dirty_rows += 1
-                dirty_cells += len(state.dirty)
-        self.pending_var.set(f"Cambios pendientes: {dirty_cells} celda(s) en {dirty_rows} fila(s)")
-
-    def discard_changes(self) -> None:
-        for state in self._rows_by_id.values():
-            if not state.dirty:
-                continue
-            with self._suspend_row_traces(state):
-                for key in list(state.dirty):
-                    original = state.orig.get(key, "")
-                    state.vars[key].set(original)
-            state.dirty.clear()
-            self._refresh_row_colors(state)
-        self._update_pending_label()
-
-    def has_pending_changes(self) -> bool:
-        return any(state.dirty for state in self._rows_by_id.values())
-
-    def save_changes(self) -> None:
-        pending = [state for state in self._rows_by_id.values() if state.dirty]
-        if not pending:
-            messagebox.showinfo("Monitor", "No hay cambios pendientes.")
-            return
-
-        ok = 0
-        errors = []
-        for state in pending:
-            row_id = state.row_id
-            datos = {}
-            for key in state.dirty:
-                try:
-                    datos[key] = self._parse_for_save(key, state.vars[key].get())
-                except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
-                    errors.append(f"ID {row_id}: valor invalido en {key}")
-                    continue
-            if not datos:
-                continue
-            payload = {"filtro": {"id": row_id}, "datos": datos}
-            try:
-                self.api.post("/wizard/editar/actualizar", payload, timeout=120)
-                for key in list(state.dirty):
-                    state.orig[key] = state.vars[key].get()
-                state.dirty.clear()
-                self._refresh_row_colors(state)
-                ok += 1
-            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
-                errors.append(f"ID {row_id}: {exc}")
-
-        self._update_pending_label()
-        if errors:
-            preview = "\n".join(errors[:5])
-            more = "\n..." if len(errors) > 5 else ""
-            messagebox.showwarning(
-                "Monitor",
-                f"Guardadas {ok} fila(s). Fallaron {len(errors)}.\n{preview}{more}",
-            )
-        else:
-            messagebox.showinfo("Monitor", f"Guardadas {ok} fila(s) correctamente.")
-
-
 class ActasTerminadasPanel(tk.Toplevel):
-    def __init__(self, root: tk.Tk, api: ApiClient, on_status_change=None) -> None:
+    def __init__(self, root: tk.Tk, api: ApiClient, on_status_change=None, on_import_acta=None) -> None:
         super().__init__(root)
         self.root = root
         self.api = api
         self.on_status_change = on_status_change
+        self.on_import_acta = on_import_acta
         self.title("Actas Terminadas")
         self.geometry("1180x620")
         self.configure(bg="white")
@@ -2782,12 +2145,25 @@ class ActasTerminadasPanel(tk.Toplevel):
                     row.get("nombre_usuario", "") or "",
                     row.get("nombre_empresa", "") or "",
                     row.get("nombre_formato", "") or "",
-                    row.get("path_formato", "") or "",
+                    self._display_path(row.get("path_formato", "") or ""),
                     "Si" if revisado else "No",
                 ),
                 tags=(tag,) if tag else (),
             )
             self._rows_by_item[iid] = row
+
+    @staticmethod
+    def _display_path(path_value: str) -> str:
+        path = str(path_value or "").strip()
+        if not path:
+            return ""
+        if re.match(r"^https?://", path, re.IGNORECASE):
+            if "docs.google.com/spreadsheets" in path.lower():
+                return "Abrir Google Sheet"
+            if "drive.google.com" in path.lower():
+                return "Abrir archivo en Drive"
+            return "Abrir enlace"
+        return path
 
     def _on_double_click(self, event) -> None:
         region = self.tree.identify("region", event.x, event.y)
@@ -2849,8 +2225,296 @@ class ActasTerminadasPanel(tk.Toplevel):
             pendientes = int(response.get("pendientes", 0) or 0)
             self._set_pending(pendientes)
             self.refresh()
+            if nuevo and self.on_import_acta:
+                try:
+                    self.on_import_acta(row)
+                except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+                    log_and_show_error(
+                        exc,
+                        "El acta se marco como revisada, pero no se pudo iniciar la importacion",
+                        title="Actas Terminadas",
+                    )
         except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
             log_and_show_error(exc, "No se pudo actualizar estado de revision", title="Actas Terminadas")
+
+
+class GoogleSheetSupabaseSyncReportDialog(tk.Toplevel):
+    def __init__(self, owner: "WizardApp", report: dict[str, object], mes: int, ano: int) -> None:
+        super().__init__(owner.root)
+        self.owner = owner
+        self.api = owner.api
+        self.report = report
+        self.mes = mes
+        self.ano = ano
+        self.title("Actualizar Supabase")
+        self.configure(bg="white")
+        self.geometry("1180x720")
+        self.transient(owner.root)
+        self.grab_set()
+
+        container = ttk.Frame(self, padding=12)
+        container.pack(fill=tk.BOTH, expand=True)
+        container.grid_columnconfigure(0, weight=1)
+        container.grid_rowconfigure(1, weight=1)
+
+        header = ttk.Frame(container)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        header.grid_columnconfigure(0, weight=1)
+
+        spreadsheet_name = str(report.get("spreadsheet_name") or "-")
+        target_name = str(report.get("spreadsheet_target") or spreadsheet_name)
+        sheet_name = str(report.get("sheet_name") or "ODS_CALCULADA")
+        changed_count = int(report.get("changed_record_count", 0) or 0)
+        only_in_sheet_count = int(report.get("only_in_sheet_count", 0) or 0)
+        only_in_supabase_count = int(report.get("only_in_supabase_count", 0) or 0)
+        invalid_count = len(report.get("invalid_rows", []) or [])
+        ignored_count = len(report.get("ignored_rows_without_id", []) or [])
+        common_count = int(report.get("common_id_count", 0) or 0)
+
+        summary_lines = [
+            f"Spreadsheet: {spreadsheet_name}",
+            f"Objetivo mensual: {target_name}",
+            f"Hoja fuente: {sheet_name}",
+            (
+                f"IDs comunes: {common_count} | Filas con cambios: {changed_count} | "
+                f"Solo en sheet: {only_in_sheet_count} | Solo en Supabase: {only_in_supabase_count}"
+            ),
+            f"Filas ignoradas sin ID: {ignored_count} | Filas invalidas: {invalid_count}",
+        ]
+        ttk.Label(
+            header,
+            text="\n".join(summary_lines),
+            justify="left",
+            font=("Arial", 10),
+        ).grid(row=0, column=0, sticky="w")
+
+        button_row = ttk.Frame(header)
+        button_row.grid(row=0, column=1, sticky="e")
+        self.apply_btn = tk.Button(
+            button_row,
+            text="Aplicar cambios a Supabase",
+            command=self._apply_changes,
+            bg=COLOR_TEAL,
+            fg="white",
+            padx=12,
+            pady=5,
+        )
+        self.apply_btn.pack(side=tk.RIGHT, padx=(8, 0))
+        tk.Button(
+            button_row,
+            text="Cerrar",
+            command=self.destroy,
+            bg=COLOR_PURPLE,
+            fg="white",
+            padx=12,
+            pady=5,
+        ).pack(side=tk.RIGHT)
+        if changed_count <= 0:
+            self.apply_btn.configure(state="disabled")
+
+        notebook = ttk.Notebook(container)
+        notebook.grid(row=1, column=0, sticky="nsew")
+
+        changed_tab = ttk.Frame(notebook, padding=8)
+        changed_tab.pack(fill=tk.BOTH, expand=True)
+        changed_tab.grid_columnconfigure(0, weight=1)
+        changed_tab.grid_rowconfigure(0, weight=2)
+        changed_tab.grid_rowconfigure(1, weight=1)
+        notebook.add(changed_tab, text="Cambios")
+
+        changed_wrap = ttk.Frame(changed_tab)
+        changed_wrap.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
+        changed_wrap.grid_columnconfigure(0, weight=1)
+        changed_wrap.grid_rowconfigure(0, weight=1)
+        changed_cols = ("id", "sheet_row", "diff_count", "updated_fields")
+        self.changed_tree = ttk.Treeview(changed_wrap, columns=changed_cols, show="headings")
+        changed_scroll = ttk.Scrollbar(changed_wrap, orient="vertical", command=self.changed_tree.yview)
+        self.changed_tree.configure(yscrollcommand=changed_scroll.set)
+        self.changed_tree.grid(row=0, column=0, sticky="nsew")
+        changed_scroll.grid(row=0, column=1, sticky="ns")
+        self.changed_tree.heading("id", text="ID")
+        self.changed_tree.heading("sheet_row", text="Fila Sheet")
+        self.changed_tree.heading("diff_count", text="Cambios")
+        self.changed_tree.heading("updated_fields", text="Campos")
+        self.changed_tree.column("id", width=220, anchor="w")
+        self.changed_tree.column("sheet_row", width=90, anchor="center")
+        self.changed_tree.column("diff_count", width=90, anchor="center")
+        self.changed_tree.column("updated_fields", width=700, anchor="w")
+
+        details_wrap = ttk.Frame(changed_tab)
+        details_wrap.grid(row=1, column=0, sticky="nsew")
+        details_wrap.grid_columnconfigure(0, weight=1)
+        details_wrap.grid_rowconfigure(1, weight=1)
+        ttk.Label(details_wrap, text="Diferencias de la fila seleccionada", font=("Arial", 10, "bold")).grid(
+            row=0, column=0, sticky="w", pady=(0, 4)
+        )
+        diff_cols = ("field", "sheet_value", "supabase_value")
+        self.diff_tree = ttk.Treeview(details_wrap, columns=diff_cols, show="headings")
+        diff_scroll = ttk.Scrollbar(details_wrap, orient="vertical", command=self.diff_tree.yview)
+        self.diff_tree.configure(yscrollcommand=diff_scroll.set)
+        self.diff_tree.grid(row=1, column=0, sticky="nsew")
+        diff_scroll.grid(row=1, column=1, sticky="ns")
+        self.diff_tree.heading("field", text="Campo")
+        self.diff_tree.heading("sheet_value", text="Valor en Google Sheet")
+        self.diff_tree.heading("supabase_value", text="Valor en Supabase")
+        self.diff_tree.column("field", width=220, anchor="w")
+        self.diff_tree.column("sheet_value", width=420, anchor="w")
+        self.diff_tree.column("supabase_value", width=420, anchor="w")
+
+        self._create_list_tab(notebook, "Solo en Sheet", "only_in_sheet", ("id", "sheet_row"))
+        self._create_list_tab(notebook, "Solo en Supabase", "only_in_supabase", ("id",))
+        self._create_list_tab(
+            notebook,
+            "Invalidas",
+            "invalid_rows",
+            ("sheet_row", "id", "reason"),
+        )
+        self._create_list_tab(
+            notebook,
+            "Sin ID",
+            "ignored_rows_without_id",
+            ("sheet_row", "reason", "preview"),
+        )
+
+        self._changed_records_by_id: dict[str, dict[str, object]] = {}
+        self._populate_report()
+        self.changed_tree.bind("<<TreeviewSelect>>", self._on_changed_selected)
+        self.owner._center_dialog(self, 1180, 720)
+
+    def _create_list_tab(self, notebook: ttk.Notebook, title: str, key: str, columns: tuple[str, ...]) -> None:
+        tab = ttk.Frame(notebook, padding=8)
+        tab.pack(fill=tk.BOTH, expand=True)
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_rowconfigure(0, weight=1)
+        tree = ttk.Treeview(tab, columns=columns, show="headings")
+        scroll = ttk.Scrollbar(tab, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        scroll.grid(row=0, column=1, sticky="ns")
+        for column in columns:
+            tree.heading(column, text=column.replace("_", " ").title())
+            width = 180 if column != "preview" else 520
+            tree.column(column, width=width, anchor="w")
+        notebook.add(tab, text=title)
+        setattr(self, f"{key}_tree", tree)
+
+    def _populate_report(self) -> None:
+        changed_records = list(self.report.get("changed_records", []) or [])
+        for record in changed_records:
+            record_id = str(record.get("id") or "")
+            self._changed_records_by_id[record_id] = record
+            self.changed_tree.insert(
+                "",
+                tk.END,
+                iid=record_id,
+                values=(
+                    record_id,
+                    record.get("sheet_row"),
+                    record.get("diff_count"),
+                    ", ".join(record.get("updated_fields", []) or []),
+                ),
+            )
+        for key in ("only_in_sheet", "only_in_supabase", "invalid_rows", "ignored_rows_without_id"):
+            tree = getattr(self, f"{key}_tree")
+            for index, item in enumerate(self.report.get(key, []) or []):
+                row_id = f"{key}-{index}"
+                if key == "only_in_sheet":
+                    values = (item.get("id"), item.get("sheet_row"))
+                elif key == "only_in_supabase":
+                    values = (item.get("id"),)
+                elif key == "invalid_rows":
+                    values = (item.get("sheet_row"), item.get("id"), item.get("reason"))
+                else:
+                    preview = item.get("preview", [])
+                    values = (item.get("sheet_row"), item.get("reason"), ", ".join(preview))
+                tree.insert("", tk.END, iid=row_id, values=values)
+        children = self.changed_tree.get_children()
+        if children:
+            first = children[0]
+            self.changed_tree.selection_set(first)
+            self._show_diff_for_record(first)
+
+    def _on_changed_selected(self, _event=None) -> None:
+        selection = self.changed_tree.selection()
+        if not selection:
+            return
+        self._show_diff_for_record(selection[0])
+
+    def _show_diff_for_record(self, record_id: str) -> None:
+        for item in self.diff_tree.get_children():
+            self.diff_tree.delete(item)
+        record = self._changed_records_by_id.get(record_id) or {}
+        for index, diff in enumerate(record.get("diffs", []) or []):
+            self.diff_tree.insert(
+                "",
+                tk.END,
+                iid=f"diff-{record_id}-{index}",
+                values=(
+                    diff.get("field"),
+                    diff.get("sheet_value"),
+                    diff.get("supabase_value"),
+                ),
+            )
+
+    def _apply_changes(self) -> None:
+        changed_ids = [str(item.get("id") or "") for item in (self.report.get("changed_records", []) or []) if item.get("id")]
+        if not changed_ids:
+            messagebox.showinfo("Actualizar Supabase", "No hay cambios para aplicar.")
+            return
+        confirm = messagebox.askyesno(
+            "Confirmar actualizacion",
+            (
+                f"Se aplicaran {len(changed_ids)} filas con diferencias a Supabase.\n"
+                "Esta operacion sobreescribira los campos distintos detectados en ODS_CALCULADA.\n"
+                "Deseas continuar?"
+            ),
+        )
+        if not confirm:
+            return
+
+        loading = LoadingDialog(self, "Aplicando cambios a Supabase...")
+        self.update_idletasks()
+
+        def _worker() -> dict:
+            return self.api.post(
+                "/wizard/google-sheet-sync/apply",
+                {"mes": self.mes, "ano": self.ano, "selected_ids": changed_ids},
+                timeout=300,
+            )
+
+        def _on_success(response: dict) -> None:
+            loading.close()
+            data = response.get("data", {})
+            failed_records = list(data.get("failed_records", []) or [])
+            message_lines = [
+                f"Filas actualizadas: {data.get('applied_record_count', 0)}",
+                f"Campos actualizados: {data.get('applied_field_count', 0)}",
+                f"Filas con error: {data.get('failed_record_count', 0)}",
+            ]
+            if failed_records:
+                preview = ", ".join(
+                    f"{item.get('id')} (fila {item.get('sheet_row')})" for item in failed_records[:5]
+                )
+                message_lines.append(f"Errores: {preview}")
+            messagebox.showinfo("Actualizar Supabase", "\n".join(message_lines))
+            try:
+                if int(data.get("failed_record_count", 0) or 0) == 0:
+                    self.apply_btn.configure(state="disabled")
+            except tk.TclError:
+                pass
+
+        def _on_error(exc: Exception) -> None:
+            loading.close()
+            self.owner._report_error("No se pudo actualizar Supabase desde Google Sheets", exc)
+
+        self.owner._run_background_task(
+            _worker,
+            _on_success,
+            _on_error,
+            timeout_sec=300,
+            timeout_message="La actualizacion de Supabase excedio el tiempo esperado.",
+            operation_name="apply_google_sheet_supabase_sync",
+        )
 
 
 class WizardApp:
@@ -2860,7 +2524,6 @@ class WizardApp:
         self.state = WizardState()
         self._summary_after_id: str | None = None
         self._version_var = tk.StringVar()
-        self.monitor_panel: LiveMonitorPanel | None = None
         self.actas_panel: ActasTerminadasPanel | None = None
         self._actas_alert_button: tk.Button | None = None
         self._actas_pending = 0
@@ -2925,6 +2588,7 @@ class WizardApp:
 
         self.show_initial_screen()
         self.root.after(100, lambda: self._prefetch_initial_data_async(silent=True))
+        self.root.after(350, self._flush_google_drive_queue_silent)
 
     def set_version_info(self, local_version: str, remote_version: str | None) -> None:
         remote_label = remote_version or "-"
@@ -3011,35 +2675,22 @@ class WizardApp:
         )
         new_entry_btn.pack(pady=self._menu_button_pady)
 
-        factura_btn = tk.Button(
+        retry_drive_btn = tk.Button(
             button_col,
-            text="Crear factura",
-            command=self._open_factura_dialog,
-            bg="#4B8BBE",
+            text="Reintentar sincronizacion Drive",
+            command=self._flush_google_drive_queue,
+            bg="#117A65",
             fg="white",
             font=("Arial", self._scaled_font(12, 10), "bold"),
             padx=16,
             pady=self._menu_button_pady,
             width=self._menu_button_width,
         )
-        factura_btn.pack(pady=self._menu_button_pady)
-
-        rebuild_btn = tk.Button(
-            button_col,
-            text="Reconstruir Excel desde Supabase",
-            command=self._rebuild_excel_from_supabase,
-            bg="#C0392B",
-            fg="white",
-            font=("Arial", self._scaled_font(12, 10), "bold"),
-            padx=16,
-            pady=self._menu_button_pady,
-            width=self._menu_button_width,
-        )
-        rebuild_btn.pack(pady=self._menu_button_pady)
+        retry_drive_btn.pack(pady=self._menu_button_pady)
 
         refresh_cache_btn = tk.Button(
             button_col,
-            text="Actualizar Base de Datos",
+            text="Actualizar Base de Datos - Gestión",
             command=self._refresh_cache_from_supabase,
             bg="#2E86C1",
             fg="white",
@@ -3050,27 +2701,27 @@ class WizardApp:
         )
         refresh_cache_btn.pack(pady=self._menu_button_pady)
 
-        monitor_btn = tk.Button(
+        update_supabase_btn = tk.Button(
             button_col,
-            text="Abrir monitor en tiempo real",
-            command=self._open_live_monitor,
-            bg="#5D6D7E",
+            text="Actualizar Supabase",
+            command=self._open_google_sheet_supabase_dialog,
+            bg="#1F618D",
             fg="white",
             font=("Arial", self._scaled_font(12, 10), "bold"),
             padx=16,
             pady=self._menu_button_pady,
             width=self._menu_button_width,
         )
-        monitor_btn.pack(pady=self._menu_button_pady)
+        update_supabase_btn.pack(pady=self._menu_button_pady)
+
         self._main_action_buttons = [
             update_btn,
             self._actas_alert_button,
             retry_btn,
             new_entry_btn,
-            factura_btn,
-            rebuild_btn,
+            retry_drive_btn,
             refresh_cache_btn,
-            monitor_btn,
+            update_supabase_btn,
         ]
         if self._initial_data_loading:
             self._set_main_actions_enabled(False)
@@ -3211,13 +2862,6 @@ class WizardApp:
 
         self.root.after(poll_ms, _poll)
 
-    def _open_live_monitor(self) -> None:
-        if self.monitor_panel and self.monitor_panel.winfo_exists():
-            self.monitor_panel.lift()
-            self.monitor_panel.focus_force()
-            return
-        self.monitor_panel = LiveMonitorPanel(self.root, self.api)
-
     def _return_to_menu_from_form(self) -> None:
         self._finish_creation_trace("cancelado_volver_menu")
         self.show_initial_screen()
@@ -3316,68 +2960,16 @@ class WizardApp:
             self.actas_panel.lift()
             self.actas_panel.focus_force()
             return
-        self.actas_panel = ActasTerminadasPanel(self.root, self.api, on_status_change=self._set_actas_pending)
-
-    def _notify_monitor_refresh(self) -> None:
-        panel = self.monitor_panel
-        if not panel or not panel.winfo_exists():
-            return
-        def _refresh() -> None:
-            try:
-                if panel.winfo_exists():
-                    panel.force_refresh(silent=True)
-            except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
-                _LOGGER.warning("No se pudo refrescar monitor en segundo plano: %s", exc)
-
-        self.root.after(0, _refresh)
-
-    def _rebuild_excel_from_supabase(self) -> None:
-        confirm = messagebox.askyesno(
-            "Reconstruir Excel",
-            "¿Estas seguro de que deseas reconstruir el Excel desde Supabase?",
-        )
-        if not confirm:
-            return
-        confirm2 = messagebox.askyesno(
-            "Confirmacion final",
-            "Este proceso BORRARA el contenido actual del Excel y lo recreara desde Supabase.\n"
-            "Si el Excel tenia cambios no guardados, se perderan.\n"
-            "¿Deseas continuar?",
-        )
-        if not confirm2:
-            return
-        loading = LoadingDialog(self.root, "Reconstruyendo Excel...")
-        self.root.update_idletasks()
-
-        def _worker() -> dict:
-            return self.api.post("/wizard/editar/excel/rebuild", {}, timeout=300)
-
-        def _on_success(response: dict) -> None:
-            loading.close()
-            data = response.get("data", {})
-            backup = data.get("backup") or "No aplica"
-            messagebox.showinfo(
-                "Reconstruccion completa",
-                f"Filas recreadas: {data.get('rows', 0)}\nBackup: {backup}",
-            )
-            self._update_queue_status()
-
-        def _on_error(exc: Exception) -> None:
-            loading.close()
-            self._report_error("No se pudo reconstruir el Excel", exc)
-
-        self._run_background_task(
-            _worker,
-            _on_success,
-            _on_error,
-            timeout_sec=300,
-            timeout_message="La reconstruccion de Excel excedio el tiempo esperado.",
-            operation_name="rebuild_excel",
+        self.actas_panel = ActasTerminadasPanel(
+            self.root,
+            self.api,
+            on_status_change=self._set_actas_pending,
+            on_import_acta=self._importar_acta_revisada,
         )
 
-    def _open_factura_dialog(self) -> None:
+    def _open_google_sheet_supabase_dialog(self) -> None:
         dialog = tk.Toplevel(self.root)
-        dialog.title("Crear factura")
+        dialog.title("Actualizar Supabase")
         dialog.resizable(False, False)
         dialog.configure(bg="white")
         dialog.transient(self.root)
@@ -3402,11 +2994,9 @@ class WizardApp:
         ]
         mes_var = tk.StringVar()
         ano_var = tk.StringVar()
-        tipo_var = tk.StringVar(value="No clausulada")
 
         hoy = date.today()
-        if 1 <= hoy.month <= 12:
-            mes_var.set(meses[hoy.month - 1])
+        mes_var.set(meses[max(0, min(len(meses) - 1, hoy.month - 1))])
         ano_var.set(str(hoy.year))
 
         ttk.Label(container, text="Mes").grid(row=0, column=0, sticky="w", pady=4)
@@ -3415,40 +3005,35 @@ class WizardApp:
         configure_combobox(mes_combo, meses)
 
         ttk.Label(container, text="Año").grid(row=1, column=0, sticky="w", pady=4)
-        anos = [str(year) for year in range(2020, 2031)]
+        anos = [str(year) for year in range(2020, 2036)]
         ano_combo = ttk.Combobox(container, textvariable=ano_var, values=anos, width=10, state="readonly")
         ano_combo.grid(row=1, column=1, sticky="w", pady=4)
         configure_combobox(ano_combo, anos)
 
-        ttk.Label(container, text="Tipo").grid(row=2, column=0, sticky="w", pady=4)
-        tipo_combo = ttk.Combobox(
+        ttk.Label(
             container,
-            textvariable=tipo_var,
-            values=["Clausulada", "No clausulada"],
-            width=20,
-            state="readonly",
-        )
-        tipo_combo.grid(row=2, column=1, sticky="w", pady=4)
-        configure_combobox(tipo_combo, ["Clausulada", "No clausulada"])
+            text="Se usará la hoja ODS_CALCULADA del spreadsheet mensual y solo se actualizarán IDs coincidentes.",
+            wraplength=420,
+            justify="left",
+        ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
         button_row = ttk.Frame(container)
         button_row.grid(row=3, column=0, columnspan=2, pady=(12, 0), sticky="e")
 
-        def _confirmar():
+        def _confirmar() -> None:
             mes_nombre = mes_var.get().strip()
             ano_raw = ano_var.get().strip()
-            tipo_raw = tipo_var.get().strip().lower()
             if mes_nombre not in meses:
-                messagebox.showerror("Error", "Selecciona un mes valido")
+                messagebox.showerror("Actualizar Supabase", "Selecciona un mes valido.")
                 return
             try:
                 ano = int(ano_raw)
             except ValueError:
-                messagebox.showerror("Error", "Selecciona un año valido")
+                messagebox.showerror("Actualizar Supabase", "Selecciona un año valido.")
                 return
             mes = meses.index(mes_nombre) + 1
             dialog.destroy()
-            self._crear_factura(mes, ano, tipo_raw)
+            self._preview_google_sheet_supabase_sync(mes, ano)
 
         tk.Button(
             button_row,
@@ -3461,7 +3046,7 @@ class WizardApp:
         ).pack(side=tk.RIGHT, padx=(8, 0))
         tk.Button(
             button_row,
-            text="Crear factura",
+            text="Generar reporte",
             command=_confirmar,
             bg=COLOR_TEAL,
             fg="white",
@@ -3469,32 +3054,35 @@ class WizardApp:
             pady=4,
         ).pack(side=tk.RIGHT)
 
-    def _crear_factura(self, mes: int, ano: int, tipo: str) -> None:
-        loading = LoadingDialog(self.root, "Generando factura...")
+        self._center_dialog(dialog, 520, 230)
+
+    def _preview_google_sheet_supabase_sync(self, mes: int, ano: int) -> None:
+        loading = LoadingDialog(self.root, "Comparando Google Sheet con Supabase...")
         self.root.update_idletasks()
 
         def _worker() -> dict:
             return self.api.post(
-                "/wizard/facturas/crear",
-                {"mes": mes, "ano": ano, "tipo": tipo},
+                "/wizard/google-sheet-sync/preview",
+                {"mes": mes, "ano": ano},
                 timeout=300,
             )
 
-        def _on_success(_result: dict) -> None:
+        def _on_success(response: dict) -> None:
             loading.close()
-            messagebox.showinfo("Factura creada", "La factura se genero en el Excel.")
+            report = response.get("data", {})
+            GoogleSheetSupabaseSyncReportDialog(self, report, mes, ano)
 
         def _on_error(exc: Exception) -> None:
             loading.close()
-            self._report_error("No se pudo crear la factura", exc)
+            self._report_error("No se pudo generar el reporte de sincronizacion", exc)
 
         self._run_background_task(
             _worker,
             _on_success,
             _on_error,
             timeout_sec=300,
-            timeout_message="La creacion de factura excedio el tiempo esperado.",
-            operation_name="crear_factura",
+            timeout_message="La comparacion entre Google Sheets y Supabase excedio el tiempo esperado.",
+            operation_name="preview_google_sheet_supabase_sync",
         )
 
     def _set_window_size(self) -> None:
@@ -3511,7 +3099,7 @@ class WizardApp:
         self.root.geometry(f"{width}x{height}+{x}+{y}")
         self.root.minsize(min_w, min_h)
 
-    def start_new_service(self) -> None:
+    def start_new_service(self, after_ready=None) -> None:
         try:
             self._creation_trace_id = f"ods-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
             self._creation_started_at = time.time()
@@ -3567,7 +3155,7 @@ class WizardApp:
             self.resumen = ResumenFrame(
                 main_col,
                 self.terminar_servicio,
-                self._flush_excel_queue,
+                None,
                 show_excel_queue=False,
             )
             self.resumen.grid(row=6, column=0, sticky="ew", pady=8)
@@ -3591,6 +3179,14 @@ class WizardApp:
                 self._log_creation_flow("formulario_cargado")
                 loading.set_status("Listo", 100)
                 loading.close()
+                if after_ready:
+                    def _run_after_ready() -> None:
+                        try:
+                            after_ready()
+                        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+                            self._report_error("No se pudo aplicar la importacion del acta", exc, title="Importar acta")
+
+                    self.root.after(0, _run_after_ready)
 
             def _on_error(exc: Exception) -> None:
                 loading.close()
@@ -3623,40 +3219,112 @@ class WizardApp:
         )
         if not file_path:
             return
+        self._importar_acta_desde_fuente(file_path, source_label=Path(file_path).name)
 
-        loading = LoadingDialog(self.root, "Leyendo acta de Excel...")
-        self.root.update_idletasks()
-        try:
-            from app.services.excel_acta_import import parse_acta_excel
-
-            parsed = parse_acta_excel(file_path)
-        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
-            loading.close()
-            self._report_error("No se pudo leer el archivo de acta", exc, title="Importar acta")
+    def _importar_acta_revisada(self, row: dict) -> None:
+        source = str(row.get("path_formato") or "").strip()
+        if not source:
+            messagebox.showinfo(
+                "Actas Terminadas",
+                "El acta se marco como revisada, pero no tiene ruta configurada para importar.",
+            )
             return
-        loading.close()
+        source_label = str(row.get("nombre_formato") or "").strip() or "Acta revisada"
+        self._importar_acta_desde_fuente(source, source_label=source_label, start_form_if_needed=True)
 
+    def _importar_acta_desde_fuente(
+        self,
+        source: str,
+        *,
+        source_label: str = "acta",
+        start_form_if_needed: bool = False,
+    ) -> None:
+        source_text = str(source or "").strip()
+        if not source_text:
+            messagebox.showerror("Importar acta", "No se encontro una ruta o URL valida para el acta.")
+            return
+
+        is_remote = bool(re.match(r"^https?://", source_text, re.IGNORECASE))
+        loading = LoadingDialog(
+            self.root,
+            "Leyendo acta desde Google Drive..." if is_remote else "Leyendo acta de Excel...",
+        )
+        self.root.update_idletasks()
+
+        def _worker() -> dict:
+            from app.services.excel_acta_import import parse_acta_source
+
+            parsed = parse_acta_source(source_text)
+            prepared_parsed, participantes = self._preparar_importacion_acta(parsed)
+            return {
+                "parsed": prepared_parsed,
+                "participantes": participantes,
+            }
+
+        def _on_success(result: dict) -> None:
+            loading.close()
+            parsed = dict(result.get("parsed") or {})
+            participantes = list(result.get("participantes") or [])
+
+            def _apply_import() -> None:
+                self._procesar_importacion_acta(parsed, participantes, source_label=source_label)
+
+            if start_form_if_needed:
+                self.start_new_service(after_ready=_apply_import)
+                return
+            _apply_import()
+
+        def _on_error(exc: Exception) -> None:
+            loading.close()
+            self._report_error("No se pudo leer el acta", exc, title="Importar acta")
+
+        self._run_background_task(
+            _worker,
+            _on_success,
+            _on_error,
+            timeout_sec=180 if is_remote else 60,
+            timeout_message=(
+                "La importacion del acta desde Google Drive excedio el tiempo esperado."
+                if is_remote
+                else "La lectura del acta excedio el tiempo esperado."
+            ),
+            poll_ms=200,
+            operation_name="importar_acta_fuente",
+        )
+
+    def _buscar_empresas_por_nit_import(self, nit: str) -> list[dict]:
+        nit_clean = str(nit or "").strip()
+        if not nit_clean:
+            return []
+        try:
+            empresas_payload = self.api.get_cached("/wizard/seccion-2/empresas")
+            empresas = list(empresas_payload.get("data") or [])
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
+            empresas = []
+
+        matches = [
+            item
+            for item in empresas
+            if str(item.get("nit_empresa") or "").strip() == nit_clean
+        ]
+        if matches:
+            return matches
+
+        empresa_lookup = self.api.get("/wizard/seccion-2/empresa", params={"nit": nit_clean})
+        return list(empresa_lookup.get("data") or [])
+
+    def _preparar_importacion_acta(self, parsed: dict) -> tuple[dict, list[dict]]:
+        prepared = dict(parsed)
         nit = (parsed.get("nit_empresa") or "").strip()
         if not nit:
-            messagebox.showerror(
-                "Importar acta",
-                "No se detecto NIT en el archivo. Verifica la plantilla.",
-            )
-            return
-        try:
-            empresa_lookup = self.api.get_cached("/wizard/seccion-2/empresa", params={"nit": nit})
-        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
-            self._report_error("No se pudo validar el NIT contra la base de datos", exc, title="Importar acta")
-            return
-        empresas_encontradas = list(empresa_lookup.get("data") or [])
+            raise RuntimeError("No se detecto NIT en el archivo. Verifica la plantilla.")
+
+        empresas_encontradas = self._buscar_empresas_por_nit_import(nit)
         if not empresas_encontradas:
-            messagebox.showerror(
-                "Importar acta",
-                f"El NIT {nit} no existe en la base de datos. Verifica el formulario.",
-            )
-            return
-        parsed["_nit_validado_bd"] = True
-        parsed["_empresa_bd_nombre"] = str(empresas_encontradas[0].get("nombre_empresa") or "").strip()
+            raise RuntimeError(f"El NIT {nit} no existe en la base de datos. Verifica el formulario.")
+
+        prepared["_nit_validado_bd"] = True
+        prepared["_empresa_bd_nombre"] = str(empresas_encontradas[0].get("nombre_empresa") or "").strip()
 
         participantes_raw = list(parsed.get("participantes") or [])
         cedulas_bd = set()
@@ -3680,10 +3348,21 @@ class WizardApp:
             else:
                 descartados.append(ced)
         if descartados:
-            parsed.setdefault("warnings", []).append(
+            prepared.setdefault("warnings", []).append(
                 f"Se descartaron {len(descartados)} cedula(s) que no existen en BD."
             )
-            parsed["_cedulas_descartadas"] = descartados
+            prepared["_cedulas_descartadas"] = descartados
+
+        return prepared, participantes
+
+    def _procesar_importacion_acta(
+        self,
+        parsed: dict,
+        participantes: list[dict],
+        *,
+        source_label: str = "acta",
+    ) -> None:
+        nit = (parsed.get("nit_empresa") or "").strip()
 
         if len(participantes) > 1:
             seleccion = self._seleccionar_participantes_import(participantes)
@@ -3698,6 +3377,7 @@ class WizardApp:
 
         warnings = parsed.get("warnings") or []
         summary = [
+            f"Fuente: {source_label}",
             f"NIT detectado: {nit}",
             f"Cedulas cargadas: {len(participantes)}",
         ]
@@ -3902,7 +3582,10 @@ class WizardApp:
 
         raw_prof = (parsed.get("nombre_profesional") or "").strip()
         candidatos_prof = parsed.get("candidatos_profesional") or []
-        resolved_prof = self._resolve_profesional_import(raw_prof, candidatos_prof)
+        resolved_prof = str(parsed.get("_resolved_profesional") or "").strip()
+        if not resolved_prof:
+            resolved_prof = self._resolve_profesional_import(raw_prof, candidatos_prof)
+            parsed["_resolved_profesional"] = resolved_prof
         modalidad = (parsed.get("modalidad_servicio") or "").strip()
         nombre_empresa = (parsed.get("nombre_empresa") or "").strip()
         empresa_bd_nombre = (parsed.get("_empresa_bd_nombre") or "").strip()
@@ -4009,10 +3692,12 @@ class WizardApp:
         if fecha:
             self.seccion3.set_fecha_servicio(fecha)
 
-        selected_prof = self._resolve_profesional_import(
-            (parsed.get("nombre_profesional") or "").strip(),
-            parsed.get("candidatos_profesional") or [],
-        )
+        selected_prof = str(parsed.get("_resolved_profesional") or "").strip()
+        if not selected_prof:
+            selected_prof = self._resolve_profesional_import(
+                (parsed.get("nombre_profesional") or "").strip(),
+                parsed.get("candidatos_profesional") or [],
+            )
         if selected_prof:
             self.seccion1.prof_var.set(selected_prof)
 
@@ -4034,43 +3719,59 @@ class WizardApp:
 
         self._refresh_summary()
 
-    def _flush_excel_queue(self) -> None:
-        loading = LoadingDialog(self.root, "Reintentando cola Excel...", determinate=True)
+    def _flush_google_drive_queue(self) -> None:
+        loading = LoadingDialog(self.root, "Reintentando sincronizacion Drive...", determinate=True)
         self.root.update_idletasks()
         loading.set_status("Procesando pendientes...", 60)
 
         def _worker() -> dict:
-            return self.api.post("/wizard/editar/excel/flush", {})
+            return self.api.post("/wizard/google-drive/flush", {})
 
         def _on_success(response: dict) -> None:
             loading.set_status("Actualizando estado...", 90)
             loading.set_status("Finalizando...", 100)
             loading.close()
             data = response.get("data", {})
-            label = getattr(self, "queue_status_label", None)
-            if label and label.winfo_exists():
-                try:
-                    label.config(
-                        text=(
-                            f"Cola Excel: procesados {data.get('procesados', 0)} "
-                            f"/ pendientes {data.get('pendientes', 0)}"
-                        )
-                    )
-                except tk.TclError:
-                    _LOGGER.debug("No se pudo actualizar label de estado de cola (widget destruido).")
             self._update_queue_status()
+            messagebox.showinfo(
+                "Sincronizacion Drive",
+                (
+                    "Procesados: "
+                    f"{data.get('procesados', 0)} | Pendientes: {data.get('pendientes', 0)}"
+                ),
+            )
 
         def _on_error(exc: Exception) -> None:
             loading.close()
-            self._report_error("No se pudo reintentar la cola Excel", exc)
+            self._report_error("No se pudo reintentar la cola Drive", exc)
 
         self._run_background_task(
             _worker,
             _on_success,
             _on_error,
             timeout_sec=120,
-            timeout_message="La re-ejecucion de cola Excel excedio el tiempo esperado.",
-            operation_name="flush_excel_queue",
+            timeout_message="La re-ejecucion de cola Drive excedio el tiempo esperado.",
+            operation_name="flush_google_drive_queue",
+        )
+
+    def _flush_google_drive_queue_silent(self) -> None:
+        def _worker() -> dict:
+            return self.api.post("/wizard/google-drive/flush", {})
+
+        def _on_success(_response: dict) -> None:
+            self._update_queue_status()
+
+        def _on_error(exc: Exception) -> None:
+            _LOGGER.warning("No se pudo procesar cola Drive en segundo plano: %s", exc)
+
+        self._run_background_task(
+            _worker,
+            _on_success,
+            _on_error,
+            timeout_sec=120,
+            timeout_message="La sincronizacion inicial de Drive excedio el tiempo esperado.",
+            operation_name="flush_google_drive_queue_silent",
+            disable_main_actions=False,
         )
 
     def _refresh_cache_from_supabase(self) -> None:
@@ -4255,14 +3956,14 @@ class WizardApp:
 
     def _update_queue_status(self) -> None:
         try:
-            data = self.api.get("/wizard/editar/excel/status").get("data", {})
+            data = self.api.get("/wizard/google-drive/status").get("data", {})
         except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
-            _LOGGER.warning("No se pudo consultar estado de cola Excel: %s", exc)
+            _LOGGER.warning("No se pudo consultar estado de cola Drive: %s", exc)
             return
         pendientes = int(data.get("pendientes", 0) or 0)
         resumen = getattr(self, "resumen", None)
         if resumen and getattr(resumen, "queue_label", None):
-            status = f"Cola Excel: {pendientes} pendiente(s)"
+            status = f"Cola Drive: {pendientes} pendiente(s)"
             try:
                 if resumen.queue_label.winfo_exists():
                     resumen.queue_label.config(text=status)
@@ -4450,17 +4151,33 @@ class WizardApp:
 
         def _on_success(response: dict) -> None:
             loading.close()
-            excel_status = response.get("excel_status")
+            sync_status = response.get("sync_status")
+            sync_error = response.get("sync_error")
+            sync_target = response.get("sync_target")
             self._log_creation_flow(
                 "guardado_bd_ok",
-                excel_status=excel_status,
-                excel_error=response.get("excel_error"),
+                sync_status=sync_status,
+                sync_error=sync_error,
+                sync_target=sync_target,
             )
-            messagebox.showinfo(
-                "Servicio guardado",
-                "Servicio guardado en Supabase. El Excel no se actualiza automaticamente.",
-            )
-            self._notify_monitor_refresh()
+            if sync_status == "ok":
+                message = "Servicio guardado en Supabase y sincronizado en Google Drive."
+            elif sync_status == "pending":
+                message = (
+                    "Servicio guardado en Supabase. "
+                    "La sincronizacion a Google Drive quedo pendiente de reintento."
+                )
+            else:
+                message = (
+                    "Servicio guardado en Supabase, pero la sincronizacion a Google Drive "
+                    "no se pudo completar."
+                )
+            if sync_target:
+                message += f"\nArchivo destino: {sync_target}"
+            if sync_error:
+                message += f"\nDetalle: {sync_error}"
+            messagebox.showinfo("Servicio guardado", message)
+            self._flush_google_drive_queue_silent()
 
             add_another = messagebox.askyesno(
                 "Servicio terminado",
