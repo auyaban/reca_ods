@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.2.0
+- Importacion de actas ampliada a PDF con texto seleccionable, incluyendo archivos locales y enlaces de Google Drive.
+- Validacion mas estricta al importar: NIT y nombre deben coincidir con `empresas`, y las cedulas se verifican contra `usuarios_reca`.
+- Si una cedula no existe pero el acta trae datos minimos, el usuario se prepara para creacion automatica al guardar el servicio.
+- Resolucion del profesional mejorada: se toma desde asistentes/participantes del acta y se cruza por similitud con la tabla de profesionales.
+- Vista previa de importacion redisenada para mostrar resumen claro, estado de usuarios y avisos; ademas se abre con mejor alto para dejar visibles los botones.
+- Instalador corregido para preservar configuracion `GOOGLE_*` y copiar la service account al perfil del usuario final.
+
 ## 2.1.0
 - Migracion operativa de ODS a Google Drive / Google Sheets con sincronizacion mensual por Shared Drive.
 - Nuevo flujo `Actualizar Supabase` desde `ODS_CALCULADA` con preview, comparacion por `id` y aplicacion parcial robusta.

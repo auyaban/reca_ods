@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
 import tempfile
@@ -17,7 +17,11 @@ from app.utils.text import normalize_text
 MAX_SCAN_ROWS = 260
 MAX_SCAN_COLS = 70
 _GOOGLE_SPREADSHEET_MIME = "application/vnd.google-apps.spreadsheet"
-
+_EXCEL_EXTENSIONS = {".xlsx", ".xlsm"}
+_PDF_EXTENSIONS = {".pdf"}
+_PDF_BLOCK_RE = re.compile(
+    r"(?ms)(?:^|\n)\s*(?P<idx>[1-9])\s+(?P<body>.*?)(?=(?:\n\s*[1-9]\s+[A-ZÁÉÍÓÚÑ])|\Z)"
+)
 
 
 def _clean_text(value: Any) -> str:
@@ -40,6 +44,12 @@ def _clean_nit(value: Any) -> str:
         return ""
     match = re.search(r"\b\d{6,12}(?:-\d)?\b", raw)
     return match.group(0) if match else raw
+
+
+def _clean_name(value: Any) -> str:
+    text = _clean_text(value)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip(" .:-")
 
 
 def _to_iso_date(value: Any) -> str:
@@ -165,7 +175,6 @@ def _is_person_candidate(value: Any) -> bool:
     )
     if any(token in norm for token in banned):
         return False
-    # Acepta cualquier letra Unicode valida (incluye acentos y ñ) y evita mojibake.
     return any(ch.isalpha() for ch in text)
 
 
@@ -188,7 +197,6 @@ def _extract_profesional(rows: list[list[Any]]) -> str:
 
 
 def _extract_asistentes_candidates(rows: list[list[Any]]) -> list[str]:
-    """Devuelve todos los nombres encontrados en la sección de asistentes."""
     asist_row = -1
     for r, row in enumerate(rows):
         for value in row:
@@ -214,7 +222,6 @@ def _extract_asistentes_candidates(rows: list[list[Any]]) -> list[str]:
         if not has_nombre_label:
             continue
 
-        # Case 1: inline text "Nombre completo: Juan Perez"
         for raw in row:
             text = _clean_text(raw)
             norm = normalize_text(raw)
@@ -224,7 +231,6 @@ def _extract_asistentes_candidates(rows: list[list[Any]]) -> list[str]:
                     candidates.append(inline)
                     break
 
-        # Case 2: value in adjacent columns in same row
         for raw in row:
             value = _clean_text(raw)
             norm = normalize_text(raw)
@@ -299,6 +305,8 @@ def _extract_participants(rows: list[list[Any]]) -> list[dict[str, str]]:
         ced_col = next((i for i, cell in enumerate(normalized) if any(token in cell for token in ced_headers)), None)
         if ced_col is None:
             continue
+        discapacidad_col = next((i for i, cell in enumerate(normalized) if "discapacidad" in cell), None)
+        genero_col = next((i for i, cell in enumerate(normalized) if "genero" in cell or "sexo" in cell), None)
 
         empty_streak = 0
         for j in range(idx + 1, min(idx + 120, len(rows))):
@@ -313,10 +321,20 @@ def _extract_participants(rows: list[list[Any]]) -> list[dict[str, str]]:
                 continue
             empty_streak = 0
 
-            if ced and len(ced) < 5:
+            if len(ced) < 5:
                 continue
 
-            participants.append({"cedula_usuario": ced})
+            name_raw = current[name_col] if name_col < len(current) else ""
+            discapacidad_raw = current[discapacidad_col] if discapacidad_col is not None and discapacidad_col < len(current) else ""
+            genero_raw = current[genero_col] if genero_col is not None and genero_col < len(current) else ""
+            participants.append(
+                {
+                    "nombre_usuario": _clean_name(name_raw),
+                    "cedula_usuario": ced,
+                    "discapacidad_usuario": _clean_text(discapacidad_raw),
+                    "genero_usuario": _clean_text(genero_raw),
+                }
+            )
     return participants
 
 
@@ -331,8 +349,124 @@ def _dedupe_participants(participants: list[dict[str, str]]) -> list[dict[str, s
         if key in seen:
             continue
         seen.add(key)
-        unique.append({"cedula_usuario": ced})
+        unique.append(
+            {
+                "nombre_usuario": _clean_name(item.get("nombre_usuario", "")),
+                "cedula_usuario": ced,
+                "discapacidad_usuario": _clean_text(item.get("discapacidad_usuario", "")),
+                "genero_usuario": _clean_text(item.get("genero_usuario", "")),
+            }
+        )
     return unique
+
+
+def _extract_pdf_text_pages(path: str) -> list[str]:
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:  # pragma: no cover - runtime dependency
+        raise RuntimeError("No se pudo importar pypdf.") from exc
+
+    reader = PdfReader(path)
+    pages: list[str] = []
+    for page in reader.pages:
+        raw_text = page.extract_text() or ""
+        lines = [_clean_text(line) for line in raw_text.splitlines()]
+        page_text = "\n".join(line for line in lines if line)
+        pages.append(page_text)
+    return pages
+
+
+def _extract_pdf_value(text: str, pattern: str) -> str:
+    match = re.search(pattern, text, re.IGNORECASE)
+    if not match:
+        return ""
+    return _clean_text(match.group(1))
+
+
+def _split_joined_cedula_percentage(raw_token: str) -> tuple[str, str]:
+    match = re.search(r"(?P<digits>\d+)\.(?P<dec>\d{2})%", raw_token)
+    if not match:
+        return "", ""
+
+    digits = re.sub(r"\D", "", match.group("digits"))
+    decimals = match.group("dec")
+    candidates: list[tuple[int, int, str, str]] = []
+    for pct_len in (2, 1, 3):
+        if len(digits) <= pct_len:
+            continue
+        cedula = digits[:-pct_len]
+        percentage_int = digits[-pct_len:]
+        if not (6 <= len(cedula) <= 10):
+            continue
+        percentage_value = int(percentage_int)
+        if not (0 <= percentage_value <= 100):
+            continue
+        score = 0
+        if pct_len == 2:
+            score += 5
+        if len(cedula) >= 8:
+            score += 2
+        if percentage_value > 0:
+            score += 1
+        percentage = f"{percentage_value}.{decimals}%"
+        candidates.append((score, len(cedula), cedula, percentage))
+
+    if not candidates:
+        return "", ""
+
+    _, _, cedula, percentage = max(candidates, key=lambda item: (item[0], item[1]))
+    return cedula, percentage
+
+
+def _extract_pdf_participants(text: str) -> list[dict[str, str]]:
+    participants: list[dict[str, str]] = []
+    for match in _PDF_BLOCK_RE.finditer(text):
+        body = _clean_text(match.group("body"))
+        if "discapacidad" not in normalize_text(body):
+            continue
+        first_line = body.split(" Agente de ", 1)[0]
+        first_match = re.search(
+            r"^(?P<nombre>.+?)(?P<token>\d{7,13}\.\d{2}%)(?:\s*)Discapacidad\s+(?P<tail>.+)$",
+            first_line,
+            re.IGNORECASE,
+        )
+        if not first_match:
+            continue
+
+        nombre = _clean_name(first_match.group("nombre"))
+        cedula, _pct = _split_joined_cedula_percentage(first_match.group("token"))
+        if not cedula:
+            continue
+
+        tail = _clean_text(first_match.group("tail"))
+        tail_match = re.search(
+            r"^(?P<discapacidad>[A-Za-zÁÉÍÓÚÑáéíóúñ ]+?)(?P<telefono>\d[\d ]{6,15})(?P<resultado>Pendiente|Aprobado|No aprobado)",
+            tail,
+            re.IGNORECASE,
+        )
+        discapacidad = _clean_text(tail_match.group("discapacidad")) if tail_match else ""
+        participants.append(
+            {
+                "nombre_usuario": nombre,
+                "cedula_usuario": cedula,
+                "discapacidad_usuario": discapacidad,
+                "genero_usuario": "",
+            }
+        )
+    return _dedupe_participants(participants)
+
+
+def _extract_pdf_asistentes_candidates(text: str) -> list[str]:
+    candidates: list[str] = []
+    for match in re.finditer(
+        r"nombre completo:\s*(.+?)(?=cargo:|nombre completo:|tiene un c[oó]digo de vestimenta|la presente acta|$)",
+        text,
+        re.IGNORECASE,
+    ):
+        candidate = _clean_name(match.group(1))
+        if candidate and _is_person_candidate(candidate) and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
 
 
 def parse_acta_excel(file_path: str) -> dict:
@@ -368,9 +502,9 @@ def parse_acta_excel(file_path: str) -> dict:
             )
             fecha_servicio = _to_iso_date(fecha_value)
         sheet_candidates = _extract_asistentes_candidates(rows)
-        for c in sheet_candidates:
-            if c not in candidatos_profesional:
-                candidatos_profesional.append(c)
+        for candidate in sheet_candidates:
+            if candidate not in candidatos_profesional:
+                candidatos_profesional.append(candidate)
         if not profesional:
             profesional = sheet_candidates[0] if sheet_candidates else _extract_profesional(rows)
         if not modalidad:
@@ -404,6 +538,56 @@ def parse_acta_excel(file_path: str) -> dict:
     }
 
 
+def parse_acta_pdf(file_path: str) -> dict:
+    path = Path(file_path)
+    if not path.exists():
+        raise RuntimeError(f"No existe el archivo: {file_path}")
+
+    pages = _extract_pdf_text_pages(str(path))
+    if not pages:
+        raise RuntimeError("El PDF no contiene paginas legibles.")
+
+    full_text = "\n".join(page for page in pages if page)
+    first_page = pages[0] if pages else ""
+
+    nit = _clean_nit(_extract_pdf_value(first_page, r"n[uú]mero de nit:\s*([0-9.\- ]+)"))
+    empresa = _extract_pdf_value(
+        first_page,
+        r"nombre de la empresa:\s*(.+?)(?:ciudad/municipio:|direccion de la empresa:|numero de nit:)",
+    )
+    fecha_servicio = _to_iso_date(_extract_pdf_value(first_page, r"fecha de la visita:\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})"))
+    modalidad = _extract_pdf_value(
+        first_page,
+        r"modalidad:\s*(.+?)(?:nombre de la empresa:|ciudad/municipio:|direccion de la empresa:)",
+    ).rstrip(".")
+    asistentes_candidates = _extract_pdf_asistentes_candidates(full_text)
+    asesor = _extract_pdf_value(first_page, r"asesor:\s*(.+?)(?:sede compensar:|correo electr[oó]nico:|$)")
+    profesional = asistentes_candidates[0] if asistentes_candidates else asesor
+    participants = _extract_pdf_participants(full_text)
+
+    warnings: list[str] = []
+    if not nit:
+        warnings.append("No se detecto NIT en el PDF.")
+    if not empresa:
+        warnings.append("No se detecto nombre de empresa en el PDF.")
+    if not fecha_servicio:
+        warnings.append("No se detecto fecha de servicio en formato valido.")
+    if not participants:
+        warnings.append("No se detectaron oferentes en el PDF.")
+
+    return {
+        "file_path": str(path),
+        "nit_empresa": nit,
+        "nombre_empresa": empresa,
+        "fecha_servicio": fecha_servicio,
+        "nombre_profesional": profesional,
+        "candidatos_profesional": asistentes_candidates or ([asesor] if asesor else []),
+        "modalidad_servicio": modalidad,
+        "participantes": participants,
+        "warnings": warnings,
+    }
+
+
 def _is_google_spreadsheet_reference(source: str) -> bool:
     text = str(source or "").strip().lower()
     return "/spreadsheets/d/" in text
@@ -414,6 +598,21 @@ def _is_google_drive_reference(source: str) -> bool:
     return "drive.google.com" in text and ("/file/d/" in text or "id=" in text)
 
 
+def _parse_local_source(path: Path) -> dict:
+    suffix = path.suffix.lower()
+    if suffix in _EXCEL_EXTENSIONS:
+        return parse_acta_excel(str(path))
+    if suffix in _PDF_EXTENSIONS:
+        return parse_acta_pdf(str(path))
+    raise RuntimeError("El archivo local no es un Excel compatible (.xlsx/.xlsm) ni un PDF compatible.")
+
+
+def _normalize_source_type_label(source_type: str, parsed: dict, source_text: str) -> dict:
+    parsed["file_path"] = source_text
+    parsed["source_type"] = source_type
+    return parsed
+
+
 def parse_acta_source(source: str) -> dict:
     source_text = str(source or "").strip()
     if not source_text:
@@ -421,7 +620,7 @@ def parse_acta_source(source: str) -> dict:
 
     local_path = Path(source_text).expanduser()
     if local_path.exists():
-        return parse_acta_excel(str(local_path))
+        return _parse_local_source(local_path)
 
     temp_path: Path | None = None
     try:
@@ -430,9 +629,7 @@ def parse_acta_source(source: str) -> dict:
                 temp_path = Path(tmp.name)
             export_spreadsheet_to_excel(source_text, temp_path)
             parsed = parse_acta_excel(str(temp_path))
-            parsed["file_path"] = source_text
-            parsed["source_type"] = "google_sheets"
-            return parsed
+            return _normalize_source_type_label("google_sheets", parsed, source_text)
 
         if _is_google_drive_reference(source_text):
             file_id = extract_drive_file_id(source_text)
@@ -446,22 +643,19 @@ def parse_acta_source(source: str) -> dict:
                     temp_path = Path(tmp.name)
                 export_spreadsheet_to_excel(file_id, temp_path)
                 parsed = parse_acta_excel(str(temp_path))
-                parsed["file_path"] = source_text
-                parsed["source_type"] = "google_sheets"
-                return parsed
+                return _normalize_source_type_label("google_sheets", parsed, source_text)
 
-            if suffix not in {".xlsx", ".xlsm"}:
+            if suffix not in (_EXCEL_EXTENSIONS | _PDF_EXTENSIONS):
                 raise RuntimeError(
-                    "El archivo de Drive no es un Google Sheet ni un Excel compatible (.xlsx/.xlsm)."
+                    "El archivo de Drive no es un Google Sheet, un Excel compatible (.xlsx/.xlsm) ni un PDF compatible."
                 )
 
             with tempfile.NamedTemporaryFile(suffix=suffix or ".xlsx", delete=False) as tmp:
                 temp_path = Path(tmp.name)
             download_drive_file(file_id, temp_path)
-            parsed = parse_acta_excel(str(temp_path))
-            parsed["file_path"] = source_text
-            parsed["source_type"] = "google_drive_file"
-            return parsed
+            parser = parse_acta_pdf if suffix in _PDF_EXTENSIONS or mime_type == "application/pdf" else parse_acta_excel
+            parsed = parser(str(temp_path))
+            return _normalize_source_type_label("google_drive_file", parsed, source_text)
     finally:
         if temp_path and temp_path.exists():
             try:
@@ -470,5 +664,5 @@ def parse_acta_source(source: str) -> dict:
                 pass
 
     raise RuntimeError(
-        "No se pudo resolver el acta. Usa un archivo Excel local o una URL valida de Google Drive/Sheets."
+        "No se pudo resolver el acta. Usa un archivo Excel/PDF local o una URL valida de Google Drive/Sheets."
     )

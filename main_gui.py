@@ -642,7 +642,7 @@ class Seccion1Frame(BaseSection):
         super().__init__(parent, "Seccion 1 - Informacion basica y profesional")
         self.api = api
         self.state = state
-        self.orden_var = tk.StringVar()
+        self.orden_var = tk.StringVar(value="No")
         self.prof_var = tk.StringVar()
         self._profesionales_meta_by_nombre: dict[str, dict] = {}
         ttk.Label(self.body, text="Orden Clausulada").grid(row=0, column=0, sticky="w")
@@ -669,6 +669,8 @@ class Seccion1Frame(BaseSection):
         orden_labels = [item["label"] for item in orden_data["data"]]
         self.orden_combo.configure(values=orden_labels)
         self.orden_combo._all_values = orden_labels
+        if "No" in orden_labels and not self.orden_var.get().strip():
+            self.orden_var.set("No")
 
         prof_data = self.api.get_cached("/wizard/seccion-1/profesionales")
         self._apply_profesionales_data(prof_data["data"])
@@ -691,7 +693,7 @@ class Seccion1Frame(BaseSection):
         return bool(meta.get("es_interprete"))
 
     def reset_for_new_entry(self) -> None:
-        self.orden_var.set("")
+        self.orden_var.set("No")
         self.prof_var.set("")
 
     def get_payload(self) -> dict:
@@ -1725,6 +1727,47 @@ class Seccion4Frame(BaseSection):
         self.clear_rows()
         self._add_row()
 
+    def _refresh_cedula_sources(self) -> None:
+        self.rows = [row for row in self.rows if row.winfo_exists()]
+        for row in self.rows:
+            row.cedula_combo.configure(values=self.cedulas)
+            row._cedulas = [str(item) for item in self.cedulas]
+
+    def stage_user(self, user: dict) -> dict:
+        staged = {
+            "nombre_usuario": str(user.get("nombre_usuario") or "").strip(),
+            "cedula_usuario": str(user.get("cedula_usuario") or "").strip(),
+            "discapacidad_usuario": str(user.get("discapacidad_usuario") or "").strip(),
+            "genero_usuario": str(user.get("genero_usuario") or "").strip(),
+        }
+        cedula = staged["cedula_usuario"]
+        if not cedula:
+            raise RuntimeError("La cedula es obligatoria para preparar el usuario.")
+
+        existing_idx = next(
+            (
+                idx
+                for idx, item in enumerate(self.state.usuarios_nuevos)
+                if str(item.get("cedula_usuario") or "").strip() == cedula
+            ),
+            None,
+        )
+        if existing_idx is None:
+            self.state.usuarios_nuevos.append(staged)
+        else:
+            current = dict(self.state.usuarios_nuevos[existing_idx])
+            for key, value in staged.items():
+                if value:
+                    current[key] = value
+            self.state.usuarios_nuevos[existing_idx] = current
+            staged = current
+
+        self.usuarios_by_cedula[cedula] = staged
+        if cedula not in self.cedulas:
+            self.cedulas.append(cedula)
+        self._refresh_cedula_sources()
+        return staged
+
     def set_data(self, data: dict) -> None:
         def split_field(value: str) -> list[str]:
             if not value:
@@ -1859,14 +1902,7 @@ class Seccion4Frame(BaseSection):
                 return
 
             user = data["data"]
-            self.state.usuarios_nuevos.append(user)
-            if user["cedula_usuario"] not in self.cedulas:
-                self.cedulas.append(user["cedula_usuario"])
-                self.usuarios_by_cedula[user["cedula_usuario"]] = user
-                self.rows = [r for r in self.rows if r.winfo_exists()]
-                for row in self.rows:
-                    row.cedula_combo.configure(values=self.cedulas)
-                    row._cedulas = [str(c) for c in self.cedulas]
+            user = self.stage_user(user)
 
             self.api.invalidate("/wizard/seccion-4/usuarios")
 
@@ -3129,7 +3165,7 @@ class WizardApp:
             ).pack(side="left")
             tk.Button(
                 nav,
-                text="Importar acta Excel",
+                text="Importar acta",
                 command=self._importar_acta_excel,
                 bg="#2E86C1",
                 fg="white",
@@ -3211,9 +3247,9 @@ class WizardApp:
 
     def _importar_acta_excel(self) -> None:
         file_path = filedialog.askopenfilename(
-            title="Seleccionar acta en Excel",
+            title="Seleccionar acta",
             filetypes=[
-                ("Archivos Excel", "*.xlsx *.xlsm"),
+                ("Actas compatibles", "*.xlsx *.xlsm *.pdf"),
                 ("Todos los archivos", "*.*"),
             ],
         )
@@ -3247,7 +3283,7 @@ class WizardApp:
         is_remote = bool(re.match(r"^https?://", source_text, re.IGNORECASE))
         loading = LoadingDialog(
             self.root,
-            "Leyendo acta desde Google Drive..." if is_remote else "Leyendo acta de Excel...",
+            "Leyendo acta desde Google Drive..." if is_remote else "Leyendo acta...",
         )
         self.root.update_idletasks()
 
@@ -3313,18 +3349,120 @@ class WizardApp:
         empresa_lookup = self.api.get("/wizard/seccion-2/empresa", params={"nit": nit_clean})
         return list(empresa_lookup.get("data") or [])
 
+    def _empresa_nombre_coincide_import(self, detected_name: str, company_name: str) -> bool:
+        detected = normalize_search_text(detected_name)
+        company = normalize_search_text(company_name)
+        if not detected or not company:
+            return False
+        if detected == company or detected in company or company in detected:
+            return True
+        detected_tokens = set(detected.split())
+        company_tokens = set(company.split())
+        overlap = len(detected_tokens & company_tokens) / max(len(detected_tokens), len(company_tokens), 1)
+        ratio = difflib.SequenceMatcher(None, detected, company).ratio()
+        return overlap >= 0.6 or ratio >= 0.8
+
+    def _normalizar_nombre_usuario_import(self, value: str) -> str:
+        clean = " ".join(str(value or "").split())
+        if not clean:
+            return ""
+        if clean.isupper() or clean.islower():
+            return clean.title()
+        return clean
+
+    def _normalizar_discapacidad_import(self, value: str) -> str:
+        options = list(getattr(self.seccion4, "discapacidades", []) or [])
+        if not options:
+            options = ["Intelectual", "Múltiple", "Física", "Visual", "Auditiva", "Psicosocial", "N/A"]
+
+        normalized = normalize_text(value or "")
+        mapping = (
+            ("intelectual", "Intelectual"),
+            ("multiple", "Múltiple"),
+            ("fisica", "Física"),
+            ("visual", "Visual"),
+            ("auditiva", "Auditiva"),
+            ("psicosocial", "Psicosocial"),
+        )
+        for token, label in mapping:
+            if token in normalized:
+                matched = next((item for item in options if normalize_search_text(item) == normalize_search_text(label)), None)
+                if matched:
+                    return matched
+                return label
+
+        default = next((item for item in options if normalize_search_text(item) == "n a"), None)
+        return default or "N/A"
+
+    def _normalizar_genero_import(self, value: str) -> str:
+        options = list(getattr(self.seccion4, "generos", []) or [])
+        if not options:
+            options = ["Hombre", "Mujer", "Otro"]
+
+        normalized = normalize_text(value or "")
+        mapping = (
+            ("hombre", "Hombre"),
+            ("masculino", "Hombre"),
+            ("mujer", "Mujer"),
+            ("femenino", "Mujer"),
+            ("otro", "Otro"),
+        )
+        for token, label in mapping:
+            if token in normalized:
+                matched = next((item for item in options if normalize_search_text(item) == normalize_search_text(label)), None)
+                if matched:
+                    return matched
+                return label
+
+        default = next((item for item in options if normalize_search_text(item) == "otro"), None)
+        return default or "Otro"
+
+    def _build_usuario_minimo_import(self, persona: dict) -> dict | None:
+        cedula = str(persona.get("cedula_usuario") or "").strip()
+        nombre = self._normalizar_nombre_usuario_import(str(persona.get("nombre_usuario") or "").strip())
+        if not cedula or not nombre:
+            return None
+        return {
+            "nombre_usuario": nombre,
+            "cedula_usuario": cedula,
+            "discapacidad_usuario": self._normalizar_discapacidad_import(
+                str(persona.get("discapacidad_usuario") or "").strip()
+            ),
+            "genero_usuario": self._normalizar_genero_import(str(persona.get("genero_usuario") or "").strip()),
+        }
+
     def _preparar_importacion_acta(self, parsed: dict) -> tuple[dict, list[dict]]:
         prepared = dict(parsed)
         nit = (parsed.get("nit_empresa") or "").strip()
         if not nit:
             raise RuntimeError("No se detecto NIT en el archivo. Verifica la plantilla.")
 
+        nombre_empresa_detectado = (parsed.get("nombre_empresa") or "").strip()
+        if not nombre_empresa_detectado:
+            raise RuntimeError("No se detecto nombre de empresa en el archivo. Verifica la plantilla.")
+
         empresas_encontradas = self._buscar_empresas_por_nit_import(nit)
         if not empresas_encontradas:
             raise RuntimeError(f"El NIT {nit} no existe en la base de datos. Verifica el formulario.")
 
+        empresa_match = next(
+            (
+                item
+                for item in empresas_encontradas
+                if self._empresa_nombre_coincide_import(
+                    nombre_empresa_detectado,
+                    str(item.get("nombre_empresa") or "").strip(),
+                )
+            ),
+            None,
+        )
+        if empresa_match is None:
+            raise RuntimeError(
+                f"El NIT {nit} existe en la base de datos, pero el nombre '{nombre_empresa_detectado}' no coincide con la empresa registrada."
+            )
+
         prepared["_nit_validado_bd"] = True
-        prepared["_empresa_bd_nombre"] = str(empresas_encontradas[0].get("nombre_empresa") or "").strip()
+        prepared["_empresa_bd_nombre"] = str(empresa_match.get("nombre_empresa") or "").strip()
 
         participantes_raw = list(parsed.get("participantes") or [])
         cedulas_bd = set()
@@ -3337,21 +3475,56 @@ class WizardApp:
         except (RuntimeError, ValueError, TypeError, OSError, tk.TclError):
             cedulas_bd = set()
 
+        staged_by_cedula: dict[str, dict] = {}
+        for item in list(self.state.usuarios_nuevos or []):
+            ced = str(item.get("cedula_usuario") or "").strip()
+            if ced:
+                staged_by_cedula[ced] = dict(item)
+
         participantes: list[dict] = []
         descartados: list[str] = []
+        nuevos_preparados = 0
         for persona in participantes_raw:
             ced = str(persona.get("cedula_usuario") or "").strip()
             if not ced:
                 continue
             if ced in cedulas_bd:
-                participantes.append({"cedula_usuario": ced})
+                participantes.append(
+                    {
+                        "nombre_usuario": self._normalizar_nombre_usuario_import(
+                            str(persona.get("nombre_usuario") or "").strip()
+                        ),
+                        "cedula_usuario": ced,
+                        "discapacidad_usuario": str(persona.get("discapacidad_usuario") or "").strip(),
+                        "genero_usuario": str(persona.get("genero_usuario") or "").strip(),
+                        "_usuario_accion": "existente",
+                    }
+                )
+            elif ced in staged_by_cedula:
+                staged = dict(staged_by_cedula[ced])
+                staged["_usuario_accion"] = "nuevo"
+                participantes.append(staged)
             else:
-                descartados.append(ced)
+                user_minimo = self._build_usuario_minimo_import(persona)
+                if user_minimo is None:
+                    descartados.append(ced)
+                    continue
+                user_minimo["_usuario_accion"] = "crear"
+                participantes.append(user_minimo)
+                nuevos_preparados += 1
         if descartados:
             prepared.setdefault("warnings", []).append(
-                f"Se descartaron {len(descartados)} cedula(s) que no existen en BD."
+                f"Se descartaron {len(descartados)} cedula(s) que no existen en BD y no traian datos suficientes para crearlas."
             )
             prepared["_cedulas_descartadas"] = descartados
+        if nuevos_preparados:
+            prepared.setdefault("warnings", []).append(
+                f"Se prepararon {nuevos_preparados} usuarios nuevos con datos minimos para persistir al guardar el servicio."
+            )
+        if not participantes:
+            prepared.setdefault("warnings", []).append(
+                "No se detectaron cédulas válidas en el acta. Se importarán empresa, fecha, modalidad y profesional, pero los oferentes deben completarse manualmente."
+            )
 
         return prepared, participantes
 
@@ -3381,6 +3554,9 @@ class WizardApp:
             f"NIT detectado: {nit}",
             f"Cedulas cargadas: {len(participantes)}",
         ]
+        nuevos = sum(1 for item in participantes if str(item.get("_usuario_accion") or "").strip() in {"crear", "nuevo"})
+        if nuevos:
+            summary.append(f"Usuarios nuevos preparados: {nuevos}")
         fecha_servicio = (parsed.get("fecha_servicio") or "").strip()
         if fecha_servicio:
             summary.append(f"Fecha detectada: {fecha_servicio}")
@@ -3441,11 +3617,15 @@ class WizardApp:
         table_wrap.grid_rowconfigure(0, weight=1)
         table_wrap.grid_columnconfigure(0, weight=1)
 
-        tree = ttk.Treeview(table_wrap, columns=("idx", "cedula"), show="headings", selectmode="extended")
+        tree = ttk.Treeview(table_wrap, columns=("idx", "cedula", "nombre", "accion"), show="headings", selectmode="extended")
         tree.heading("idx", text="#")
         tree.heading("cedula", text="Cedula")
+        tree.heading("nombre", text="Nombre")
+        tree.heading("accion", text="Accion")
         tree.column("idx", width=60, anchor="center")
         tree.column("cedula", width=260, anchor="w")
+        tree.column("nombre", width=260, anchor="w")
+        tree.column("accion", width=140, anchor="w")
         yscroll = ttk.Scrollbar(table_wrap, orient="vertical", command=tree.yview)
         tree.configure(yscrollcommand=yscroll.set)
         tree.grid(row=0, column=0, sticky="nsew")
@@ -3454,8 +3634,11 @@ class WizardApp:
         row_map: dict[str, dict] = {}
         for idx, persona in enumerate(participantes, start=1):
             ced = (persona.get("cedula_usuario") or "").strip()
-            item_id = tree.insert("", "end", values=(idx, ced))
-            row_map[item_id] = {"cedula_usuario": ced}
+            nombre = (persona.get("nombre_usuario") or "").strip()
+            accion = str(persona.get("_usuario_accion") or "existente").strip()
+            accion_label = "Crear usuario" if accion in {"crear", "nuevo"} else "Usar existente"
+            item_id = tree.insert("", "end", values=(idx, ced, nombre or "-", accion_label))
+            row_map[item_id] = dict(persona)
 
         result: dict[str, list[dict] | None] = {"value": None}
 
@@ -3554,31 +3737,25 @@ class WizardApp:
         dialog = tk.Toplevel(self.root)
         dialog.title("Vista previa de importacion")
         dialog.resizable(True, True)
-        dialog.geometry("900x560")
         dialog.transient(self.root)
         dialog.grab_set()
+        dialog_w = max(760, min(980, self._screen_w - 80))
+        dialog_h = max(620, min(760, self._screen_h - 80))
+        self._center_dialog(dialog, dialog_w, dialog_h)
+
+        container = ttk.Frame(dialog, padding=(12, 10))
+        container.pack(fill=tk.BOTH, expand=True)
 
         ttk.Label(
-            dialog,
-            text="Revisa el mapeo antes de aplicar al formulario",
-            font=("Arial", 10, "bold"),
-        ).pack(anchor="w", padx=12, pady=(10, 8))
-
-        mapping_wrap = ttk.LabelFrame(dialog, text="Campos detectados", padding=(8, 8))
-        mapping_wrap.pack(fill=tk.X, padx=12, pady=(0, 8))
-        mapping_wrap.grid_columnconfigure(0, weight=1)
-
-        mapping_tree = ttk.Treeview(mapping_wrap, columns=("campo", "valor", "destino"), show="headings", height=8)
-        mapping_tree.heading("campo", text="Campo interno")
-        mapping_tree.heading("valor", text="Valor detectado")
-        mapping_tree.heading("destino", text="Destino")
-        mapping_tree.column("campo", width=220, anchor="w")
-        mapping_tree.column("valor", width=340, anchor="w")
-        mapping_tree.column("destino", width=260, anchor="w")
-        map_scroll = ttk.Scrollbar(mapping_wrap, orient="vertical", command=mapping_tree.yview)
-        mapping_tree.configure(yscrollcommand=map_scroll.set)
-        mapping_tree.grid(row=0, column=0, sticky="nsew")
-        map_scroll.grid(row=0, column=1, sticky="ns")
+            container,
+            text="Resumen de informacion detectada",
+            font=("Arial", 11, "bold"),
+        ).pack(anchor="w")
+        ttk.Label(
+            container,
+            text="Verifica estos datos antes de aplicarlos al formulario.",
+            foreground="#555555",
+        ).pack(anchor="w", pady=(2, 10))
 
         raw_prof = (parsed.get("nombre_profesional") or "").strip()
         candidatos_prof = parsed.get("candidatos_profesional") or []
@@ -3592,42 +3769,72 @@ class WizardApp:
         nit = (parsed.get("nit_empresa") or "").strip()
         fecha = (parsed.get("fecha_servicio") or "").strip()
         nit_validado_bd = bool(parsed.get("_nit_validado_bd"))
+        nuevos_count = sum(
+            1 for item in participantes if str(item.get("_usuario_accion") or "").strip() in {"crear", "nuevo"}
+        )
+        existentes_count = max(0, len(participantes) - nuevos_count)
+        profesional_status = "Coincidencia encontrada" if resolved_prof else "Sin coincidencia automatica"
 
-        rows = [
-            ("seccion2.nit_empresa", nit or "-", "NIT de empresa"),
-            ("validacion.nit_bd", "Si" if nit_validado_bd else "No", "Validacion en BD"),
-            (
-                "seccion2.empresa_bd",
-                empresa_bd_nombre or "-",
-                "Empresa encontrada en BD",
-            ),
-            (
-                "seccion2.nombre_empresa",
-                nombre_empresa or "(se resuelve por NIT en BD)",
-                "Nombre empresa",
-            ),
-            ("seccion3.fecha_servicio", fecha or "-", "Fecha servicio"),
-            (
-                "seccion1.nombre_profesional",
-                (resolved_prof or raw_prof or "-"),
-                "Profesional (match en lista)",
-            ),
-            ("seccion3.modalidad_servicio", modalidad or "-", "Modalidad (si aplica)"),
-            ("seccion4.total_participantes", str(len(participantes)), "Oferentes"),
+        metrics_wrap = ttk.Frame(container)
+        metrics_wrap.pack(fill=tk.X, pady=(0, 10))
+        for col in range(3):
+            metrics_wrap.columnconfigure(col, weight=1)
+
+        metric_cards = [
+            ("Oferentes detectados", str(len(participantes)), "#2E86C1"),
+            ("Usuarios existentes", str(existentes_count), "#07B499"),
+            ("Usuarios por crear", str(nuevos_count), "#AF601A"),
         ]
-        for row in rows:
-            mapping_tree.insert("", "end", values=row)
+        for idx, (label, value, color) in enumerate(metric_cards):
+            card = tk.Frame(metrics_wrap, bg="#FFFFFF", highlightbackground="#D9D9D9", highlightthickness=1, bd=0)
+            card.grid(row=0, column=idx, sticky="nsew", padx=(0 if idx == 0 else 6, 0))
+            tk.Label(card, text=value, font=("Arial", 16, "bold"), fg=color, bg="#FFFFFF").pack(anchor="w", padx=12, pady=(10, 2))
+            tk.Label(card, text=label, font=("Arial", 9), fg="#555555", bg="#FFFFFF").pack(anchor="w", padx=12, pady=(0, 10))
 
-        parts_wrap = ttk.LabelFrame(dialog, text="Participantes a importar", padding=(8, 8))
-        parts_wrap.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 8))
+        details_wrap = ttk.LabelFrame(container, text="Datos detectados", padding=(10, 8))
+        details_wrap.pack(fill=tk.X, pady=(0, 8))
+        details_wrap.columnconfigure(0, weight=1)
+        details_wrap.columnconfigure(1, weight=1)
+
+        detail_rows = [
+            ("Empresa detectada", nombre_empresa or "-", "Empresa validada en BD", empresa_bd_nombre or "-"),
+            ("NIT", nit or "-", "Validacion empresa", "Correcta" if nit_validado_bd else "Pendiente"),
+            ("Fecha del servicio", fecha or "-", "Modalidad", modalidad or "-"),
+            ("Profesional detectado", raw_prof or "-", "Estado profesional", profesional_status),
+            ("Profesional aplicado", resolved_prof or "-", "Fuente", str(parsed.get("source_type") or "archivo local")),
+        ]
+        for row_idx, (label_left, value_left, label_right, value_right) in enumerate(detail_rows):
+            left = ttk.Frame(details_wrap)
+            left.grid(row=row_idx, column=0, sticky="ew", padx=(0, 12), pady=3)
+            ttk.Label(left, text=label_left, foreground="#666666").pack(anchor="w")
+            ttk.Label(left, text=value_left, font=("Arial", 10, "bold")).pack(anchor="w")
+
+            right = ttk.Frame(details_wrap)
+            right.grid(row=row_idx, column=1, sticky="ew", padx=(0, 0), pady=3)
+            ttk.Label(right, text=label_right, foreground="#666666").pack(anchor="w")
+            ttk.Label(right, text=value_right, font=("Arial", 10, "bold")).pack(anchor="w")
+
+        parts_wrap = ttk.LabelFrame(container, text="Oferentes detectados", padding=(8, 8))
+        parts_wrap.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
         parts_wrap.grid_rowconfigure(0, weight=1)
         parts_wrap.grid_columnconfigure(0, weight=1)
 
-        parts_tree = ttk.Treeview(parts_wrap, columns=("idx", "cedula"), show="headings")
+        parts_tree = ttk.Treeview(
+            parts_wrap,
+            columns=("idx", "nombre", "cedula", "discapacidad", "accion"),
+            show="headings",
+            height=8,
+        )
         parts_tree.heading("idx", text="#")
+        parts_tree.heading("nombre", text="Nombre")
         parts_tree.heading("cedula", text="Cedula")
+        parts_tree.heading("discapacidad", text="Discapacidad")
+        parts_tree.heading("accion", text="Estado")
         parts_tree.column("idx", width=50, anchor="center")
-        parts_tree.column("cedula", width=260, anchor="w")
+        parts_tree.column("nombre", width=260, anchor="w")
+        parts_tree.column("cedula", width=180, anchor="w")
+        parts_tree.column("discapacidad", width=180, anchor="w")
+        parts_tree.column("accion", width=160, anchor="w")
         parts_scroll = ttk.Scrollbar(parts_wrap, orient="vertical", command=parts_tree.yview)
         parts_tree.configure(yscrollcommand=parts_scroll.set)
         parts_tree.grid(row=0, column=0, sticky="nsew")
@@ -3640,16 +3847,25 @@ class WizardApp:
                     "end",
                     values=(
                         idx,
+                        (persona.get("nombre_usuario") or "").strip() or "-",
                         (persona.get("cedula_usuario") or "").strip(),
+                        (persona.get("discapacidad_usuario") or "").strip() or "-",
+                        "Crear usuario"
+                        if str(persona.get("_usuario_accion") or "").strip() in {"crear", "nuevo"}
+                        else "Usuario existente",
                     ),
                 )
         else:
-            parts_tree.insert("", "end", values=("-", "Sin cedulas detectadas"))
+            parts_tree.insert(
+                "",
+                "end",
+                values=("-", "Sin cédulas detectadas", "-", "-", "Completar manualmente"),
+            )
 
         warnings = list(parsed.get("warnings") or [])
         if warnings:
-            warn_wrap = ttk.LabelFrame(dialog, text="Avisos", padding=(8, 6))
-            warn_wrap.pack(fill=tk.X, padx=12, pady=(0, 8))
+            warn_wrap = ttk.LabelFrame(container, text="Avisos", padding=(8, 6))
+            warn_wrap.pack(fill=tk.X, pady=(0, 8))
             for item in warnings[:6]:
                 ttk.Label(warn_wrap, text=f"- {item}", foreground="#8A6D3B").pack(anchor="w")
 
@@ -3662,8 +3878,8 @@ class WizardApp:
         def _cancel() -> None:
             dialog.destroy()
 
-        btns = ttk.Frame(dialog)
-        btns.pack(fill=tk.X, padx=12, pady=(0, 12))
+        btns = ttk.Frame(container)
+        btns.pack(fill=tk.X, pady=(0, 4))
         tk.Button(btns, text="Cancelar", command=_cancel, bg=COLOR_PURPLE, fg="white", padx=10, pady=4).pack(
             side=tk.RIGHT
         )
@@ -3711,9 +3927,26 @@ class WizardApp:
                 self.seccion4._add_row()
                 row = self.seccion4.rows[-1]
                 ced = (persona.get("cedula_usuario") or "").strip()
-                if ced:
+                accion = str(persona.get("_usuario_accion") or "").strip()
+                if accion in {"crear", "nuevo"}:
+                    staged_user = self.seccion4.stage_user(
+                        {
+                            "nombre_usuario": (persona.get("nombre_usuario") or "").strip(),
+                            "cedula_usuario": ced,
+                            "discapacidad_usuario": (persona.get("discapacidad_usuario") or "").strip(),
+                            "genero_usuario": (persona.get("genero_usuario") or "").strip(),
+                        }
+                    )
+                    row.set_from_user(staged_user)
+                elif ced:
                     row.cedula_var.set(ced)
                     self.seccion4._fill_user(row)
+                if not row.nombre_var.get().strip() and (persona.get("nombre_usuario") or "").strip():
+                    row.nombre_var.set((persona.get("nombre_usuario") or "").strip())
+                if not row.discapacidad_var.get().strip() and (persona.get("discapacidad_usuario") or "").strip():
+                    row.discapacidad_var.set((persona.get("discapacidad_usuario") or "").strip())
+                if not row.genero_var.get().strip() and (persona.get("genero_usuario") or "").strip():
+                    row.genero_var.set((persona.get("genero_usuario") or "").strip())
         else:
             self.seccion4.reset_for_new_entry()
 

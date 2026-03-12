@@ -5,7 +5,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app.services.excel_acta_import import parse_acta_source
+from app.services.excel_acta_import import (
+    _extract_pdf_asistentes_candidates,
+    _extract_pdf_participants,
+    parse_acta_source,
+)
 
 
 class ActaImportTests(unittest.TestCase):
@@ -31,6 +35,22 @@ class ActaImportTests(unittest.TestCase):
 
         self.assertEqual(result["nit_empresa"], "900123456")
         mock_parse_excel.assert_called_once_with(str(temp_path))
+
+    @patch("app.services.excel_acta_import.parse_acta_pdf")
+    def test_parse_acta_source_uses_local_pdf(self, mock_parse_pdf) -> None:
+        mock_parse_pdf.return_value = {"nit_empresa": "900123456"}
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            temp_path = Path(tmp.name)
+
+        try:
+            result = parse_acta_source(str(temp_path))
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+        self.assertEqual(result["nit_empresa"], "900123456")
+        mock_parse_pdf.assert_called_once_with(str(temp_path))
 
     @patch("app.services.excel_acta_import.parse_acta_excel")
     @patch("app.services.excel_acta_import.export_spreadsheet_to_excel")
@@ -92,6 +112,28 @@ class ActaImportTests(unittest.TestCase):
         mock_download.assert_called_once()
         mock_parse_excel.assert_called_once()
 
+    @patch("app.services.excel_acta_import.parse_acta_pdf")
+    @patch("app.services.excel_acta_import.download_drive_file")
+    @patch("app.services.excel_acta_import.get_drive_file_metadata")
+    def test_parse_acta_source_supports_drive_pdf_link(
+        self,
+        mock_get_metadata,
+        mock_download,
+        mock_parse_pdf,
+    ) -> None:
+        mock_get_metadata.return_value = {
+            "id": "file-123",
+            "name": "Acta marzo.pdf",
+            "mimeType": "application/pdf",
+        }
+        mock_parse_pdf.return_value = {"nit_empresa": "900123456"}
+
+        result = parse_acta_source("https://drive.google.com/file/d/file-123/view")
+
+        self.assertEqual(result["source_type"], "google_drive_file")
+        mock_download.assert_called_once()
+        mock_parse_pdf.assert_called_once()
+
     def test_parse_acta_source_rejects_unknown_url(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "No se pudo resolver el acta"):
             parse_acta_source("https://someotherdomain.com/file")
@@ -100,11 +142,11 @@ class ActaImportTests(unittest.TestCase):
     def test_parse_acta_source_rejects_unsupported_drive_file_type(self, mock_get_metadata) -> None:
         mock_get_metadata.return_value = {
             "id": "file-123",
-            "name": "Acta marzo.pdf",
-            "mimeType": "application/pdf",
+            "name": "Acta marzo.docx",
+            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         }
 
-        with self.assertRaisesRegex(RuntimeError, "no es un Google Sheet ni un Excel compatible"):
+        with self.assertRaisesRegex(RuntimeError, "no es un Google Sheet, un Excel compatible"):
             parse_acta_source("https://drive.google.com/file/d/file-123/view")
 
     @patch("app.services.excel_acta_import.get_drive_file_metadata")
@@ -115,8 +157,55 @@ class ActaImportTests(unittest.TestCase):
             "mimeType": "application/vnd.ms-excel",
         }
 
-        with self.assertRaisesRegex(RuntimeError, "no es un Google Sheet ni un Excel compatible"):
+        with self.assertRaisesRegex(RuntimeError, "no es un Google Sheet, un Excel compatible"):
             parse_acta_source("https://drive.google.com/file/d/file-123/view")
+
+    def test_extract_pdf_participants_reads_joined_rows(self) -> None:
+        text = (
+            "1 Leydi Marcela Ávila Ardila107292221470.00%Discapacidad física316 6253584Pendiente "
+            "Agente de CatálogoMartha Aurora Ardila RiosMadre 3223997748 15/06/1995 30 años.\n"
+            "2 Edward Mauricio Riaño Zamora8075054626.30%Discapacidad física310 2691234Pendiente "
+            "Agente de CatálogoLeonardo ZamoraHermano 320 4167513 28/07/1985 40 años."
+        )
+
+        participants = _extract_pdf_participants(text)
+
+        self.assertEqual(
+            participants,
+            [
+                {
+                    "nombre_usuario": "Leydi Marcela Ávila Ardila",
+                    "cedula_usuario": "1072922214",
+                    "discapacidad_usuario": "física",
+                    "genero_usuario": "",
+                },
+                {
+                    "nombre_usuario": "Edward Mauricio Riaño Zamora",
+                    "cedula_usuario": "80750546",
+                    "discapacidad_usuario": "física",
+                    "genero_usuario": "",
+                },
+            ],
+        )
+
+
+    def test_extract_pdf_asistentes_candidates_prefers_nombre_completo_order(self) -> None:
+        text = (
+            "3. Asistentes\n"
+            "Nombre completo: Gabriela Rubiano Isaza Cargo: Profesional de inclusion laboral\n"
+            "Nombre completo: Lissette Lorena Castaneda Cargo: Psicologa\n"
+            "La presente acta deja constancia del proceso.\n"
+        )
+
+        candidates = _extract_pdf_asistentes_candidates(text)
+
+        self.assertEqual(
+            candidates,
+            [
+                "Gabriela Rubiano Isaza",
+                "Lissette Lorena Castaneda",
+            ],
+        )
 
 
 if __name__ == "__main__":

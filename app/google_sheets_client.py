@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from functools import lru_cache
 from io import BytesIO
@@ -47,7 +48,7 @@ def _credentials_path() -> Path:
     if not credential_path:
         raise RuntimeError("Falta GOOGLE_SERVICE_ACCOUNT_FILE en la configuracion.")
 
-    path = Path(credential_path).expanduser()
+    path = Path(os.path.expandvars(credential_path)).expanduser()
     if not path.exists():
         raise RuntimeError(f"No existe el archivo de service account: {path}")
     return path

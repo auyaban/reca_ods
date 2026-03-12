@@ -73,6 +73,9 @@ Para build/release:
 Nota: en runtime instalado, la app prioriza `.env` en:
 `%APPDATA%\Sistema de Gestion ODS RECA\.env`
 
+Para despliegue en equipos finales, usa una ruta portable para `GOOGLE_SERVICE_ACCOUNT_FILE`, por ejemplo:
+`%APPDATA%\Sistema de Gestion ODS RECA\secrets\google-service-account.json`
+
 ## Ejecucion local
 
 ### Opcion 1

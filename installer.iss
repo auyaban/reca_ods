@@ -25,6 +25,7 @@ SetupIconFile=logo\logo_reca.ico
 
 [Files]
 Source: "dist\\RECA_ODS\\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "dist\\installer_payload\\google-service-account.json"; DestDir: "{userappdata}\\{#MyAppName}\\secrets"; DestName: "google-service-account.json"; Flags: ignoreversion skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\\{#MyAppName}"; Filename: "{app}\\{#MyAppExeName}"
@@ -45,10 +46,17 @@ begin
   if CurStep = ssInstall then
   begin
     ForceDirectories(ExpandConstant('{userappdata}\\{#MyAppName}'));
+    ForceDirectories(ExpandConstant('{userappdata}\\{#MyAppName}\\secrets'));
     EnvPath := ExpandConstant('{userappdata}\\{#MyAppName}\\.env');
     EnvContent := 'SUPABASE_URL={#SupabaseUrl}' + #13#10 +
                   'SUPABASE_ANON_KEY={#SupabaseKey}' + #13#10 +
-                  'BACKEND_URL={#BackendUrl}' + #13#10;
+                  'BACKEND_URL={#BackendUrl}' + #13#10 +
+                  'GOOGLE_DRIVE_SHARED_FOLDER_ID={#GoogleDriveSharedFolderId}' + #13#10 +
+                  'GOOGLE_DRIVE_TEMPLATE_SPREADSHEET_NAME={#GoogleDriveTemplateSpreadsheetName}' + #13#10;
+    if {#HasGoogleServiceAccount} = 1 then
+      EnvContent := EnvContent + 'GOOGLE_SERVICE_ACCOUNT_FILE={#GoogleServiceAccountInstalledPath}' + #13#10
+    else
+      EnvContent := EnvContent + 'GOOGLE_SERVICE_ACCOUNT_FILE=' + #13#10;
     SaveStringToFile(EnvPath, EnvContent, False);
   end;
 end;
