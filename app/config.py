@@ -1,7 +1,6 @@
 from functools import lru_cache
 import os
 
-from dotenv import load_dotenv
 from pathlib import Path
 
 from app.paths import app_data_dir
@@ -14,16 +13,42 @@ _DEFAULT_SUPABASE_AUTH_PASSWORD = "Reca.Test.2026!v3"
 _LEGACY_SUPABASE_AUTH_PASSWORDS = {
     "Reca.Test.2026!",
 }
+_ENV_FALLBACK_ENCODINGS = ("utf-8-sig", "utf-8", "cp1252", "latin-1")
+
+
+def _read_env_text(path: Path) -> tuple[str, str] | None:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None
+
+    for encoding in _ENV_FALLBACK_ENCODINGS:
+        try:
+            return raw.decode(encoding), encoding
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("latin-1", errors="replace"), "latin-1"
+
+
+def _rewrite_env_utf8(path: Path, text: str, source_encoding: str) -> None:
+    if source_encoding in {"utf-8", "utf-8-sig"}:
+        return
+    try:
+        path.write_text(text, encoding="utf-8")
+    except OSError:
+        return
 
 
 def _load_env_file(path: Path, *, override: bool) -> None:
     if not path.exists():
         return
 
-    try:
-        raw_lines = path.read_text(encoding="utf-8-sig").splitlines()
-    except OSError:
+    loaded = _read_env_text(path)
+    if loaded is None:
         return
+    raw_text, source_encoding = loaded
+    _rewrite_env_utf8(path, raw_text, source_encoding)
+    raw_lines = raw_text.splitlines()
 
     for raw_line in raw_lines:
         line = raw_line.strip()
@@ -41,11 +66,9 @@ def _load_env_file(path: Path, *, override: bool) -> None:
 
 def _load_env() -> None:
     _load_env_file(_ENV_PATH, override=True)
-    load_dotenv(dotenv_path=_ENV_PATH, override=True)
     if not _ENV_PATH.exists():
         fallback = Path(__file__).resolve().parents[1] / ".env"
         _load_env_file(fallback, override=False)
-        load_dotenv(dotenv_path=fallback, override=False)
 
 
 _load_env()
@@ -137,10 +160,9 @@ def persist_supabase_auth_credentials(email: str, password: str) -> None:
     lines: list[str] = []
     existing: list[str] = []
     if _ENV_PATH.exists():
-        try:
-            existing = _ENV_PATH.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            existing = []
+        loaded = _read_env_text(_ENV_PATH)
+        if loaded is not None:
+            existing = loaded[0].splitlines()
 
     updated_email = False
     updated_password = False

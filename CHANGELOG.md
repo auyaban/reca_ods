@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.1
+- Hotfix de arranque: la app ahora acepta archivos `.env` en ANSI/Windows-1252 y los normaliza a UTF-8 automaticamente.
+- Se elimina la dependencia de `python-dotenv` en el arranque para evitar fallos de decodificacion al importar configuracion.
+
 ## 2.2.0
 - Importacion de actas ampliada a PDF con texto seleccionable, incluyendo archivos locales y enlaces de Google Drive.
 - Validacion mas estricta al importar: NIT y nombre deben coincidir con `empresas`, y las cedulas se verifican contra `usuarios_reca`.
