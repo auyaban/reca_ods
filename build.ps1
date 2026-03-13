@@ -57,6 +57,36 @@ $installerConfig = @"
 "@
 Set-Content -Path (Join-Path $root "installer_config.iss") -Value $installerConfig
 
+$pyInstallerPackages = @(
+    "supabase",
+    "postgrest",
+    "realtime",
+    "storage3",
+    "supabase_auth",
+    "supabase_functions"
+)
+
+$hiddenImportsScript = @'
+from PyInstaller.utils.hooks import collect_submodules
+
+packages = [
+    "supabase",
+    "postgrest",
+    "realtime",
+    "storage3",
+    "supabase_auth",
+    "supabase_functions",
+]
+
+mods = []
+for package in packages:
+    mods.extend(collect_submodules(package))
+
+for mod in sorted(set(mods)):
+    print(mod)
+'@
+$hiddenImports = @($hiddenImportsScript | & $python -)
+
 $iconPath = Join-Path $root "logo\\logo_reca.ico"
 $pyiArgs = @(
     "--noconfirm",
@@ -65,14 +95,17 @@ $pyiArgs = @(
     "--add-data", "logo\\logo_reca.png;logo",
     "--add-data", "VERSION;.",
     "--name", "RECA_ODS",
-    "--collect-all", "supabase",
-    "--collect-all", "postgrest",
-    "--collect-all", "realtime",
-    "--collect-all", "storage3",
-    "--collect-all", "supabase_auth",
-    "--collect-all", "supabase_functions",
     "start_gui.py"
 )
+foreach ($package in $pyInstallerPackages) {
+    $pyiArgs += @("--collect-all", $package)
+}
+foreach ($hiddenImport in $hiddenImports) {
+    $moduleName = [string]$hiddenImport
+    if ($moduleName.Trim()) {
+        $pyiArgs += @("--hidden-import", $moduleName.Trim())
+    }
+}
 if (Test-Path $iconPath) {
     $pyiArgs = @("--icon", $iconPath) + $pyiArgs
 }
