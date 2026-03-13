@@ -54,11 +54,18 @@ class ActaImportTests(unittest.TestCase):
 
     @patch("app.services.excel_acta_import.parse_acta_excel")
     @patch("app.services.excel_acta_import.export_spreadsheet_to_excel")
+    @patch("app.services.excel_acta_import.get_drive_file_metadata")
     def test_parse_acta_source_supports_google_sheets_url(
         self,
+        mock_get_metadata,
         mock_export_spreadsheet,
         mock_parse_excel,
     ) -> None:
+        mock_get_metadata.return_value = {
+            "id": "sheet-123",
+            "name": "Acta marzo",
+            "mimeType": "application/vnd.google-apps.spreadsheet",
+        }
         mock_parse_excel.return_value = {"nit_empresa": "900123456"}
 
         result = parse_acta_source("https://docs.google.com/spreadsheets/d/sheet-123/edit#gid=0")
@@ -66,6 +73,31 @@ class ActaImportTests(unittest.TestCase):
         self.assertEqual(result["source_type"], "google_sheets")
         self.assertEqual(result["file_path"], "https://docs.google.com/spreadsheets/d/sheet-123/edit#gid=0")
         mock_export_spreadsheet.assert_called_once()
+        mock_parse_excel.assert_called_once()
+
+    @patch("app.services.excel_acta_import.parse_acta_excel")
+    @patch("app.services.excel_acta_import.download_drive_file")
+    @patch("app.services.excel_acta_import.export_spreadsheet_to_excel")
+    @patch("app.services.excel_acta_import.get_drive_file_metadata")
+    def test_parse_acta_source_supports_google_spreadsheets_url_backed_by_excel_file(
+        self,
+        mock_get_metadata,
+        mock_export_spreadsheet,
+        mock_download,
+        mock_parse_excel,
+    ) -> None:
+        mock_get_metadata.return_value = {
+            "id": "sheet-123",
+            "name": "Acta marzo.xlsx",
+            "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }
+        mock_parse_excel.return_value = {"nit_empresa": "900123456"}
+
+        result = parse_acta_source("https://docs.google.com/spreadsheets/d/sheet-123/edit?usp=drivesdk")
+
+        self.assertEqual(result["source_type"], "google_drive_file")
+        mock_export_spreadsheet.assert_not_called()
+        mock_download.assert_called_once()
         mock_parse_excel.assert_called_once()
 
     @patch("app.services.excel_acta_import.parse_acta_excel")

@@ -613,6 +613,40 @@ def _normalize_source_type_label(source_type: str, parsed: dict, source_text: st
     return parsed
 
 
+def _parse_google_remote_source(source_text: str) -> dict:
+    file_id = extract_drive_file_id(source_text)
+    metadata = get_drive_file_metadata(file_id)
+    mime_type = str(metadata.get("mimeType") or "").strip().lower()
+    name = str(metadata.get("name") or "acta").strip()
+    suffix = Path(name).suffix.lower()
+    temp_path: Path | None = None
+    try:
+        if mime_type == _GOOGLE_SPREADSHEET_MIME:
+            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+                temp_path = Path(tmp.name)
+            export_spreadsheet_to_excel(file_id, temp_path)
+            parsed = parse_acta_excel(str(temp_path))
+            return _normalize_source_type_label("google_sheets", parsed, source_text)
+
+        if suffix not in (_EXCEL_EXTENSIONS | _PDF_EXTENSIONS):
+            raise RuntimeError(
+                "El archivo de Drive no es un Google Sheet, un Excel compatible (.xlsx/.xlsm) ni un PDF compatible."
+            )
+
+        with tempfile.NamedTemporaryFile(suffix=suffix or ".xlsx", delete=False) as tmp:
+            temp_path = Path(tmp.name)
+        download_drive_file(file_id, temp_path)
+        parser = parse_acta_pdf if suffix in _PDF_EXTENSIONS or mime_type == "application/pdf" else parse_acta_excel
+        parsed = parser(str(temp_path))
+        return _normalize_source_type_label("google_drive_file", parsed, source_text)
+    finally:
+        if temp_path and temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+
+
 def parse_acta_source(source: str) -> dict:
     source_text = str(source or "").strip()
     if not source_text:
@@ -622,46 +656,8 @@ def parse_acta_source(source: str) -> dict:
     if local_path.exists():
         return _parse_local_source(local_path)
 
-    temp_path: Path | None = None
-    try:
-        if _is_google_spreadsheet_reference(source_text):
-            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
-                temp_path = Path(tmp.name)
-            export_spreadsheet_to_excel(source_text, temp_path)
-            parsed = parse_acta_excel(str(temp_path))
-            return _normalize_source_type_label("google_sheets", parsed, source_text)
-
-        if _is_google_drive_reference(source_text):
-            file_id = extract_drive_file_id(source_text)
-            metadata = get_drive_file_metadata(file_id)
-            mime_type = str(metadata.get("mimeType") or "").strip().lower()
-            name = str(metadata.get("name") or "acta").strip()
-            suffix = Path(name).suffix.lower()
-
-            if mime_type == _GOOGLE_SPREADSHEET_MIME:
-                with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
-                    temp_path = Path(tmp.name)
-                export_spreadsheet_to_excel(file_id, temp_path)
-                parsed = parse_acta_excel(str(temp_path))
-                return _normalize_source_type_label("google_sheets", parsed, source_text)
-
-            if suffix not in (_EXCEL_EXTENSIONS | _PDF_EXTENSIONS):
-                raise RuntimeError(
-                    "El archivo de Drive no es un Google Sheet, un Excel compatible (.xlsx/.xlsm) ni un PDF compatible."
-                )
-
-            with tempfile.NamedTemporaryFile(suffix=suffix or ".xlsx", delete=False) as tmp:
-                temp_path = Path(tmp.name)
-            download_drive_file(file_id, temp_path)
-            parser = parse_acta_pdf if suffix in _PDF_EXTENSIONS or mime_type == "application/pdf" else parse_acta_excel
-            parsed = parser(str(temp_path))
-            return _normalize_source_type_label("google_drive_file", parsed, source_text)
-    finally:
-        if temp_path and temp_path.exists():
-            try:
-                temp_path.unlink()
-            except OSError:
-                pass
+    if _is_google_spreadsheet_reference(source_text) or _is_google_drive_reference(source_text):
+        return _parse_google_remote_source(source_text)
 
     raise RuntimeError(
         "No se pudo resolver el acta. Usa un archivo Excel/PDF local o una URL valida de Google Drive/Sheets."

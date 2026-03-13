@@ -1,5 +1,8 @@
 # Changelog
 
+## 2.2.2
+- Hotfix en `Actas Terminadas`: los enlaces historicos de Google Sheets/Drive ahora se resuelven segun el tipo real del archivo para abrir e importar correctamente actas guardadas como Excel en Drive.
+
 ## 2.2.1
 - Hotfix de arranque: la app ahora acepta archivos `.env` en ANSI/Windows-1252 y los normaliza a UTF-8 automaticamente.
 - Se elimina la dependencia de `python-dotenv` en el arranque para evitar fallos de decodificacion al importar configuracion.

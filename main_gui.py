@@ -2226,7 +2226,15 @@ class ActasTerminadasPanel(tk.Toplevel):
         blocked_exts = {".exe", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".msi", ".com", ".scr", ".pif"}
         try:
             if re.match(r"^https?://", path, re.IGNORECASE):
-                webbrowser.open(path)
+                open_target = path
+                if "docs.google.com/spreadsheets" in path.lower() or "drive.google.com" in path.lower():
+                    try:
+                        from app.google_sheets_client import normalize_google_file_open_url
+
+                        open_target = normalize_google_file_open_url(path)
+                    except (RuntimeError, ValueError, TypeError, OSError):
+                        open_target = path
+                webbrowser.open(open_target)
                 return
             normalized = os.path.expanduser(os.path.expandvars(path))
             ext = os.path.splitext(normalized)[1].lower()

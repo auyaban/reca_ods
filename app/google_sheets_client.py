@@ -16,8 +16,13 @@ _SCOPES = (
     "https://www.googleapis.com/auth/drive",
 )
 _SPREADSHEET_ID_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9-_]+)")
+_GOOGLE_DOC_FILE_ID_RE = re.compile(
+    r"https?://docs\.google\.com/(?:spreadsheets|document|presentation|forms)/d/([a-zA-Z0-9-_]+)",
+    re.IGNORECASE,
+)
 _DRIVE_FILE_ID_RE = re.compile(r"/file/d/([a-zA-Z0-9-_]+)|[?&]id=([a-zA-Z0-9-_]+)")
 _GOOGLE_FILE_FIELDS = "files(id,name,mimeType,parents,driveId),nextPageToken"
+_GOOGLE_SPREADSHEET_MIME = "application/vnd.google-apps.spreadsheet"
 
 
 def extract_spreadsheet_id(value: str) -> str:
@@ -39,7 +44,23 @@ def extract_drive_file_id(value: str) -> str:
     match = _DRIVE_FILE_ID_RE.search(text)
     if match:
         return match.group(1) or match.group(2) or ""
+    match = _GOOGLE_DOC_FILE_ID_RE.search(text)
+    if match:
+        return match.group(1)
     return text
+
+
+def normalize_google_file_open_url(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise RuntimeError("Debe indicar una URL o file_id de Google Drive.")
+
+    file_id = extract_drive_file_id(text)
+    metadata = get_drive_file_metadata(file_id)
+    mime_type = str(metadata.get("mimeType") or "").strip().lower()
+    if mime_type == _GOOGLE_SPREADSHEET_MIME:
+        return f"https://docs.google.com/spreadsheets/d/{file_id}/edit"
+    return f"https://drive.google.com/file/d/{file_id}/view"
 
 
 def _credentials_path() -> Path:
