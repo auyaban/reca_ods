@@ -8,6 +8,7 @@ from unittest.mock import patch
 from app.services.excel_acta_import import (
     _extract_pdf_asistentes_candidates,
     _extract_pdf_participants,
+    parse_acta_pdf,
     parse_acta_source,
 )
 
@@ -54,11 +55,18 @@ class ActaImportTests(unittest.TestCase):
 
     @patch("app.services.excel_acta_import.parse_acta_excel")
     @patch("app.services.excel_acta_import.export_spreadsheet_to_excel")
+    @patch("app.services.excel_acta_import.get_drive_file_metadata")
     def test_parse_acta_source_supports_google_sheets_url(
         self,
+        mock_get_metadata,
         mock_export_spreadsheet,
         mock_parse_excel,
     ) -> None:
+        mock_get_metadata.return_value = {
+            "id": "sheet-123",
+            "name": "Acta marzo",
+            "mimeType": "application/vnd.google-apps.spreadsheet",
+        }
         mock_parse_excel.return_value = {"nit_empresa": "900123456"}
 
         result = parse_acta_source("https://docs.google.com/spreadsheets/d/sheet-123/edit#gid=0")
@@ -66,6 +74,31 @@ class ActaImportTests(unittest.TestCase):
         self.assertEqual(result["source_type"], "google_sheets")
         self.assertEqual(result["file_path"], "https://docs.google.com/spreadsheets/d/sheet-123/edit#gid=0")
         mock_export_spreadsheet.assert_called_once()
+        mock_parse_excel.assert_called_once()
+
+    @patch("app.services.excel_acta_import.parse_acta_excel")
+    @patch("app.services.excel_acta_import.download_drive_file")
+    @patch("app.services.excel_acta_import.export_spreadsheet_to_excel")
+    @patch("app.services.excel_acta_import.get_drive_file_metadata")
+    def test_parse_acta_source_supports_google_spreadsheets_url_backed_by_excel_file(
+        self,
+        mock_get_metadata,
+        mock_export_spreadsheet,
+        mock_download,
+        mock_parse_excel,
+    ) -> None:
+        mock_get_metadata.return_value = {
+            "id": "sheet-123",
+            "name": "Acta marzo.xlsx",
+            "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }
+        mock_parse_excel.return_value = {"nit_empresa": "900123456"}
+
+        result = parse_acta_source("https://docs.google.com/spreadsheets/d/sheet-123/edit?usp=drivesdk")
+
+        self.assertEqual(result["source_type"], "google_drive_file")
+        mock_export_spreadsheet.assert_not_called()
+        mock_download.assert_called_once()
         mock_parse_excel.assert_called_once()
 
     @patch("app.services.excel_acta_import.parse_acta_excel")
@@ -206,6 +239,60 @@ class ActaImportTests(unittest.TestCase):
                 "Lissette Lorena Castaneda",
             ],
         )
+
+    def test_extract_pdf_asistentes_candidates_reads_multiline_asistentes_block(self) -> None:
+        text = (
+            "8.ASISTENTES\n"
+            "Nombre completo: Sandra Milena Pachon Rojas\n"
+            "Nombre completo: Ana Maria Malagon\n"
+            "Coordinacion de inclusion laboral\n"
+            "Lider Desarrollo Talento\n"
+            "Nombre completo: Francia Palacios\n"
+        )
+
+        candidates = _extract_pdf_asistentes_candidates(text)
+
+        self.assertEqual(
+            candidates,
+            [
+                "Sandra Milena Pachon Rojas",
+                "Ana Maria Malagon",
+                "Francia Palacios",
+            ],
+        )
+
+    @patch("app.services.excel_acta_import._extract_pdf_text_pages")
+    def test_parse_acta_pdf_supports_layout_with_values_before_labels(self, mock_extract_pages) -> None:
+        mock_extract_pages.return_value = [
+            "\n".join(
+                [
+                    "1.DATOS GENERALES",
+                    "Número de NIT: 900439301-2",
+                    "05/03/2026 Modalidad: Virtual",
+                    "INVERSIONES INT COLOMBIA SAS Ciudad/Municipio: Bogotá",
+                    "Cra 22 # 83 - 31",
+                    "Fecha de la Visita:",
+                    "Nombre de la Empresa:",
+                    "Dirección de la Empresa:",
+                ]
+            )
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            temp_path = Path(tmp.name)
+
+        try:
+            result = parse_acta_pdf(str(temp_path))
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+        self.assertEqual(result["nit_empresa"], "900439301-2")
+        self.assertEqual(result["fecha_servicio"], "2026-03-05")
+        self.assertEqual(result["modalidad_servicio"], "Virtual")
+        self.assertEqual(result["nombre_empresa"], "INVERSIONES INT COLOMBIA SAS")
+        self.assertNotIn("No se detecto nombre de empresa en el PDF.", result["warnings"])
+        self.assertNotIn("No se detecto fecha de servicio en formato valido.", result["warnings"])
 
 
 if __name__ == "__main__":

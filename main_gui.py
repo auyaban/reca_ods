@@ -18,6 +18,7 @@ import tkinter.font as tkfont
 
 import threading
 
+from app.config import get_settings
 from app.domain.service_calculation import CalculoServicioInput, calcular_servicio
 from app.logging_utils import LOGGER_GUI, get_file_logger, get_logger
 from app.services.errors import ServiceError
@@ -26,6 +27,7 @@ from app.utils.text import normalize_search_text, normalize_text
 
 COLOR_PURPLE = "#7C3D96"
 COLOR_TEAL = "#07B499"
+_AARON_TEST_USERNAME = "aaron"
 _LOGGER = get_logger(LOGGER_GUI)
 _LOGO_PATH = None
 _LOGO_CACHE: dict[int, tk.PhotoImage] = {}
@@ -258,6 +260,11 @@ class ApiClient:
             return self._svc.listar_actas_finalizadas(params)
         if path == "/wizard/actas-finalizadas/status":
             return self._svc.estado_actas_finalizadas()
+        if path == "/wizard/automation-test/status":
+            return self._svc.get_automation_test_status()
+        if path == "/wizard/automation-test/gmail-preview":
+            limit = params.get("limit")
+            return self._svc.get_automation_gmail_preview(limit=int(limit) if limit else None)
         if path == "/wizard/google-drive/status":
             return self._svc.google_drive_status()
         raise RuntimeError(f"Endpoint no soportado: GET {path}")
@@ -289,6 +296,8 @@ class ApiClient:
             return self._svc.apply_google_sheet_supabase_sync(payload)
         if path == "/wizard/actas-finalizadas/revisado":
             return self._svc.actualizar_acta_revisado(payload)
+        if path == "/wizard/automation-test/analyze-attachment":
+            return self._svc.get_automation_attachment_analysis(payload)
         raise RuntimeError(f"Endpoint no soportado: POST {path}")
 
 
@@ -2226,7 +2235,15 @@ class ActasTerminadasPanel(tk.Toplevel):
         blocked_exts = {".exe", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".msi", ".com", ".scr", ".pif"}
         try:
             if re.match(r"^https?://", path, re.IGNORECASE):
-                webbrowser.open(path)
+                open_target = path
+                if "docs.google.com/spreadsheets" in path.lower() or "drive.google.com" in path.lower():
+                    try:
+                        from app.google_sheets_client import normalize_google_file_open_url
+
+                        open_target = normalize_google_file_open_url(path)
+                    except (RuntimeError, ValueError, TypeError, OSError):
+                        open_target = path
+                webbrowser.open(open_target)
                 return
             normalized = os.path.expanduser(os.path.expandvars(path))
             ext = os.path.splitext(normalized)[1].lower()
@@ -2562,6 +2579,7 @@ class WizardApp:
         self._version_var = tk.StringVar()
         self.actas_panel: ActasTerminadasPanel | None = None
         self._actas_alert_button: tk.Button | None = None
+        self._aaron_test_button: tk.Button | None = None
         self._actas_pending = 0
         self._screen_w = self.root.winfo_screenwidth()
         self._screen_h = self.root.winfo_screenheight()
@@ -2630,6 +2648,544 @@ class WizardApp:
         remote_label = remote_version or "-"
         self._version_var.set(f"Version local: {local_version} | GitHub: {remote_label}")
 
+    def _current_app_user(self) -> str:
+        return str(os.getenv("USERNAME") or os.getenv("USER") or "").strip()
+
+    def _should_show_aaron_test_button(self) -> bool:
+        try:
+            settings = get_settings()
+        except Exception as exc:
+            _LOGGER.warning("No se pudo cargar configuracion de Aaron TEST: %s", exc)
+            return False
+
+        if not settings.ods_automation_test_enabled:
+            return False
+
+        current_user = self._current_app_user().lower()
+        if current_user != _AARON_TEST_USERNAME:
+            return False
+
+        allowed_users = {item.strip().lower() for item in settings.ods_automation_test_users if item.strip()}
+        if allowed_users and current_user not in allowed_users:
+            return False
+        return True
+
+    def _open_aaron_test_panel(self) -> None:
+        try:
+            payload = self.api.get("/wizard/automation-test/status")
+            data = dict(payload.get("data") or {})
+        except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
+            self._report_error("No se pudo abrir Aaron TEST", exc, title="Aaron TEST")
+            return
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Aaron TEST")
+        dialog.resizable(True, True)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        self._center_dialog(dialog, 700, 520)
+
+        container = ttk.Frame(dialog, padding=16)
+        container.pack(fill=tk.BOTH, expand=True)
+        container.columnconfigure(0, weight=1)
+        container.rowconfigure(3, weight=1)
+        container.rowconfigure(4, weight=1)
+
+        ttk.Label(
+            container,
+            text=str(data.get("title") or "Aaron TEST"),
+            font=("Arial", 12, "bold"),
+            foreground=COLOR_PURPLE,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            container,
+            text=str(data.get("summary") or "Panel oculto para pruebas de automatizacion ODS."),
+            foreground="#555555",
+            wraplength=640,
+            justify="left",
+        ).grid(row=1, column=0, sticky="ew", pady=(2, 12))
+
+        current_user = self._current_app_user() or "-"
+        summary_var = tk.StringVar(value="Gmail: sin leer")
+        details = [
+            f"Usuario actual: {current_user}",
+            f"Entorno: {str(data.get('environment') or 'test_only')}",
+            "Produccion: este acceso no cambia el flujo visible para los demas usuarios.",
+        ]
+        meta_wrap = ttk.Frame(container)
+        meta_wrap.grid(row=2, column=0, sticky="ew")
+        for line in details:
+            ttk.Label(meta_wrap, text=line).pack(anchor="w", pady=1)
+        ttk.Label(
+            meta_wrap,
+            textvariable=summary_var,
+            foreground="#1F618D",
+            font=("Arial", 9, "bold"),
+        ).pack(anchor="w", pady=(6, 0))
+
+        body = ttk.Frame(container)
+        body.grid(row=3, column=0, sticky="nsew", pady=(14, 10))
+        body.columnconfigure(0, weight=1)
+        body.columnconfigure(1, weight=2)
+        body.rowconfigure(0, weight=1)
+
+        components_wrap = ttk.LabelFrame(body, text="Componentes", padding=(10, 8))
+        components_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+        state_colors = {
+            "ready": "#117A65",
+            "pending": "#AF601A",
+            "blocked": "#922B21",
+        }
+        for item in list(data.get("components") or []):
+            row = ttk.Frame(components_wrap)
+            row.pack(fill=tk.X, pady=4)
+            state = str(item.get("state") or "pending").strip().lower()
+            state_label = state.upper()
+            tk.Label(
+                row,
+                text=state_label,
+                bg=state_colors.get(state, "#5D6D7E"),
+                fg="white",
+                font=("Arial", 8, "bold"),
+                padx=8,
+                pady=2,
+            ).pack(side=tk.LEFT, anchor="n")
+
+            text_wrap = ttk.Frame(row)
+            text_wrap.pack(fill=tk.X, expand=True, side=tk.LEFT, padx=(10, 0))
+            ttk.Label(
+                text_wrap,
+                text=str(item.get("title") or "-"),
+                font=("Arial", 10, "bold"),
+            ).pack(anchor="w")
+            ttk.Label(
+                text_wrap,
+                text=str(item.get("description") or ""),
+                foreground="#5F5F5F",
+                wraplength=560,
+                justify="left",
+            ).pack(anchor="w")
+
+        gmail_wrap = ttk.LabelFrame(body, text="Bandeja Gmail Candidata", padding=(10, 8))
+        gmail_wrap.grid(row=0, column=1, sticky="nsew")
+        gmail_wrap.columnconfigure(0, weight=1)
+        gmail_wrap.rowconfigure(1, weight=1)
+        gmail_wrap.rowconfigure(2, weight=1)
+
+        gmail_toolbar = ttk.Frame(gmail_wrap)
+        gmail_toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        gmail_toolbar.columnconfigure(0, weight=1)
+        gmail_status_var = tk.StringVar(value="Usa 'Leer Gmail' para consultar el buzón delegado.")
+        ttk.Label(gmail_toolbar, textvariable=gmail_status_var, foreground="#555555").grid(row=0, column=0, sticky="w")
+
+        messages_tree = ttk.Treeview(
+            gmail_wrap,
+            columns=("sender", "professional", "subject", "received", "pdfs"),
+            show="headings",
+            height=8,
+        )
+        messages_tree.heading("sender", text="Remitente")
+        messages_tree.heading("professional", text="Profesional")
+        messages_tree.heading("subject", text="Asunto")
+        messages_tree.heading("received", text="Fecha")
+        messages_tree.heading("pdfs", text="PDFs")
+        messages_tree.column("sender", width=170, anchor="w")
+        messages_tree.column("professional", width=150, anchor="w")
+        messages_tree.column("subject", width=230, anchor="w")
+        messages_tree.column("received", width=150, anchor="w")
+        messages_tree.column("pdfs", width=60, anchor="center")
+        messages_scroll = ttk.Scrollbar(gmail_wrap, orient="vertical", command=messages_tree.yview)
+        messages_tree.configure(yscrollcommand=messages_scroll.set)
+        messages_tree.grid(row=1, column=0, sticky="nsew")
+        messages_scroll.grid(row=1, column=1, sticky="ns")
+
+        attachments_tree = ttk.Treeview(
+            gmail_wrap,
+            columns=("filename", "document", "process", "score", "size"),
+            show="headings",
+            height=6,
+        )
+        attachments_tree.heading("filename", text="Adjunto PDF")
+        attachments_tree.heading("document", text="Tipo")
+        attachments_tree.heading("process", text="Proceso sugerido")
+        attachments_tree.heading("score", text="Score")
+        attachments_tree.heading("size", text="Tamano")
+        attachments_tree.column("filename", width=240, anchor="w")
+        attachments_tree.column("document", width=130, anchor="w")
+        attachments_tree.column("process", width=150, anchor="w")
+        attachments_tree.column("score", width=60, anchor="center")
+        attachments_tree.column("size", width=80, anchor="e")
+        attachments_scroll = ttk.Scrollbar(gmail_wrap, orient="vertical", command=attachments_tree.yview)
+        attachments_tree.configure(yscrollcommand=attachments_scroll.set)
+        attachments_tree.grid(row=2, column=0, sticky="nsew", pady=(8, 0))
+        attachments_scroll.grid(row=2, column=1, sticky="ns", pady=(8, 0))
+
+        gmail_state: dict[str, list[dict]] = {"messages": []}
+
+        def _format_size(size_bytes: int) -> str:
+            if size_bytes <= 0:
+                return "-"
+            return f"{round(size_bytes / 1024, 1)} KB"
+
+        def _render_attachments_for_selection(_event=None) -> None:
+            for item_id in attachments_tree.get_children():
+                attachments_tree.delete(item_id)
+            selection = messages_tree.selection()
+            if not selection:
+                return
+            index = messages_tree.index(selection[0])
+            messages = gmail_state.get("messages") or []
+            if index >= len(messages):
+                return
+            row = messages[index]
+            for attachment in list(row.get("attachments") or []):
+                attachments_tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        str(attachment.get("filename") or "-"),
+                        str(attachment.get("document_label") or "-"),
+                        str(attachment.get("process_hint") or "-"),
+                        f"{float(attachment.get('process_score') or 0):.2f}",
+                        _format_size(int(attachment.get("size_bytes") or 0)),
+                    ),
+                )
+
+        messages_tree.bind("<<TreeviewSelect>>", _render_attachments_for_selection)
+
+        def _selected_attachment_payload() -> dict | None:
+            message_selection = messages_tree.selection()
+            attachment_selection = attachments_tree.selection()
+            if not message_selection or not attachment_selection:
+                return None
+            message_index = messages_tree.index(message_selection[0])
+            attachment_index = attachments_tree.index(attachment_selection[0])
+            messages = gmail_state.get("messages") or []
+            if message_index >= len(messages):
+                return None
+            row = messages[message_index]
+            attachments = list(row.get("attachments") or [])
+            if attachment_index >= len(attachments):
+                return None
+            attachment = dict(attachments[attachment_index] or {})
+            message = dict(row.get("message") or {})
+            return {
+                "message_id": str(message.get("message_id") or ""),
+                "attachment_id": str(attachment.get("attachment_id") or ""),
+                "attachment_index": attachment_index,
+                "filename": str(attachment.get("filename") or ""),
+            }
+
+        def _show_attachment_analysis(result: dict) -> None:
+            data = dict(result.get("data") or {})
+            analysis = dict(data.get("analysis") or {})
+            attachment = dict(data.get("attachment") or {})
+            message = dict(data.get("message") or {})
+            suggestion = dict(data.get("suggestion") or {})
+
+            popup = tk.Toplevel(dialog)
+            popup.title("Analisis de PDF")
+            popup.resizable(True, True)
+            popup.transient(dialog)
+            popup.grab_set()
+            self._center_dialog(popup, 760, 620)
+
+            wrap = ttk.Frame(popup, padding=12)
+            wrap.pack(fill=tk.BOTH, expand=True)
+            wrap.columnconfigure(0, weight=1)
+            wrap.rowconfigure(2, weight=1)
+
+            ttk.Label(
+                wrap,
+                text=str(attachment.get("filename") or "PDF"),
+                font=("Arial", 11, "bold"),
+                foreground=COLOR_PURPLE,
+            ).grid(row=0, column=0, sticky="w")
+            ttk.Label(
+                wrap,
+                text=(
+                    f"Remitente: {str(message.get('sender_email') or '-')}   "
+                    f"Asunto: {str(message.get('subject') or '-')}"
+                ),
+                foreground="#555555",
+                wraplength=720,
+                justify="left",
+            ).grid(row=1, column=0, sticky="ew", pady=(2, 10))
+
+            content = ttk.Frame(wrap)
+            content.grid(row=2, column=0, sticky="nsew")
+            content.columnconfigure(0, weight=1)
+            content.columnconfigure(1, weight=1)
+            content.rowconfigure(1, weight=1)
+
+            details = ttk.LabelFrame(content, text="Datos extraidos", padding=(10, 8))
+            details.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+            details.columnconfigure(0, weight=1)
+            details.columnconfigure(1, weight=1)
+
+            detail_rows = [
+                ("Empresa", str(analysis.get("nombre_empresa") or "-")),
+                ("NIT", str(analysis.get("nit_empresa") or "-")),
+                ("Fecha servicio", str(analysis.get("fecha_servicio") or "-")),
+                ("Profesional detectado", str(analysis.get("nombre_profesional") or "-")),
+                ("Profesional remitente", str(analysis.get("matched_professional_sender") or "-")),
+                ("Modalidad", str(analysis.get("modalidad_servicio") or "-")),
+                ("Tipo documento", str(analysis.get("document_label") or "-")),
+                ("Candidato ODS", "Si" if bool(analysis.get("is_ods_candidate")) else "No"),
+                ("Proceso sugerido", str(analysis.get("process_hint") or "-")),
+                ("Score proceso", f"{float(analysis.get('process_score') or 0):.2f}"),
+            ]
+            for idx, (label, value) in enumerate(detail_rows):
+                col = idx % 2
+                row_idx = idx // 2
+                cell = ttk.Frame(details)
+                cell.grid(row=row_idx, column=col, sticky="ew", padx=(0, 10), pady=3)
+                ttk.Label(cell, text=label, foreground="#666666").pack(anchor="w")
+                ttk.Label(cell, text=value, font=("Arial", 10, "bold")).pack(anchor="w")
+
+            suggestion_wrap = ttk.LabelFrame(content, text="Sugerencia preliminar ODS", padding=(10, 8))
+            suggestion_wrap.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+            suggestion_wrap.columnconfigure(0, weight=1)
+            suggestion_wrap.columnconfigure(1, weight=1)
+
+            suggestion_rows = [
+                ("Codigo sugerido", str(suggestion.get("codigo_servicio") or "-")),
+                ("Referencia", str(suggestion.get("referencia_servicio") or "-")),
+                ("Confianza", str(suggestion.get("confidence") or "-").upper()),
+                ("Modalidad sugerida", str(suggestion.get("modalidad_servicio") or "-")),
+                ("Descripcion", str(suggestion.get("descripcion_servicio") or "-")),
+                ("Valor base", str(suggestion.get("valor_base") or "-")),
+                ("Observaciones", str(suggestion.get("observaciones") or "-")),
+            ]
+            for idx, (label, value) in enumerate(suggestion_rows):
+                col = idx % 2
+                row_idx = idx // 2
+                cell = ttk.Frame(suggestion_wrap)
+                cell.grid(row=row_idx, column=col, sticky="ew", padx=(0, 10), pady=3)
+                ttk.Label(cell, text=label, foreground="#666666").pack(anchor="w")
+                ttk.Label(cell, text=value, font=("Arial", 10, "bold"), wraplength=320, justify="left").pack(anchor="w")
+
+            parts_wrap = ttk.LabelFrame(content, text="Participantes detectados", padding=(8, 8))
+            parts_wrap.grid(row=2, column=0, sticky="nsew", padx=(0, 6))
+            parts_wrap.columnconfigure(0, weight=1)
+            parts_wrap.rowconfigure(0, weight=1)
+
+            participants_tree = ttk.Treeview(
+                parts_wrap,
+                columns=("nombre", "cedula", "discapacidad"),
+                show="headings",
+                height=10,
+            )
+            participants_tree.heading("nombre", text="Nombre")
+            participants_tree.heading("cedula", text="Cedula")
+            participants_tree.heading("discapacidad", text="Discapacidad")
+            participants_tree.column("nombre", width=230, anchor="w")
+            participants_tree.column("cedula", width=120, anchor="w")
+            participants_tree.column("discapacidad", width=120, anchor="w")
+            participants_scroll = ttk.Scrollbar(parts_wrap, orient="vertical", command=participants_tree.yview)
+            participants_tree.configure(yscrollcommand=participants_scroll.set)
+            participants_tree.grid(row=0, column=0, sticky="nsew")
+            participants_scroll.grid(row=0, column=1, sticky="ns")
+
+            participants = list(analysis.get("participantes") or [])
+            if participants:
+                for item in participants:
+                    participants_tree.insert(
+                        "",
+                        "end",
+                        values=(
+                            str(item.get("nombre_usuario") or "-"),
+                            str(item.get("cedula_usuario") or "-"),
+                            str(item.get("discapacidad_usuario") or "-"),
+                        ),
+                    )
+            else:
+                participants_tree.insert("", "end", values=("Sin participantes detectados", "-", "-"))
+
+            warnings_wrap = ttk.LabelFrame(content, text="Avisos", padding=(8, 8))
+            warnings_wrap.grid(row=2, column=1, sticky="nsew", padx=(6, 0))
+            warnings_wrap.columnconfigure(0, weight=1)
+            warnings_wrap.rowconfigure(0, weight=1)
+
+            warnings_text = tk.Text(warnings_wrap, height=10, wrap="word")
+            warnings_text.grid(row=0, column=0, sticky="nsew")
+            warnings_scroll = ttk.Scrollbar(warnings_wrap, orient="vertical", command=warnings_text.yview)
+            warnings_text.configure(yscrollcommand=warnings_scroll.set)
+            warnings_scroll.grid(row=0, column=1, sticky="ns")
+            warning_lines = list(analysis.get("warnings") or [])
+            classification_reason = str(analysis.get("classification_reason") or "").strip()
+            if classification_reason:
+                warning_lines.insert(0, f"Clasificacion: {classification_reason}")
+            rationale_lines = list(suggestion.get("rationale") or [])
+            if rationale_lines:
+                warning_lines.extend([f"Regla: {line}" for line in rationale_lines])
+            if not warning_lines:
+                warning_lines = ["Sin avisos."]
+            warnings_text.insert("1.0", "\n".join(f"- {line}" for line in warning_lines))
+            warnings_text.configure(state="disabled")
+
+            btns_popup = ttk.Frame(wrap)
+            btns_popup.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+            tk.Button(
+                btns_popup,
+                text="Cerrar",
+                command=popup.destroy,
+                bg=COLOR_PURPLE,
+                fg="white",
+                padx=12,
+                pady=4,
+            ).pack(side=tk.RIGHT)
+
+        def _analyze_selected_attachment() -> None:
+            payload = _selected_attachment_payload()
+            if payload is None:
+                messagebox.showwarning("Aaron TEST", "Selecciona un PDF de la bandeja para analizar.")
+                return
+
+            loading = LoadingDialog(dialog, "Analizando PDF...", determinate=True)
+            gmail_status_var.set("Descargando y analizando PDF seleccionado...")
+
+            def _worker() -> dict:
+                return self.api.post("/wizard/automation-test/analyze-attachment", payload)
+
+            def _on_success(result: dict) -> None:
+                loading.close()
+                if dialog.winfo_exists():
+                    gmail_status_var.set("Analisis PDF completado.")
+                _show_attachment_analysis(result)
+
+            def _on_error(exc: Exception) -> None:
+                loading.close()
+                if dialog.winfo_exists():
+                    gmail_status_var.set("Error analizando PDF seleccionado.")
+                self._report_error("No se pudo analizar el PDF seleccionado", exc, title="Aaron TEST")
+
+            self._run_background_task(
+                _worker,
+                _on_success,
+                _on_error,
+                timeout_sec=120,
+                timeout_message="El analisis del PDF excedio el tiempo esperado.",
+                poll_ms=200,
+                operation_name=None,
+                disable_main_actions=False,
+            )
+
+        def _load_gmail_preview() -> None:
+            loading = LoadingDialog(dialog, "Leyendo Gmail...", determinate=True)
+            gmail_status_var.set("Consultando Gmail delegado...")
+
+            def _worker() -> dict:
+                return self.api.get("/wizard/automation-test/gmail-preview", params={"limit": 20})
+
+            def _on_success(result: dict) -> None:
+                loading.close()
+                if not dialog.winfo_exists():
+                    return
+                preview = dict(result.get("data") or {})
+                gmail_state["messages"] = list(preview.get("messages") or [])
+                for item_id in messages_tree.get_children():
+                    messages_tree.delete(item_id)
+                for item_id in attachments_tree.get_children():
+                    attachments_tree.delete(item_id)
+                for row in gmail_state["messages"]:
+                    message = dict(row.get("message") or {})
+                    sender_label = str(message.get("sender_email") or message.get("sender") or "-")
+                    professional_label = str(row.get("matched_professional") or "No match")
+                    attachments = list(row.get("attachments") or [])
+                    ods_candidates = len([item for item in attachments if item.get("is_ods_candidate")])
+                    messages_tree.insert(
+                        "",
+                        "end",
+                        values=(
+                            sender_label,
+                            professional_label,
+                            str(message.get("subject") or "-"),
+                            str(message.get("received_at") or "-"),
+                            f"{ods_candidates}/{len(attachments)}",
+                        ),
+                    )
+                if messages_tree.get_children():
+                    first = messages_tree.get_children()[0]
+                    messages_tree.selection_set(first)
+                    messages_tree.focus(first)
+                    _render_attachments_for_selection()
+                gmail_status_var.set(
+                    "Delegado: "
+                    f"{str(preview.get('delegated_user') or '-')}"
+                    f" | Correos: {int(preview.get('message_count') or 0)}"
+                    f" | PDFs: {int(preview.get('pdf_count') or 0)}"
+                    f" | Remitentes validos: {int(preview.get('matched_sender_count') or 0)}"
+                )
+                summary_var.set(
+                    "Gmail: "
+                    f"{int(preview.get('message_count') or 0)} correos, "
+                    f"{int(preview.get('pdf_count') or 0)} PDFs, "
+                    f"{int(preview.get('ods_candidate_count') or 0)} candidatos ODS, "
+                    f"{int(preview.get('process_template_count') or 0)} templates detectados"
+                )
+
+            def _on_error(exc: Exception) -> None:
+                loading.close()
+                if dialog.winfo_exists():
+                    gmail_status_var.set("Error leyendo Gmail delegado.")
+                self._report_error("No se pudo leer Gmail delegado", exc, title="Aaron TEST")
+
+            self._run_background_task(
+                _worker,
+                _on_success,
+                _on_error,
+                timeout_sec=90,
+                timeout_message="La lectura de Gmail excedio el tiempo esperado.",
+                poll_ms=200,
+                operation_name=None,
+                disable_main_actions=False,
+            )
+
+        tk.Button(
+            gmail_toolbar,
+            text="Leer Gmail",
+            command=_load_gmail_preview,
+            bg="#2E86C1",
+            fg="white",
+            padx=10,
+            pady=3,
+        ).grid(row=0, column=1, sticky="e")
+        tk.Button(
+            gmail_toolbar,
+            text="Analizar PDF",
+            command=_analyze_selected_attachment,
+            bg="#117A65",
+            fg="white",
+            padx=10,
+            pady=3,
+        ).grid(row=0, column=2, sticky="e", padx=(6, 0))
+
+        next_steps = list(data.get("next_steps") or [])
+        if next_steps:
+            next_wrap = ttk.LabelFrame(container, text="Proximos pasos", padding=(10, 8))
+            next_wrap.grid(row=4, column=0, sticky="ew", pady=(0, 12))
+            for item in next_steps:
+                ttk.Label(
+                    next_wrap,
+                    text=f"{str(item.get('title') or '-')}  {str(item.get('detail') or '')}",
+                    wraplength=620,
+                    justify="left",
+                ).pack(anchor="w", pady=2)
+
+        btns = ttk.Frame(container)
+        btns.grid(row=5, column=0, sticky="ew")
+        tk.Button(
+            btns,
+            text="Cerrar",
+            command=dialog.destroy,
+            bg=COLOR_PURPLE,
+            fg="white",
+            padx=12,
+            pady=4,
+        ).pack(side=tk.RIGHT)
+
     def show_initial_screen(self) -> None:
         for child in self.main_frame.winfo_children():
             child.destroy()
@@ -2670,6 +3226,19 @@ class WizardApp:
             pady=2 if self._is_small_screen else 3,
         )
         self._actas_alert_button.pack(side=tk.LEFT)
+        self._aaron_test_button = None
+        if self._should_show_aaron_test_button():
+            self._aaron_test_button = tk.Button(
+                actions_right,
+                text="Aaron TEST",
+                command=self._open_aaron_test_panel,
+                bg="#566573",
+                fg="white",
+                font=("Arial", self._scaled_font(8, 8), "bold"),
+                padx=6,
+                pady=1,
+            )
+            self._aaron_test_button.pack(side=tk.LEFT, padx=(6, 0))
 
         startup_status = ttk.Frame(button_col)
         startup_status.pack(fill=tk.X, pady=(0, max(4, int(6 * self._ui_scale))))
@@ -2759,6 +3328,8 @@ class WizardApp:
             refresh_cache_btn,
             update_supabase_btn,
         ]
+        if self._aaron_test_button is not None:
+            self._main_action_buttons.append(self._aaron_test_button)
         if self._initial_data_loading:
             self._set_main_actions_enabled(False)
         elif not self._initial_data_ready:

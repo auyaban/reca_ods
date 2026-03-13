@@ -11,13 +11,18 @@ from app.config import get_settings
 from app.utils.cache import ttl_bucket
 
 _CLIENT_CACHE_TTL_SECONDS = 300
-_SCOPES = (
+_SHEETS_DRIVE_SCOPES = (
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 )
+_GMAIL_READONLY_SCOPES = (
+    "https://www.googleapis.com/auth/gmail.readonly",
+)
 _SPREADSHEET_ID_RE = re.compile(r"/spreadsheets/d/([a-zA-Z0-9-_]+)")
+_GOOGLE_DOC_FILE_ID_RE = re.compile(r"https?://docs\.google\.com/(?:spreadsheets|document|presentation|forms)/d/([a-zA-Z0-9-_]+)", re.IGNORECASE)
 _DRIVE_FILE_ID_RE = re.compile(r"/file/d/([a-zA-Z0-9-_]+)|[?&]id=([a-zA-Z0-9-_]+)")
 _GOOGLE_FILE_FIELDS = "files(id,name,mimeType,parents,driveId),nextPageToken"
+_GOOGLE_SPREADSHEET_MIME = "application/vnd.google-apps.spreadsheet"
 
 
 def extract_spreadsheet_id(value: str) -> str:
@@ -39,7 +44,23 @@ def extract_drive_file_id(value: str) -> str:
     match = _DRIVE_FILE_ID_RE.search(text)
     if match:
         return match.group(1) or match.group(2) or ""
+    match = _GOOGLE_DOC_FILE_ID_RE.search(text)
+    if match:
+        return match.group(1)
     return text
+
+
+def normalize_google_file_open_url(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise RuntimeError("Debe indicar una URL o file_id de Google Drive.")
+
+    file_id = extract_drive_file_id(text)
+    metadata = get_drive_file_metadata(file_id)
+    mime_type = str(metadata.get("mimeType") or "").strip().lower()
+    if mime_type == _GOOGLE_SPREADSHEET_MIME:
+        return f"https://docs.google.com/spreadsheets/d/{file_id}/edit"
+    return f"https://drive.google.com/file/d/{file_id}/view"
 
 
 def _credentials_path() -> Path:
@@ -57,6 +78,8 @@ def _credentials_path() -> Path:
 @lru_cache
 def _get_google_credentials_cached(
     credential_path: str,
+    scopes_key: tuple[str, ...],
+    delegated_subject: str,
     _ttl_bucket: int,
 ):
     try:
@@ -66,7 +89,10 @@ def _get_google_credentials_cached(
             "Faltan dependencias de Google Sheets/Drive. Instala requirements.txt."
         ) from exc
 
-    return Credentials.from_service_account_file(credential_path, scopes=_SCOPES)
+    credentials = Credentials.from_service_account_file(credential_path, scopes=scopes_key)
+    if delegated_subject:
+        credentials = credentials.with_subject(delegated_subject)
+    return credentials
 
 
 @lru_cache
@@ -74,6 +100,8 @@ def _get_google_service_cached(
     api_name: str,
     api_version: str,
     credential_path: str,
+    scopes_key: tuple[str, ...],
+    delegated_subject: str,
     _ttl_bucket: int,
 ):
     try:
@@ -83,7 +111,7 @@ def _get_google_service_cached(
             "Faltan dependencias de Google Sheets/Drive. Instala requirements.txt."
         ) from exc
 
-    credentials = _get_google_credentials_cached(credential_path, _ttl_bucket)
+    credentials = _get_google_credentials_cached(credential_path, scopes_key, delegated_subject, _ttl_bucket)
     return build(api_name, api_version, credentials=credentials, cache_discovery=False)
 
 
@@ -92,16 +120,26 @@ def clear_google_sheets_service_cache() -> None:
     _get_google_service_cached.cache_clear()
 
 
-def get_google_sheets_service():
+def _get_google_service(api_name: str, api_version: str, *, scopes: tuple[str, ...], delegated_subject: str = ""):
     path = _credentials_path()
     bucket = ttl_bucket(_CLIENT_CACHE_TTL_SECONDS)
-    return _get_google_service_cached("sheets", "v4", str(path), bucket)
+    return _get_google_service_cached(api_name, api_version, str(path), tuple(scopes), delegated_subject.strip(), bucket)
+
+
+def get_google_sheets_service():
+    return _get_google_service("sheets", "v4", scopes=_SHEETS_DRIVE_SCOPES)
 
 
 def get_google_drive_service():
-    path = _credentials_path()
-    bucket = ttl_bucket(_CLIENT_CACHE_TTL_SECONDS)
-    return _get_google_service_cached("drive", "v3", str(path), bucket)
+    return _get_google_service("drive", "v3", scopes=_SHEETS_DRIVE_SCOPES)
+
+
+def get_google_gmail_service(*, delegated_subject: str | None = None):
+    settings = get_settings()
+    subject = str(delegated_subject or settings.google_gmail_delegated_user or "").strip()
+    if not subject:
+        raise RuntimeError("Falta GOOGLE_GMAIL_DELEGATED_USER para acceder a Gmail con service account.")
+    return _get_google_service("gmail", "v1", scopes=_GMAIL_READONLY_SCOPES, delegated_subject=subject)
 
 
 def get_default_spreadsheet_id() -> str:

@@ -1,3 +1,8 @@
+from app.automation import (
+    get_automation_attachment_analysis as _get_automation_attachment_analysis,
+    get_automation_gmail_preview as _get_automation_gmail_preview,
+    get_automation_test_status as _get_automation_test_status,
+)
 from app.services.sections import (
     actas_finalizadas,
     google_drive,
@@ -146,6 +151,19 @@ def estado_actas_finalizadas() -> dict:
 def actualizar_acta_revisado(payload: dict) -> dict:
     req = actas_finalizadas.ActaRevisadoRequest(**payload)
     return actas_finalizadas.actualizar_revisado(req)
+
+
+def get_automation_test_status() -> dict:
+    return _get_automation_test_status()
+
+
+def get_automation_gmail_preview(limit: int | None = None) -> dict:
+    return _get_automation_gmail_preview(limit=limit)
+
+
+def get_automation_attachment_analysis(payload: dict) -> dict:
+    return _get_automation_attachment_analysis(payload)
+
 
 def reset_runtime_caches() -> None:
     clear_settings_cache(reload_env=True)

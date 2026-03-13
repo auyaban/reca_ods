@@ -383,6 +383,54 @@ def _extract_pdf_value(text: str, pattern: str) -> str:
     return _clean_text(match.group(1))
 
 
+def _extract_pdf_general_fields(first_page: str) -> tuple[str, str, str]:
+    empresa = _extract_pdf_value(
+        first_page,
+        r"nombre de la empresa:\s*(.+?)(?:ciudad/municipio:|direccion de la empresa:|numero de nit:)",
+    )
+    fecha_servicio = _to_iso_date(
+        _extract_pdf_value(first_page, r"fecha de la visita:\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})")
+    )
+    modalidad = _extract_pdf_value(
+        first_page,
+        r"modalidad:\s*(.+?)(?:nombre de la empresa:|ciudad/municipio:|direccion de la empresa:)",
+    ).rstrip(".")
+
+    if empresa and fecha_servicio and modalidad:
+        return empresa, fecha_servicio, modalidad
+
+    lines = [_clean_text(line) for line in first_page.splitlines() if _clean_text(line)]
+    for idx, line in enumerate(lines):
+        normalized = normalize_text(line)
+        if "modalidad:" not in normalized:
+            continue
+
+        if not fecha_servicio:
+            date_match = re.search(r"(?P<fecha>[0-9]{1,2}/[0-9]{1,2}/[0-9]{4})\s+modalidad:", line, re.IGNORECASE)
+            if date_match:
+                fecha_servicio = _to_iso_date(date_match.group("fecha"))
+
+        if not modalidad:
+            modalidad_match = re.search(r"modalidad:\s*(?P<modalidad>.+)$", line, re.IGNORECASE)
+            if modalidad_match:
+                modalidad = _clean_text(modalidad_match.group("modalidad")).rstrip(".")
+
+        if not empresa and idx + 1 < len(lines):
+            next_line = lines[idx + 1]
+            if "ciudad/municipio:" in normalize_text(next_line):
+                empresa = _clean_text(re.split(r"(?i)ciudad/municipio:", next_line, maxsplit=1)[0])
+
+    if not empresa:
+        for idx, line in enumerate(lines):
+            if normalize_text(line).startswith("fecha de la visita:") and idx > 0:
+                previous_line = lines[idx - 1]
+                if "ciudad/municipio:" in normalize_text(previous_line):
+                    empresa = _clean_text(re.split(r"(?i)ciudad/municipio:", previous_line, maxsplit=1)[0])
+                    break
+
+    return empresa, fecha_servicio, modalidad
+
+
 def _split_joined_cedula_percentage(raw_token: str) -> tuple[str, str]:
     match = re.search(r"(?P<digits>\d+)\.(?P<dec>\d{2})%", raw_token)
     if not match:
@@ -458,14 +506,19 @@ def _extract_pdf_participants(text: str) -> list[dict[str, str]]:
 
 def _extract_pdf_asistentes_candidates(text: str) -> list[str]:
     candidates: list[str] = []
-    for match in re.finditer(
-        r"nombre completo:\s*(.+?)(?=cargo:|nombre completo:|tiene un c[oó]digo de vestimenta|la presente acta|$)",
-        text,
-        re.IGNORECASE,
-    ):
-        candidate = _clean_name(match.group(1))
-        if candidate and _is_person_candidate(candidate) and candidate not in candidates:
-            candidates.append(candidate)
+    start_match = re.search(r"\b\d+\.\s*asistentes\b", text, re.IGNORECASE)
+    asistentes_text = text[start_match.start() :] if start_match else text
+    asistentes_text = re.sub(r"(?i)(?<!\n)(nombre completo:)", r"\n\1", asistentes_text)
+
+    for raw_line in asistentes_text.splitlines():
+        line = raw_line.strip()
+        if not line or "nombre completo:" not in line.lower():
+            continue
+        for chunk in re.split(r"(?i)nombre completo:\s*", line):
+            candidate = re.split(r"(?i)\bcargo:\s*", chunk, maxsplit=1)[0]
+            candidate = _clean_name(candidate)
+            if candidate and _is_person_candidate(candidate) and candidate not in candidates:
+                candidates.append(candidate)
     return candidates
 
 
@@ -551,15 +604,7 @@ def parse_acta_pdf(file_path: str) -> dict:
     first_page = pages[0] if pages else ""
 
     nit = _clean_nit(_extract_pdf_value(first_page, r"n[uú]mero de nit:\s*([0-9.\- ]+)"))
-    empresa = _extract_pdf_value(
-        first_page,
-        r"nombre de la empresa:\s*(.+?)(?:ciudad/municipio:|direccion de la empresa:|numero de nit:)",
-    )
-    fecha_servicio = _to_iso_date(_extract_pdf_value(first_page, r"fecha de la visita:\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})"))
-    modalidad = _extract_pdf_value(
-        first_page,
-        r"modalidad:\s*(.+?)(?:nombre de la empresa:|ciudad/municipio:|direccion de la empresa:)",
-    ).rstrip(".")
+    empresa, fecha_servicio, modalidad = _extract_pdf_general_fields(first_page)
     asistentes_candidates = _extract_pdf_asistentes_candidates(full_text)
     asesor = _extract_pdf_value(first_page, r"asesor:\s*(.+?)(?:sede compensar:|correo electr[oó]nico:|$)")
     profesional = asistentes_candidates[0] if asistentes_candidates else asesor
@@ -613,6 +658,40 @@ def _normalize_source_type_label(source_type: str, parsed: dict, source_text: st
     return parsed
 
 
+def _parse_google_remote_source(source_text: str) -> dict:
+    file_id = extract_drive_file_id(source_text)
+    metadata = get_drive_file_metadata(file_id)
+    mime_type = str(metadata.get("mimeType") or "").strip().lower()
+    name = str(metadata.get("name") or "acta").strip()
+    suffix = Path(name).suffix.lower()
+    temp_path: Path | None = None
+    try:
+        if mime_type == _GOOGLE_SPREADSHEET_MIME:
+            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
+                temp_path = Path(tmp.name)
+            export_spreadsheet_to_excel(file_id, temp_path)
+            parsed = parse_acta_excel(str(temp_path))
+            return _normalize_source_type_label("google_sheets", parsed, source_text)
+
+        if suffix not in (_EXCEL_EXTENSIONS | _PDF_EXTENSIONS):
+            raise RuntimeError(
+                "El archivo de Drive no es un Google Sheet, un Excel compatible (.xlsx/.xlsm) ni un PDF compatible."
+            )
+
+        with tempfile.NamedTemporaryFile(suffix=suffix or ".xlsx", delete=False) as tmp:
+            temp_path = Path(tmp.name)
+        download_drive_file(file_id, temp_path)
+        parser = parse_acta_pdf if suffix in _PDF_EXTENSIONS or mime_type == "application/pdf" else parse_acta_excel
+        parsed = parser(str(temp_path))
+        return _normalize_source_type_label("google_drive_file", parsed, source_text)
+    finally:
+        if temp_path and temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+
+
 def parse_acta_source(source: str) -> dict:
     source_text = str(source or "").strip()
     if not source_text:
@@ -622,46 +701,8 @@ def parse_acta_source(source: str) -> dict:
     if local_path.exists():
         return _parse_local_source(local_path)
 
-    temp_path: Path | None = None
-    try:
-        if _is_google_spreadsheet_reference(source_text):
-            with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
-                temp_path = Path(tmp.name)
-            export_spreadsheet_to_excel(source_text, temp_path)
-            parsed = parse_acta_excel(str(temp_path))
-            return _normalize_source_type_label("google_sheets", parsed, source_text)
-
-        if _is_google_drive_reference(source_text):
-            file_id = extract_drive_file_id(source_text)
-            metadata = get_drive_file_metadata(file_id)
-            mime_type = str(metadata.get("mimeType") or "").strip().lower()
-            name = str(metadata.get("name") or "acta").strip()
-            suffix = Path(name).suffix.lower()
-
-            if mime_type == _GOOGLE_SPREADSHEET_MIME:
-                with tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False) as tmp:
-                    temp_path = Path(tmp.name)
-                export_spreadsheet_to_excel(file_id, temp_path)
-                parsed = parse_acta_excel(str(temp_path))
-                return _normalize_source_type_label("google_sheets", parsed, source_text)
-
-            if suffix not in (_EXCEL_EXTENSIONS | _PDF_EXTENSIONS):
-                raise RuntimeError(
-                    "El archivo de Drive no es un Google Sheet, un Excel compatible (.xlsx/.xlsm) ni un PDF compatible."
-                )
-
-            with tempfile.NamedTemporaryFile(suffix=suffix or ".xlsx", delete=False) as tmp:
-                temp_path = Path(tmp.name)
-            download_drive_file(file_id, temp_path)
-            parser = parse_acta_pdf if suffix in _PDF_EXTENSIONS or mime_type == "application/pdf" else parse_acta_excel
-            parsed = parser(str(temp_path))
-            return _normalize_source_type_label("google_drive_file", parsed, source_text)
-    finally:
-        if temp_path and temp_path.exists():
-            try:
-                temp_path.unlink()
-            except OSError:
-                pass
+    if _is_google_spreadsheet_reference(source_text) or _is_google_drive_reference(source_text):
+        return _parse_google_remote_source(source_text)
 
     raise RuntimeError(
         "No se pudo resolver el acta. Usa un archivo Excel/PDF local o una URL valida de Google Drive/Sheets."

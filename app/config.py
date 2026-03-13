@@ -95,6 +95,27 @@ def _env_or_default(key: str, default: str) -> str:
     return clean
 
 
+def _env_bool(key: str, default: bool = False) -> bool:
+    raw = os.getenv(key)
+    if raw is None:
+        return default
+    clean = _clean_env(raw).lower()
+    if clean == "":
+        return default
+    return clean in {"1", "true", "t", "yes", "y", "si", "sí", "on"}
+
+
+def _env_csv(key: str) -> tuple[str, ...]:
+    raw = os.getenv(key)
+    if raw is None:
+        return ()
+    clean = _clean_env(raw)
+    if not clean:
+        return ()
+    values = [item.strip() for item in clean.split(",")]
+    return _unique_ordered([item for item in values if item])
+
+
 def _unique_ordered(values: list[str]) -> tuple[str, ...]:
     seen: set[str] = set()
     ordered: list[str] = []
@@ -137,6 +158,18 @@ class Settings:
         )
         self.google_drive_template_spreadsheet_name = _clean_env(
             os.getenv("GOOGLE_DRIVE_TEMPLATE_SPREADSHEET_NAME", "")
+        )
+        self.google_gmail_delegated_user = _clean_env(
+            os.getenv("GOOGLE_GMAIL_DELEGATED_USER", "")
+        )
+        self.google_gmail_to_filter = _clean_env(
+            os.getenv("GOOGLE_GMAIL_TO_FILTER", "gestiondocumental@recacolombia.org")
+        )
+        self.google_gmail_fetch_limit = int(_clean_env(os.getenv("GOOGLE_GMAIL_FETCH_LIMIT", "20")) or "20")
+        self.ods_automation_test_enabled = _env_bool("ODS_AUTOMATION_TEST_ENABLED", False)
+        self.ods_automation_test_users = _env_csv("ODS_AUTOMATION_TEST_USERS")
+        self.automation_process_templates_dir = _clean_env(
+            os.getenv("AUTOMATION_PROCESS_TEMPLATES_DIR", "")
         )
 
 

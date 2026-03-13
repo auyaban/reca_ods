@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.2.3
+- Se agrega `Aaron TEST`, un acceso controlado por `username` y flags para probar automatizacion sin exponer funciones nuevas al resto de usuarios.
+- Nuevo flujo de lectura `read-only` de Gmail con service account delegada: lista correos candidatos, PDFs y cruza remitentes contra `profesionales`.
+- Clasificacion preliminar de documentos y motor de reglas para sugerir `codigo_servicio`, observaciones y confianza en procesos de inclusion laboral.
+- Correccion del importador PDF productivo para actas donde `fecha`, `modalidad` y `empresa` aparecen antes de sus etiquetas, evitando fallos al importar ciertos formatos de reactivacion.
+- Cobertura de pruebas ampliada para Gmail, catalogo de procesos, clasificacion, reglas de negocio, Google file URLs e importacion PDF.
+
 ## 2.2.1
 - Hotfix de arranque: la app ahora acepta archivos `.env` en ANSI/Windows-1252 y los normaliza a UTF-8 automaticamente.
 - Se elimina la dependencia de `python-dotenv` en el arranque para evitar fallos de decodificacion al importar configuracion.
