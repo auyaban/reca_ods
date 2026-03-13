@@ -222,6 +222,31 @@ class ActaImportTests(unittest.TestCase):
         )
 
 
+    def test_extract_pdf_participants_reads_inline_oferente_section_without_decimal_percentage(self) -> None:
+        text = (
+            "Sede Compensar:Mosquera2. DATOS DEL OFERENTE"
+            "CITADO A ENTREVISTA CERTIFICADOTELÃ‰FONORESULTADO: No NOMBRE OFERENTECÃ‰DULA % DISCAPACIDAD"
+            "1 Juan Camilo Villa Hernadez 107352067650%Discapacidad auditiva hipoacusia3176819904No aprobado"
+            "CARGOCONTACTO DE EMERGENCIAPARENTESCOTELÃ‰FONO FECHA DE NACIMIENTOEDAD"
+            "Auxiliar operativo Maria victoriaAmiga 312546789 12 /11/1996 30 aÃ±os\n"
+            "Â¿Pendiente otros oferentes para entrevista?Ninguno\n"
+            "3. DESARROLLO DE LA ACTIVIDAD"
+        )
+
+        participants = _extract_pdf_participants(text)
+
+        self.assertEqual(
+            participants,
+            [
+                {
+                    "nombre_usuario": "Juan Camilo Villa Hernadez",
+                    "cedula_usuario": "1073520676",
+                    "discapacidad_usuario": "auditiva hipoacusia",
+                    "genero_usuario": "",
+                }
+            ],
+        )
+
     def test_extract_pdf_asistentes_candidates_prefers_nombre_completo_order(self) -> None:
         text = (
             "3. Asistentes\n"

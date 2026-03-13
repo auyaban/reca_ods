@@ -431,8 +431,18 @@ def _extract_pdf_general_fields(first_page: str) -> tuple[str, str, str]:
     return empresa, fecha_servicio, modalidad
 
 
+def _extract_pdf_oferentes_section(text: str) -> str:
+    match = re.search(
+        r"(?is)(?<!\d)2\.\s*datos del oferente(?P<section>.*?)(?=(?<!\d)3\.\s*\S)",
+        text,
+    )
+    if not match:
+        return text
+    return _clean_text(match.group("section"))
+
+
 def _split_joined_cedula_percentage(raw_token: str) -> tuple[str, str]:
-    match = re.search(r"(?P<digits>\d+)\.(?P<dec>\d{2})%", raw_token)
+    match = re.search(r"(?P<digits>\d+)(?:\.(?P<dec>\d{2}))?%", raw_token)
     if not match:
         return "", ""
 
@@ -456,7 +466,7 @@ def _split_joined_cedula_percentage(raw_token: str) -> tuple[str, str]:
             score += 2
         if percentage_value > 0:
             score += 1
-        percentage = f"{percentage_value}.{decimals}%"
+        percentage = f"{percentage_value}.{decimals}%" if decimals is not None else f"{percentage_value}%"
         candidates.append((score, len(cedula), cedula, percentage))
 
     if not candidates:
@@ -468,13 +478,15 @@ def _split_joined_cedula_percentage(raw_token: str) -> tuple[str, str]:
 
 def _extract_pdf_participants(text: str) -> list[dict[str, str]]:
     participants: list[dict[str, str]] = []
-    for match in _PDF_BLOCK_RE.finditer(text):
+    search_text = _extract_pdf_oferentes_section(text)
+
+    for match in _PDF_BLOCK_RE.finditer(search_text):
         body = _clean_text(match.group("body"))
         if "discapacidad" not in normalize_text(body):
             continue
         first_line = body.split(" Agente de ", 1)[0]
         first_match = re.search(
-            r"^(?P<nombre>.+?)(?P<token>\d{7,13}\.\d{2}%)(?:\s*)Discapacidad\s+(?P<tail>.+)$",
+            r"^(?P<nombre>.+?)(?P<token>\d{7,13}(?:\.\d{2})?%)(?:\s*)Discapacidad\s+(?P<tail>.+)$",
             first_line,
             re.IGNORECASE,
         )
@@ -488,7 +500,39 @@ def _extract_pdf_participants(text: str) -> list[dict[str, str]]:
 
         tail = _clean_text(first_match.group("tail"))
         tail_match = re.search(
-            r"^(?P<discapacidad>[A-Za-zÁÉÍÓÚÑáéíóúñ ]+?)(?P<telefono>\d[\d ]{6,15})(?P<resultado>Pendiente|Aprobado|No aprobado)",
+            r"^(?P<discapacidad>[^0-9]+?)(?P<telefono>\d[\d ]{6,15})(?P<resultado>Pendiente|Aprobado|No aprobado)",
+            tail,
+            re.IGNORECASE,
+        )
+        discapacidad = _clean_text(tail_match.group("discapacidad")) if tail_match else ""
+        participants.append(
+            {
+                "nombre_usuario": nombre,
+                "cedula_usuario": cedula,
+                "discapacidad_usuario": discapacidad,
+                "genero_usuario": "",
+            }
+        )
+
+    if participants:
+        return _dedupe_participants(participants)
+
+    inline_pattern = re.compile(
+        r"(?is)(?<!\d)(?P<idx>[1-9])\s+"
+        r"(?P<nombre>.+?)"
+        r"(?P<token>\d{7,13}(?:\.\d{2})?%)"
+        r"(?:\s*)Discapacidad\s+"
+        r"(?P<tail>.*?)(?=(?:(?<!\d)[1-9]\s+\S)|(?:(?<!\d)[3-9]\.\s*\S)|\Z)"
+    )
+    for match in inline_pattern.finditer(search_text):
+        nombre = _clean_name(match.group("nombre"))
+        cedula, _pct = _split_joined_cedula_percentage(match.group("token"))
+        if not cedula:
+            continue
+
+        tail = _clean_text(match.group("tail"))
+        tail_match = re.search(
+            r"^(?P<discapacidad>[^0-9]+?)(?P<telefono>\d[\d ]{6,15})(?P<resultado>Pendiente|Aprobado|No aprobado)",
             tail,
             re.IGNORECASE,
         )
