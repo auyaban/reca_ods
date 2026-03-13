@@ -383,13 +383,43 @@ def _extract_pdf_value(text: str, pattern: str) -> str:
     return _clean_text(match.group(1))
 
 
+def _extract_pdf_nits(text: str) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for nit in re.findall(r"\b\d{6,12}(?:-\d)?\b", str(text or "")):
+        clean = _clean_nit(nit)
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        result.append(clean)
+    return result
+
+
+def _parse_duration_hours(raw_value: str) -> float | None:
+    text = normalize_text(raw_value or "")
+    if not text:
+        return None
+    match = re.search(r"(\d+(?:[.,]\d+)?)", text)
+    if not match:
+        return None
+    try:
+        amount = float(match.group(1).replace(",", "."))
+    except ValueError:
+        return None
+    if "min" in text:
+        return round(amount / 60.0, 2)
+    if "hora" in text:
+        return round(amount, 2)
+    return round(amount, 2)
+
+
 def _extract_pdf_general_fields(first_page: str) -> tuple[str, str, str]:
     empresa = _extract_pdf_value(
         first_page,
         r"nombre de la empresa:\s*(.+?)(?:ciudad/municipio:|direccion de la empresa:|numero de nit:)",
     )
     fecha_servicio = _to_iso_date(
-        _extract_pdf_value(first_page, r"fecha de la visita:\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})")
+        _extract_pdf_value(first_page, r"fecha de la visita:\s*([0-9]{1,2}[/-][0-9]{1,2}[/-][0-9]{4})")
     )
     modalidad = _extract_pdf_value(
         first_page,
@@ -406,7 +436,11 @@ def _extract_pdf_general_fields(first_page: str) -> tuple[str, str, str]:
             continue
 
         if not fecha_servicio:
-            date_match = re.search(r"(?P<fecha>[0-9]{1,2}/[0-9]{1,2}/[0-9]{4})\s+modalidad:", line, re.IGNORECASE)
+            date_match = re.search(
+                r"(?P<fecha>[0-9]{1,2}[/-][0-9]{1,2}[/-][0-9]{4})\s+modalidad:",
+                line,
+                re.IGNORECASE,
+            )
             if date_match:
                 fecha_servicio = _to_iso_date(date_match.group("fecha"))
 
@@ -442,12 +476,13 @@ def _extract_pdf_oferentes_section(text: str) -> str:
 
 
 def _split_joined_cedula_percentage(raw_token: str) -> tuple[str, str]:
-    match = re.search(r"(?P<digits>\d+)(?:\.(?P<dec>\d{2}))?%", raw_token)
+    match = re.search(r"(?P<digits>\d+)(?:(?P<sep>[.,])(?P<dec>\d{1,2}))?%?", raw_token)
     if not match:
         return "", ""
 
     digits = re.sub(r"\D", "", match.group("digits"))
     decimals = match.group("dec")
+    separator = match.group("sep") or "."
     candidates: list[tuple[int, int, str, str]] = []
     for pct_len in (2, 1, 3):
         if len(digits) <= pct_len:
@@ -466,7 +501,7 @@ def _split_joined_cedula_percentage(raw_token: str) -> tuple[str, str]:
             score += 2
         if percentage_value > 0:
             score += 1
-        percentage = f"{percentage_value}.{decimals}%" if decimals is not None else f"{percentage_value}%"
+        percentage = f"{percentage_value}{separator}{decimals}%" if decimals is not None else f"{percentage_value}%"
         candidates.append((score, len(cedula), cedula, percentage))
 
     if not candidates:
@@ -486,7 +521,7 @@ def _extract_pdf_participants(text: str) -> list[dict[str, str]]:
             continue
         first_line = body.split(" Agente de ", 1)[0]
         first_match = re.search(
-            r"^(?P<nombre>.+?)(?P<token>\d{7,13}(?:\.\d{2})?%)(?:\s*)Discapacidad\s+(?P<tail>.+)$",
+            r"^(?P<nombre>.+?)(?P<token>\d{7,13}(?:[.,]\d{1,2})?%?)(?:\s*)Discapacidad\s+(?P<tail>.+)$",
             first_line,
             re.IGNORECASE,
         )
@@ -494,6 +529,8 @@ def _extract_pdf_participants(text: str) -> list[dict[str, str]]:
             continue
 
         nombre = _clean_name(first_match.group("nombre"))
+        if not nombre or not _is_person_candidate(nombre):
+            continue
         cedula, _pct = _split_joined_cedula_percentage(first_match.group("token"))
         if not cedula:
             continue
@@ -504,6 +541,8 @@ def _extract_pdf_participants(text: str) -> list[dict[str, str]]:
             tail,
             re.IGNORECASE,
         )
+        if not tail_match:
+            continue
         discapacidad = _clean_text(tail_match.group("discapacidad")) if tail_match else ""
         participants.append(
             {
@@ -520,12 +559,14 @@ def _extract_pdf_participants(text: str) -> list[dict[str, str]]:
     inline_pattern = re.compile(
         r"(?is)(?<!\d)(?P<idx>[1-9])\s+"
         r"(?P<nombre>.+?)"
-        r"(?P<token>\d{7,13}(?:\.\d{2})?%)"
+        r"(?P<token>\d{7,13}(?:[.,]\d{1,2})?%?)"
         r"(?:\s*)Discapacidad\s+"
         r"(?P<tail>.*?)(?=(?:(?<!\d)[1-9]\s+\S)|(?:(?<!\d)[3-9]\.\s*\S)|\Z)"
     )
     for match in inline_pattern.finditer(search_text):
         nombre = _clean_name(match.group("nombre"))
+        if not nombre or not _is_person_candidate(nombre):
+            continue
         cedula, _pct = _split_joined_cedula_percentage(match.group("token"))
         if not cedula:
             continue
@@ -536,12 +577,41 @@ def _extract_pdf_participants(text: str) -> list[dict[str, str]]:
             tail,
             re.IGNORECASE,
         )
+        if not tail_match:
+            continue
         discapacidad = _clean_text(tail_match.group("discapacidad")) if tail_match else ""
         participants.append(
             {
                 "nombre_usuario": nombre,
                 "cedula_usuario": cedula,
                 "discapacidad_usuario": discapacidad,
+                "genero_usuario": "",
+            }
+        )
+    if participants:
+        return _dedupe_participants(participants)
+
+    contract_pattern = re.compile(
+        r"(?ims)(?:^|\n)\s*(?P<idx>[1-9])\s+"
+        r"(?P<nombre>.+?)"
+        r"(?P<token>\d{7,13}(?:[.,]\d{1,2})?%?)\s*"
+        r"Discapacidad\s+"
+        r"(?P<discapacidad>[^0-9]+?)"
+        r"(?P<telefono>\d[\d ]{6,15})"
+        r"(?=\s*(?:Masculino|Femenino|Otro)\b)"
+    )
+    for match in contract_pattern.finditer(search_text):
+        nombre = _clean_name(match.group("nombre"))
+        if not nombre or not _is_person_candidate(nombre):
+            continue
+        cedula, _pct = _split_joined_cedula_percentage(match.group("token"))
+        if not cedula:
+            continue
+        participants.append(
+            {
+                "nombre_usuario": nombre,
+                "cedula_usuario": cedula,
+                "discapacidad_usuario": _clean_text(match.group("discapacidad")),
                 "genero_usuario": "",
             }
         )
@@ -564,6 +634,100 @@ def _extract_pdf_asistentes_candidates(text: str) -> list[str]:
             if candidate and _is_person_candidate(candidate) and candidate not in candidates:
                 candidates.append(candidate)
     return candidates
+
+
+def _extract_interpreter_participants(text: str) -> tuple[list[dict[str, str]], str]:
+    normalized_text = str(text or "")
+    section_match = re.search(
+        r"(?is)2\.\s*datos de los oferentes/ vinculados(?P<section>.*?)(?:nombre interprete|3\.)",
+        normalized_text,
+    )
+    section = _clean_text(section_match.group("section")) if section_match else _clean_text(normalized_text)
+    process_name = ""
+    participants: list[dict[str, str]] = []
+    pattern = re.compile(
+        r"(?P<idx>\d+)\s+(?P<nombre>.+?)\s+(?P<cedula>\d{6,12})\s+(?P<proceso>.+?)(?=(?:\s+\d+\s+[A-ZÁÉÍÓÚÑ])|$)",
+        re.IGNORECASE,
+    )
+    for match in pattern.finditer(section):
+        nombre = _clean_name(match.group("nombre"))
+        cedula = _clean_cedula(match.group("cedula"))
+        proceso = _clean_text(match.group("proceso"))
+        if not nombre or not cedula:
+            continue
+        if not process_name and proceso:
+            process_name = proceso
+        participants.append(
+            {
+                "nombre_usuario": nombre,
+                "cedula_usuario": cedula,
+                "discapacidad_usuario": "",
+                "genero_usuario": "",
+            }
+        )
+    return _dedupe_participants(participants), process_name
+
+
+def _parse_interpreter_pdf(first_page: str, full_text: str, path: Path) -> dict:
+    asistentes_candidates = _extract_pdf_asistentes_candidates(full_text)
+    fecha_servicio = _to_iso_date(
+        _extract_pdf_value(
+            full_text,
+            r"1\.\s*datos de la empresa\s*fecha:\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})",
+        )
+    )
+    empresa = _extract_pdf_value(
+        full_text,
+        r"nombre de la empresa:\s*(.+?)(?:direccion:|contacto en la empresa:)",
+    )
+    modalidad = _extract_pdf_value(
+        full_text,
+        r"modalidad servicio:\s*(.+?)(?:interprete:|profesional reca:|2\.)",
+    )
+    profesional = _extract_pdf_value(
+        full_text,
+        r"profesional reca:\s*(.+?)(?:virtual|presencial|3\.)",
+    )
+    participants, process_name = _extract_interpreter_participants(full_text)
+    sumatoria_raw = _extract_pdf_value(
+        full_text,
+        r"sumatoria horas interpretes:\s*(.+?)(?:observaciones:|3\.)",
+    )
+    total_time_raw = _extract_pdf_value(
+        full_text,
+        r"total tiempo:\s*(.+?)(?:si el servicio fue realizado en sabana|sumatoria horas interpretes:)",
+    )
+    horas = _parse_duration_hours(sumatoria_raw) or _parse_duration_hours(total_time_raw)
+    nits = _extract_pdf_nits(full_text)
+
+    warnings: list[str] = []
+    if not empresa:
+        warnings.append("No se detecto nombre de empresa en el PDF.")
+    if not fecha_servicio:
+        warnings.append("No se detecto fecha de servicio en formato valido.")
+    if not participants:
+        warnings.append("No se detectaron oferentes en el PDF.")
+    if horas is None:
+        warnings.append("No se detecto total de horas interprete en el PDF.")
+
+    return {
+        "file_path": str(path),
+        "nit_empresa": nits[0] if nits else "",
+        "nits_empresas": nits,
+        "nombre_empresa": empresa,
+        "fecha_servicio": fecha_servicio,
+        "nombre_profesional": profesional or (asistentes_candidates[1] if len(asistentes_candidates) > 1 else ""),
+        "candidatos_profesional": asistentes_candidates,
+        "modalidad_servicio": modalidad,
+        "participantes": participants,
+        "interpreter_process_name": process_name,
+        "interpreter_total_time_raw": total_time_raw,
+        "sumatoria_horas_interpretes_raw": sumatoria_raw,
+        "total_horas_interprete": horas,
+        "sumatoria_horas_interpretes": horas,
+        "is_fallido": "fallido" in normalize_text(full_text),
+        "warnings": warnings,
+    }
 
 
 def parse_acta_excel(file_path: str) -> dict:
@@ -646,13 +810,22 @@ def parse_acta_pdf(file_path: str) -> dict:
 
     full_text = "\n".join(page for page in pages if page)
     first_page = pages[0] if pages else ""
+    if "interprete" in normalize_text(first_page) and "sumatoria horas interpretes" in normalize_text(full_text):
+        return _parse_interpreter_pdf(first_page, full_text, path)
 
     nit = _clean_nit(_extract_pdf_value(first_page, r"n[uú]mero de nit:\s*([0-9.\- ]+)"))
     empresa, fecha_servicio, modalidad = _extract_pdf_general_fields(first_page)
     asistentes_candidates = _extract_pdf_asistentes_candidates(full_text)
+    profesional_reca = _extract_pdf_value(
+        first_page,
+        r"profesional asignado\s*reca:\s*(.+?)(?:\n|se informa|$)",
+    )
     asesor = _extract_pdf_value(first_page, r"asesor:\s*(.+?)(?:sede compensar:|correo electr[oó]nico:|$)")
-    profesional = asistentes_candidates[0] if asistentes_candidates else asesor
+    profesional = asistentes_candidates[0] if asistentes_candidates else (profesional_reca or asesor)
     participants = _extract_pdf_participants(full_text)
+    nits = _extract_pdf_nits(full_text)
+    if not nit and nits:
+        nit = nits[0]
 
     warnings: list[str] = []
     if not nit:
@@ -667,10 +840,11 @@ def parse_acta_pdf(file_path: str) -> dict:
     return {
         "file_path": str(path),
         "nit_empresa": nit,
+        "nits_empresas": nits,
         "nombre_empresa": empresa,
         "fecha_servicio": fecha_servicio,
         "nombre_profesional": profesional,
-        "candidatos_profesional": asistentes_candidates or ([asesor] if asesor else []),
+        "candidatos_profesional": asistentes_candidates or ([profesional_reca] if profesional_reca else ([asesor] if asesor else [])),
         "modalidad_servicio": modalidad,
         "participantes": participants,
         "warnings": warnings,

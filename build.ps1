@@ -66,6 +66,11 @@ $pyiArgs = @(
     "--add-data", "VERSION;.",
     "--name", "RECA_ODS",
     "--collect-all", "supabase",
+    "--collect-all", "postgrest",
+    "--collect-all", "realtime",
+    "--collect-all", "storage3",
+    "--collect-all", "supabase_auth",
+    "--collect-all", "supabase_functions",
     "start_gui.py"
 )
 if (Test-Path $iconPath) {

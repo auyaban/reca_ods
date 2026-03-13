@@ -247,6 +247,35 @@ class ActaImportTests(unittest.TestCase):
             ],
         )
 
+    def test_extract_pdf_participants_reads_groupal_vinculados_layout(self) -> None:
+        text = (
+            "3. DATOS DEL VINCULADO\n"
+            "1 Cesar Nayid Roncancio Perdomo102392909725,5 Discapacidad física3223486437\n"
+            "Masculino ccuervoroncanciom@gmail.com 09/11/1993 32 años\n"
+            "2 Zuly Paola Ramirez Maldonado107370045820,9 Discapacidad física3202157970\n"
+            "Femenino jpao2701@hotmail.com 27/02/1994 32 años\n"
+        )
+
+        participants = _extract_pdf_participants(text)
+
+        self.assertEqual(
+            participants,
+            [
+                {
+                    "nombre_usuario": "Cesar Nayid Roncancio Perdomo",
+                    "cedula_usuario": "1023929097",
+                    "discapacidad_usuario": "física",
+                    "genero_usuario": "",
+                },
+                {
+                    "nombre_usuario": "Zuly Paola Ramirez Maldonado",
+                    "cedula_usuario": "1073700458",
+                    "discapacidad_usuario": "física",
+                    "genero_usuario": "",
+                },
+            ],
+        )
+
     def test_extract_pdf_asistentes_candidates_prefers_nombre_completo_order(self) -> None:
         text = (
             "3. Asistentes\n"
@@ -318,6 +347,92 @@ class ActaImportTests(unittest.TestCase):
         self.assertEqual(result["nombre_empresa"], "INVERSIONES INT COLOMBIA SAS")
         self.assertNotIn("No se detecto nombre de empresa en el PDF.", result["warnings"])
         self.assertNotIn("No se detecto fecha de servicio en formato valido.", result["warnings"])
+
+    @patch("app.services.excel_acta_import._extract_pdf_text_pages")
+    def test_parse_acta_pdf_supports_groupal_vinculados_layout(self, mock_extract_pages) -> None:
+        mock_extract_pages.return_value = [
+            "\n".join(
+                [
+                    "PROCESO CONTRATACION INCLUYENTE GRUPAL - 2 A 4 OFERENTES",
+                    "Fecha de la Visita: 03-03-2026 Modalidad:Virtual",
+                    "Nombre de la Empresa:SIS VIDA SAS Ciudad/Municipio:Bogotá",
+                    "Dirección de la Empresa:Cra. 23 #166-36 Número de NIT: 830132432-6",
+                    "Asesor: Andrea Carolina Guevara Gonzalez",
+                    "Profesional asignadoRECA: Adriana González Moreno",
+                    "1 Cesar Nayid Roncancio Perdomo102392909725,5 Discapacidad física3223486437",
+                    "Masculino ccuervoroncanciom@gmail.com 09/11/1993 32 años",
+                ]
+            ),
+            "\n".join(
+                [
+                    "2 Zuly Paola Ramirez Maldonado107370045820,9 Discapacidad física3202157970",
+                    "Femenino jpao2701@hotmail.com 27/02/1994 32 años",
+                ]
+            ),
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            temp_path = Path(tmp.name)
+
+        try:
+            result = parse_acta_pdf(str(temp_path))
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+        self.assertEqual(result["fecha_servicio"], "2026-03-03")
+        self.assertEqual(result["nombre_profesional"], "Adriana González Moreno")
+        self.assertEqual(
+            result["participantes"],
+            [
+                {
+                    "nombre_usuario": "Cesar Nayid Roncancio Perdomo",
+                    "cedula_usuario": "1023929097",
+                    "discapacidad_usuario": "física",
+                    "genero_usuario": "",
+                },
+                {
+                    "nombre_usuario": "Zuly Paola Ramirez Maldonado",
+                    "cedula_usuario": "1073700458",
+                    "discapacidad_usuario": "física",
+                    "genero_usuario": "",
+                },
+            ],
+        )
+
+    @patch("app.services.excel_acta_import._extract_pdf_text_pages")
+    def test_parse_acta_pdf_supports_interpreter_layout_and_sumatoria_hours(self, mock_extract_pages) -> None:
+        mock_extract_pages.return_value = [
+            "\n".join(
+                [
+                    "1. DATOS DE LA EMPRESA Fecha: 04/03/2026",
+                    "Numero de NIT: 860001000-1",
+                    "Nombre de la empresa: SOLLA S.A Direccion: Calle 1 # 2 - 3",
+                    "Modalidad servicio: Presencial Interprete: Laura Demo",
+                    "Profesional RECA: Ana Perez 2. DATOS DE LOS OFERENTES/ VINCULADOS",
+                    "1 Juan Camilo Villa 1073520676 Proceso de seleccion individual",
+                    "Nombre interprete: Laura Demo",
+                    "Total Tiempo: 1 Hora si el servicio fue realizado en sabana se agrega una hora",
+                    "SUMATORIA HORAS INTERPRETES: 2 horas Observaciones: prueba",
+                ]
+            )
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            temp_path = Path(tmp.name)
+
+        try:
+            result = parse_acta_pdf(str(temp_path))
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+        self.assertEqual(result["nit_empresa"], "860001000-1")
+        self.assertEqual(result["nombre_empresa"], "SOLLA S.A")
+        self.assertEqual(result["fecha_servicio"], "2026-03-04")
+        self.assertEqual(result["sumatoria_horas_interpretes"], 2.0)
+        self.assertEqual(result["total_horas_interprete"], 2.0)
+        self.assertEqual(result["participantes"][0]["cedula_usuario"], "1073520676")
 
 
 if __name__ == "__main__":
