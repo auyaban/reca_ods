@@ -50,7 +50,7 @@ Filename: "{app}\\{#MyAppExeName}"; Description: "Abrir {#MyAppName}"; Flags: no
 [Code]
 function LoadExistingEnvContent(const EnvPath: string): string;
 begin
-  if not LoadStringFromFile(EnvPath, Result) then
+  if not LoadStringFromFile(EnvPath, Result, False) then
     Result := '';
 end;
 
