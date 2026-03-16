@@ -48,16 +48,49 @@ Name: "desktopicon"; Description: "Crear icono en el escritorio"; GroupDescripti
 Filename: "{app}\\{#MyAppExeName}"; Description: "Abrir {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+function LoadExistingEnvContent(const EnvPath: string): string;
+begin
+  if not LoadStringFromFile(EnvPath, Result) then
+    Result := '';
+end;
+
+function ExtractEnvValue(const EnvContent, Key: string): string;
+var
+  SearchKey: string;
+  StartPos: Integer;
+  EndPos: Integer;
+begin
+  Result := '';
+  SearchKey := Key + '=';
+  StartPos := Pos(SearchKey, EnvContent);
+  if StartPos = 0 then
+    Exit;
+
+  StartPos := StartPos + Length(SearchKey);
+  EndPos := StartPos;
+  while (EndPos <= Length(EnvContent)) and
+        (EnvContent[EndPos] <> #13) and
+        (EnvContent[EndPos] <> #10) do
+    EndPos := EndPos + 1;
+
+  Result := Copy(EnvContent, StartPos, EndPos - StartPos);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   EnvPath: string;
   EnvContent: string;
+  ExistingEnvContent: string;
+  ExistingGoogleServiceAccountPath: string;
+  GoogleServiceAccountPath: string;
 begin
   if CurStep = ssInstall then
   begin
     ForceDirectories(ExpandConstant('{userappdata}\\{#MyAppName}'));
     ForceDirectories(ExpandConstant('{userappdata}\\{#MyAppName}\\secrets'));
     EnvPath := ExpandConstant('{userappdata}\\{#MyAppName}\\.env');
+    ExistingEnvContent := LoadExistingEnvContent(EnvPath);
+    ExistingGoogleServiceAccountPath := ExtractEnvValue(ExistingEnvContent, 'GOOGLE_SERVICE_ACCOUNT_FILE');
     EnvContent := 'SUPABASE_URL={#SupabaseUrl}' + #13#10 +
                   'SUPABASE_ANON_KEY={#SupabaseKey}' + #13#10 +
                   'SUPABASE_AUTH_EMAIL={#SupabaseAuthEmail}' + #13#10 +
@@ -70,9 +103,14 @@ begin
                   'SUPABASE_EDGE_ACTA_EXTRACTION_SECRET={#SupabaseEdgeActaExtractionSecret}' + #13#10 +
                   'ODS_AUTOMATION_TEST_ENABLED=0' + #13#10;
     if {#HasGoogleServiceAccount} = 1 then
-      EnvContent := EnvContent + 'GOOGLE_SERVICE_ACCOUNT_FILE={#GoogleServiceAccountInstalledPath}' + #13#10
+      GoogleServiceAccountPath := '{#GoogleServiceAccountInstalledPath}'
+    else if ExistingGoogleServiceAccountPath <> '' then
+      GoogleServiceAccountPath := ExistingGoogleServiceAccountPath
+    else if FileExists(ExpandConstant('{userappdata}\\{#MyAppName}\\secrets\\google-service-account.json')) then
+      GoogleServiceAccountPath := '{#GoogleServiceAccountInstalledPath}'
     else
-      EnvContent := EnvContent + 'GOOGLE_SERVICE_ACCOUNT_FILE=' + #13#10;
+      GoogleServiceAccountPath := '';
+    EnvContent := EnvContent + 'GOOGLE_SERVICE_ACCOUNT_FILE=' + GoogleServiceAccountPath + #13#10;
     SaveStringToFile(EnvPath, EnvContent, False);
   end;
 end;
