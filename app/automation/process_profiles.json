@@ -1,0 +1,1458 @@
+{
+  "version": "2026-03-14",
+  "source": "config_procesos_il.json + manual extensions",
+  "documents": [
+    {
+      "document_kind": "program_presentation",
+      "sheet_name": "1.PRESENTACIÓN DEL PROGRAMA IL",
+      "code": "FO-IL-01-4.2",
+      "keep_sections": [
+        "DATOS_GENERALES",
+        "ASISTENTES"
+      ],
+      "ignore_sections": [
+        "TEMARIO",
+        "DESCRIPCION_TEMAS",
+        "ACUERDOS_OBSERVACIONES"
+      ],
+      "section_aliases": {
+        "DATOS_GENERALES": "1.DATOS GENERALES",
+        "TEMARIO": "2. TEMARIO",
+        "DESCRIPCION_TEMAS": "3. DESCRIPCIÓN DE LOS TEMAS",
+        "ACUERDOS_OBSERVACIONES": "4. ACUERDOS Y OBSERVACIONES DE LA REUNIÓN",
+        "ASISTENTES": "5.ASISTENTES"
+      },
+      "required_fields": [
+        {
+          "field_key": "fecha_visita",
+          "label": "Fecha de la Visita",
+          "section": "DATOS_GENERALES",
+          "row": 7,
+          "col": "D",
+          "type": "date"
+        },
+        {
+          "field_key": "modalidad",
+          "label": "Modalidad",
+          "section": "DATOS_GENERALES",
+          "row": 7,
+          "col": "Q",
+          "type": "dropdown",
+          "options": [
+            "Virtual",
+            "Presencial"
+          ]
+        },
+        {
+          "field_key": "nombre_empresa",
+          "label": "Nombre de la Empresa",
+          "section": "DATOS_GENERALES",
+          "row": 8,
+          "col": "D",
+          "type": "text",
+          "note": "Campo maestro. Todas las demás hojas lo heredan."
+        },
+        {
+          "field_key": "nombre_asistente",
+          "label": "Nombre completo (asistente)",
+          "section": "ASISTENTES",
+          "row": 75,
+          "col": "A",
+          "type": "text"
+        }
+      ],
+      "field_sources": [
+        {
+          "field_key": "ciudad_municipio",
+          "label": "Ciudad/Municipio",
+          "section": "DATOS_GENERALES",
+          "row": 9,
+          "col": "Q",
+          "source_type": "google_sheets",
+          "formula_ref": "VLOOKUP($D$8, IMPORTRANGE(GSheets))"
+        },
+        {
+          "field_key": "nit_empresa",
+          "label": "Número de NIT",
+          "section": "DATOS_GENERALES",
+          "row": 9,
+          "col": "Q",
+          "source_type": "google_sheets",
+          "formula_ref": "VLOOKUP($D$8, IMPORTRANGE(GSheets))"
+        },
+        {
+          "field_key": "caja_compensacion",
+          "label": "Empresa afiliada a Caja de Compensación",
+          "section": "DATOS_GENERALES",
+          "row": 12,
+          "col": "D",
+          "source_type": "google_sheets"
+        },
+        {
+          "field_key": "asesor_fidelizacion",
+          "label": "Asesor fidelización",
+          "section": "DATOS_GENERALES",
+          "row": 14,
+          "col": "D",
+          "source_type": "google_sheets"
+        }
+      ],
+      "field_priority": {
+        "nombre_profesional": [
+          "Asistentes"
+        ],
+        "modalidad_servicio": [
+          "Modalidad en DATOS GENERALES",
+          "Modalidad"
+        ]
+      }
+    },
+    {
+      "document_kind": "program_reactivation",
+      "sheet_name": "1.2 REACTIVACIÓN DEL PROGRAMA I",
+      "code": "RE-IL-01-4.2",
+      "keep_sections": [
+        "DATOS_GENERALES",
+        "ASISTENTES"
+      ],
+      "ignore_sections": [
+        "TEMARIO",
+        "DESCRIPCION_TEMAS",
+        "ACUERDOS_OBSERVACIONES"
+      ],
+      "section_aliases": {
+        "DATOS_GENERALES": "1.DATOS GENERALES",
+        "TEMARIO": "2. TEMARIO",
+        "DESCRIPCION_TEMAS": "3. DESCRIPCIÓN DE LOS TEMAS",
+        "ACUERDOS_OBSERVACIONES": "4. ACUERDOS Y OBSERVACIONES DE LA REUNIÓN",
+        "ASISTENTES": "5. ASISTENTES"
+      },
+      "required_fields": [
+        {
+          "field_key": "fecha_visita",
+          "label": "Fecha de la Visita",
+          "section": "DATOS_GENERALES",
+          "row": 7,
+          "col": "D",
+          "type": "date"
+        },
+        {
+          "field_key": "nombre_empresa",
+          "label": "Nombre de la Empresa",
+          "section": "DATOS_GENERALES",
+          "row": 8,
+          "col": "D",
+          "type": "text"
+        },
+        {
+          "field_key": "nombre_asistente",
+          "label": "Nombre completo (asistente)",
+          "section": "ASISTENTES",
+          "row": 75,
+          "col": "A",
+          "type": "text"
+        }
+      ],
+      "field_sources": [
+        {
+          "field_key": "ciudad_municipio",
+          "label": "Ciudad/Municipio",
+          "section": "DATOS_GENERALES",
+          "row": 9,
+          "col": "Q",
+          "source_type": "google_sheets"
+        },
+        {
+          "field_key": "caja_compensacion",
+          "label": "Empresa afiliada a Caja de Compensación",
+          "section": "DATOS_GENERALES",
+          "row": 12,
+          "col": "D",
+          "source_type": "google_sheets"
+        },
+        {
+          "field_key": "asesor_fidelizacion",
+          "label": "Asesor fidelización",
+          "section": "DATOS_GENERALES",
+          "row": 14,
+          "col": "D",
+          "source_type": "google_sheets"
+        }
+      ],
+      "field_priority": {
+        "nombre_profesional": [
+          "Asistentes"
+        ],
+        "modalidad_servicio": [
+          "Modalidad en DATOS GENERALES",
+          "Modalidad"
+        ]
+      }
+    },
+    {
+      "document_kind": "accessibility_assessment",
+      "sheet_name": "2. EVALUACIÓN DE ACCESIBILIDAD",
+      "code": "EV-IL-01-4.2",
+      "keep_sections": [
+        "DATOS_EMPRESA",
+        "ACCESIBILIDAD_SENSORIAL",
+        "AJUSTES_RAZONABLES",
+        "ASISTENTES"
+      ],
+      "ignore_sections": [
+        "ACCESIBILIDAD_FISICA",
+        "ACCESIBILIDAD_MOVILIDAD",
+        "ACCESIBILIDAD_GENERAL",
+        "ACCESIBILIDAD_DISCAPACIDAD_FISICA",
+        "ACCESIBILIDAD_INTELECTUAL_TEA",
+        "ACCESIBILIDAD_PSICOSOCIAL",
+        "CONDICIONES_ORGANIZACIONALES",
+        "CONCEPTO_EVALUACION"
+      ],
+      "section_aliases": {
+        "DATOS_EMPRESA": "1.DATOS DE LA EMPRESA",
+        "ACCESIBILIDAD_FISICA": "2. ACCESIBILIDAD FÍSICA",
+        "ACCESIBILIDAD_MOVILIDAD": "2.1 Condiciones de movilidad y urbanísticas",
+        "ACCESIBILIDAD_GENERAL": "2.2 Condiciones de Accesibilidad General",
+        "ACCESIBILIDAD_DISCAPACIDAD_FISICA": "2.3 Condiciones de Accesibilidad Discapacidad Física",
+        "ACCESIBILIDAD_SENSORIAL": "2.4 Condiciones de Accesibilidad Discapacidad Sensorial (Visual-Auditiva)",
+        "ACCESIBILIDAD_INTELECTUAL_TEA": "2.5 Condiciones de Accesibilidad Discapacidad Intelectual - TEA",
+        "ACCESIBILIDAD_PSICOSOCIAL": "2.6 Condiciones de Accesibilidad Discapacidad Psicosocial",
+        "CONDICIONES_ORGANIZACIONALES": "3. CONDICIONES ORGANIZACIONALES",
+        "CONCEPTO_EVALUACION": "4. CONCEPTO DE LA EVALUACIÓN",
+        "AJUSTES_RAZONABLES": "5. AJUSTES RAZONABLES",
+        "ASISTENTES": "8. ASISTENTES"
+      },
+      "required_fields": [
+        {
+          "field_key": "fecha_visita",
+          "label": "Fecha de la Visita",
+          "section": "DATOS_EMPRESA",
+          "row": 7,
+          "col": "D",
+          "type": "date"
+        },
+        {
+          "field_key": "evaluacion_sensorial_fila113",
+          "label": "Evaluación criterios accesibilidad sensorial",
+          "section": "ACCESIBILIDAD_SENSORIAL",
+          "row": 113,
+          "col": "A-L",
+          "type": "multi_cell",
+          "note": "12 celdas vacías para evaluación de señalización NTC"
+        },
+        {
+          "field_key": "ajustes_razonables_bloque",
+          "label": "Ajustes razonables por tipo de discapacidad",
+          "section": "AJUSTES_RAZONABLES",
+          "rows": [
+            190,
+            194,
+            196
+          ],
+          "type": "multi_cell",
+          "note": "Bloques para Disc. Auditiva (fila 190), Intelectual (194), TEA (196). 12 celdas c/u."
+        },
+        {
+          "field_key": "nombre_asistente",
+          "label": "Nombre completo (asistente)",
+          "section": "ASISTENTES",
+          "row": 211,
+          "col": "A",
+          "type": "text"
+        }
+      ],
+      "field_sources": [
+        {
+          "field_key": "nombre_empresa",
+          "label": "Nombre de la Empresa",
+          "section": "DATOS_EMPRESA",
+          "row": 8,
+          "col": "D",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "D8"
+        },
+        {
+          "field_key": "ciudad_municipio",
+          "label": "Ciudad/Municipio",
+          "section": "DATOS_EMPRESA",
+          "row": 8,
+          "col": "P",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "Q8"
+        },
+        {
+          "field_key": "caja_compensacion",
+          "label": "Empresa afiliada a Caja de Compensación",
+          "section": "DATOS_EMPRESA",
+          "row": 12,
+          "col": "D",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "D12"
+        },
+        {
+          "field_key": "asesor",
+          "label": "Asesor",
+          "section": "DATOS_EMPRESA",
+          "row": 13,
+          "col": "D",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "D14"
+        }
+      ],
+      "field_priority": {
+        "nombre_profesional": [
+          "Asistentes"
+        ],
+        "modalidad_servicio": [
+          "Modalidad en DATOS GENERALES",
+          "Modalidad"
+        ]
+      }
+    },
+    {
+      "document_kind": "vacancy_review",
+      "sheet_name": "3. REVISIÓN DE LAS CONDICIONES ",
+      "code": "RC-IL",
+      "keep_sections": [
+        "DATOS_GENERALES",
+        "CARACTERISTICAS_VACANTE",
+        "ASISTENTES"
+      ],
+      "ignore_sections": [
+        "HABILIDADES_CAPACIDADES",
+        "POSTURAS_MOVIMIENTOS",
+        "PELIGROS_RIESGOS",
+        "VACANTE_ACCESIBLE_COMPATIBLE",
+        "OBSERVACIONES_RECOMENDACIONES"
+      ],
+      "section_aliases": {
+        "DATOS_GENERALES": "1. DATOS GENERALES",
+        "CARACTERISTICAS_VACANTE": "2. CARACTERÍSTICAS DE LA VACANTE",
+        "FORMACION_ACADEMICA": "2.1 FORMACIÓN ACADÉMICA",
+        "HABILIDADES_CAPACIDADES": "3. HABILIDADES Y CAPACIDADES REQUERIDAS PARA EL CARGO",
+        "POSTURAS_MOVIMIENTOS": "4. POSTURAS Y MOVIMIENTOS",
+        "PELIGROS_RIESGOS": "5. PELIGROS Y RIESGOS EN EL DESARROLLO DE LA LABOR",
+        "VACANTE_ACCESIBLE_COMPATIBLE": "6. LA VACANTE ES ACCESIBLE Y COMPATIBLE PARA PERSONAS CON...",
+        "OBSERVACIONES_RECOMENDACIONES": "7. OBSERVACIONES / RECOMENDACIONES",
+        "ASISTENTES": "8.ASISTENTES"
+      },
+      "required_fields": [
+        {
+          "field_key": "fecha_visita",
+          "label": "Fecha de la Visita",
+          "section": "DATOS_GENERALES",
+          "row": 7,
+          "col": "F",
+          "type": "date"
+        },
+        {
+          "field_key": "modalidad",
+          "label": "Modalidad",
+          "section": "DATOS_GENERALES",
+          "row": 7,
+          "col": "N",
+          "type": "dropdown",
+          "options": [
+            "Virtual",
+            "Presencial"
+          ]
+        },
+        {
+          "field_key": "nombre_vacante",
+          "label": "Nombre de la vacante",
+          "section": "CARACTERISTICAS_VACANTE",
+          "row": 15,
+          "col": "F",
+          "type": "text"
+        },
+        {
+          "field_key": "numero_vacantes",
+          "label": "Número de vacantes",
+          "section": "CARACTERISTICAS_VACANTE",
+          "row": 16,
+          "col": "F",
+          "type": "number"
+        },
+        {
+          "field_key": "beneficios_genero",
+          "label": "Cargo flexible según género / beneficios adicionales",
+          "section": "CARACTERISTICAS_VACANTE",
+          "rows": [
+            27,
+            28
+          ],
+          "type": "multi_cell"
+        },
+        {
+          "field_key": "competencias",
+          "label": "Competencias requeridas",
+          "section": "FORMACION_ACADEMICA",
+          "rows": [
+            30,
+            31,
+            32,
+            33
+          ],
+          "col": "I, L",
+          "type": "multi_cell",
+          "note": "Auto-poblado con fórmula condicional desde hoja 'caracterizacion'"
+        },
+        {
+          "field_key": "nombre_asistente",
+          "label": "Nombre completo (asistente)",
+          "section": "ASISTENTES",
+          "row": 161,
+          "col": "E",
+          "type": "text"
+        }
+      ],
+      "field_sources": [
+        {
+          "field_key": "nombre_empresa",
+          "label": "Nombre de la Empresa",
+          "section": "DATOS_GENERALES",
+          "row": 8,
+          "col": "F",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "D8"
+        },
+        {
+          "field_key": "asesor",
+          "label": "Asesor",
+          "section": "DATOS_GENERALES",
+          "row": 13,
+          "col": "F",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "D14"
+        }
+      ],
+      "field_priority": {
+        "nombre_profesional": [
+          "Asistentes"
+        ],
+        "nombre_empresa": [
+          "Nombre de la Empresa"
+        ],
+        "nit_empresa": [
+          "Numero de NIT"
+        ],
+        "cargo_objetivo": [
+          "Nombre de la vacante"
+        ],
+        "total_vacantes": [
+          "Numero de vacantes"
+        ],
+        "fecha_servicio": [
+          "Fecha de la Visita"
+        ],
+        "modalidad_servicio": [
+          "Modalidad en DATOS GENERALES",
+          "Modalidad"
+        ]
+      },
+      "forbid_fields": [
+        "numero_seguimiento",
+        "total_empresas"
+      ],
+      "line_mode": "labeled_only"
+    },
+    {
+      "document_kind": "inclusive_selection",
+      "sheet_name": "4. PROCESO DE SELECCIÓN INCLUYE",
+      "code": "PS-IL",
+      "keep_sections": [
+        "DATOS_EMPRESA",
+        "DATOS_OFERENTE",
+        "ASISTENTES"
+      ],
+      "ignore_sections": [
+        "DESARROLLO_ACTIVIDAD",
+        "CARACTERIZACION_OFERENTE",
+        "CONDICIONES_MEDICAS",
+        "HABILIDADES_VIDA_DIARIA",
+        "AJUSTES_RAZONABLES_SELECCION"
+      ],
+      "section_aliases": {
+        "DATOS_EMPRESA": "1. DATOS DE LA EMPRESA",
+        "DATOS_OFERENTE": "2. DATOS DEL OFERENTE",
+        "DESARROLLO_ACTIVIDAD": "3. DESARROLLO DE LA ACTIVIDAD",
+        "CARACTERIZACION_OFERENTE": "4. CARACTERIZACIÓN DEL OFERENTE",
+        "CONDICIONES_MEDICAS": "4.1 Condiciones médicas y de salud",
+        "HABILIDADES_VIDA_DIARIA": "4.2 Habilidades básicas de la vida diaria",
+        "AJUSTES_RAZONABLES_SELECCION": "5. AJUSTES RAZONABLES / RECOMENDACIONES AL PROCESO DE SELECCIÓN",
+        "ASISTENTES": "6. ASISTENTES"
+      },
+      "required_fields": [
+        {
+          "field_key": "fecha_visita",
+          "label": "Fecha de la Visita",
+          "section": "DATOS_EMPRESA",
+          "row": 7,
+          "col": "F",
+          "type": "date"
+        },
+        {
+          "field_key": "modalidad",
+          "label": "Modalidad",
+          "section": "DATOS_EMPRESA",
+          "row": 7,
+          "col": "N",
+          "type": "dropdown",
+          "options": [
+            "Virtual",
+            "Presencial"
+          ]
+        },
+        {
+          "field_key": "nombre_oferente",
+          "label": "Nombre oferente",
+          "section": "DATOS_OFERENTE",
+          "row": 17,
+          "col": "C",
+          "type": "text"
+        },
+        {
+          "field_key": "cedula_oferente",
+          "label": "Cédula",
+          "section": "DATOS_OFERENTE",
+          "row": 17,
+          "col": "H",
+          "type": "text"
+        },
+        {
+          "field_key": "tipo_discapacidad",
+          "label": "Tipo de Discapacidad",
+          "section": "DATOS_OFERENTE",
+          "row": 17,
+          "col": "L",
+          "type": "text"
+        },
+        {
+          "field_key": "cargo",
+          "label": "Cargo",
+          "section": "DATOS_OFERENTE",
+          "row": 19,
+          "col": "A",
+          "type": "text"
+        },
+        {
+          "field_key": "nombre_asistente",
+          "label": "Nombre completo (asistente)",
+          "section": "ASISTENTES",
+          "row": 85,
+          "col": "A",
+          "type": "text"
+        }
+      ],
+      "field_sources": [
+        {
+          "field_key": "nombre_empresa",
+          "label": "Nombre de la Empresa",
+          "section": "DATOS_EMPRESA",
+          "row": 8,
+          "col": "F",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "D8"
+        },
+        {
+          "field_key": "asesor",
+          "label": "Asesor",
+          "section": "DATOS_EMPRESA",
+          "row": 13,
+          "col": "F",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "D14"
+        }
+      ],
+      "field_priority": {
+        "nombre_profesional": [
+          "Asistentes"
+        ],
+        "cargo_objetivo": [
+          "Cargo"
+        ],
+        "participantes": [
+          "Nombre oferente",
+          "Cedula",
+          "Tipo de Discapacidad"
+        ],
+        "modalidad_servicio": [
+          "Modalidad en DATOS GENERALES",
+          "Modalidad"
+        ]
+      },
+      "forbid_fields": [
+        "numero_seguimiento"
+      ]
+    },
+    {
+      "document_kind": "inclusive_hiring",
+      "sheet_name": "5. PROCESO DE CONTRATACION INCL",
+      "code": "PC-IL",
+      "keep_sections": [
+        "DATOS_EMPRESA",
+        "DATOS_VINCULADO",
+        "DATOS_ADICIONALES",
+        "ASISTENTES"
+      ],
+      "ignore_sections": [
+        "DESARROLLO_ACTIVIDAD",
+        "ACOMPANAMIENTO_PROCESO",
+        "CONDICIONES_VACANTE",
+        "PRESTACIONES_LEY",
+        "DEBERES_DERECHOS",
+        "AJUSTES_RAZONABLES_CONTRATACION"
+      ],
+      "section_aliases": {
+        "DATOS_EMPRESA": "1. DATOS DE LA EMPRESA",
+        "DATOS_VINCULADO": "2. DATOS DEL VINCULADO",
+        "DATOS_ADICIONALES": "3. DATOS ADICIONALES",
+        "DESARROLLO_ACTIVIDAD": "4. DESARROLLO DE LA ACTIVIDAD",
+        "ACOMPANAMIENTO_PROCESO": "5.ACOMPAÑAMIENTO AL PROCESO",
+        "CONDICIONES_VACANTE": "5.1 Condiciones De La Vacante",
+        "PRESTACIONES_LEY": "5.2 Prestaciones De Ley",
+        "DEBERES_DERECHOS": "5.3 Deberes y derechos Del Trabajador",
+        "AJUSTES_RAZONABLES_CONTRATACION": "5. AJUSTES RAZONABLES / RECOMENDACIONES",
+        "ASISTENTES": "7. ASISTENTES"
+      },
+      "required_fields": [
+        {
+          "field_key": "fecha_visita",
+          "label": "Fecha de la Visita",
+          "section": "DATOS_EMPRESA",
+          "row": 7,
+          "col": "D",
+          "type": "date"
+        },
+        {
+          "field_key": "modalidad",
+          "label": "Modalidad",
+          "section": "DATOS_EMPRESA",
+          "row": 7,
+          "col": "L",
+          "type": "dropdown",
+          "options": [
+            "Virtual",
+            "Presencial"
+          ]
+        },
+        {
+          "field_key": "nombre_vinculado",
+          "label": "Nombre vinculado",
+          "section": "DATOS_VINCULADO",
+          "row": 18,
+          "col": "C",
+          "type": "text",
+          "note": "Campo maestro para hojas 6, 9, Seguimiento y Ponderado."
+        },
+        {
+          "field_key": "cedula_vinculado",
+          "label": "Cédula",
+          "section": "DATOS_VINCULADO",
+          "row": 18,
+          "col": "H",
+          "type": "text"
+        },
+        {
+          "field_key": "tipo_discapacidad",
+          "label": "Tipo de Discapacidad",
+          "section": "DATOS_VINCULADO",
+          "row": 18,
+          "col": "L",
+          "type": "text"
+        },
+        {
+          "field_key": "cargo",
+          "label": "Cargo",
+          "section": "DATOS_ADICIONALES",
+          "row": 21,
+          "col": "A",
+          "type": "text"
+        },
+        {
+          "field_key": "fecha_firma_contrato",
+          "label": "Fecha firma de contrato",
+          "section": "DATOS_ADICIONALES",
+          "row": 22,
+          "col": "O",
+          "type": "date"
+        },
+        {
+          "field_key": "nombre_asistente",
+          "label": "Nombre completo (asistente)",
+          "section": "ASISTENTES",
+          "row": 74,
+          "col": "C",
+          "type": "text"
+        }
+      ],
+      "field_sources": [
+        {
+          "field_key": "nombre_empresa",
+          "label": "Nombre de la Empresa",
+          "section": "DATOS_EMPRESA",
+          "row": 8,
+          "col": "D",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "D8"
+        },
+        {
+          "field_key": "asesor",
+          "label": "Asesor",
+          "section": "DATOS_EMPRESA",
+          "row": 13,
+          "col": "D",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "D14"
+        }
+      ],
+      "field_priority": {
+        "nombre_profesional": [
+          "Asistentes"
+        ],
+        "cargo_objetivo": [
+          "Cargo"
+        ],
+        "participantes": [
+          "Nombre vinculado",
+          "Cedula",
+          "Tipo de Discapacidad"
+        ],
+        "modalidad_servicio": [
+          "Modalidad en DATOS GENERALES",
+          "Modalidad"
+        ]
+      },
+      "forbid_fields": [
+        "numero_seguimiento"
+      ]
+    },
+    {
+      "document_kind": "organizational_induction",
+      "sheet_name": "6. INDUCCIÓN ORGANIZACIONAL",
+      "code": "IO-IL",
+      "keep_sections": [
+        "DATOS_GENERALES",
+        "DATOS_VINCULADO",
+        "ASISTENTES"
+      ],
+      "ignore_sections": [
+        "DESARROLLO_PROCESO",
+        "AJUSTES_RAZONABLES_INDUCCION",
+        "OBSERVACIONES"
+      ],
+      "section_aliases": {
+        "DATOS_GENERALES": "1. DATOS GENERALES",
+        "DATOS_VINCULADO": "2. DATOS DEL VINCULADO",
+        "DESARROLLO_PROCESO": "3. DESARROLLO DEL PROCESO",
+        "AJUSTES_RAZONABLES_INDUCCION": "4. AJUSTES RAZONABLES AL PROCESO DE INDUCCIÓN",
+        "OBSERVACIONES": "5. OBSERVACIONES",
+        "ASISTENTES": "6. ASISTENTES"
+      },
+      "required_fields": [
+        {
+          "field_key": "fecha_visita",
+          "label": "Fecha de la Visita",
+          "section": "DATOS_GENERALES",
+          "row": 7,
+          "col": "D",
+          "type": "date"
+        },
+        {
+          "field_key": "modalidad",
+          "label": "Modalidad",
+          "section": "DATOS_GENERALES",
+          "row": 7,
+          "col": "N",
+          "type": "dropdown",
+          "options": [
+            "Virtual",
+            "Presencial"
+          ]
+        },
+        {
+          "field_key": "nombre_asistente",
+          "label": "Nombre completo (asistente)",
+          "section": "ASISTENTES",
+          "row": 71,
+          "col": "C",
+          "type": "text"
+        }
+      ],
+      "field_sources": [
+        {
+          "field_key": "nombre_empresa",
+          "label": "Nombre de la Empresa",
+          "section": "DATOS_GENERALES",
+          "row": 8,
+          "col": "D",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "D8"
+        },
+        {
+          "field_key": "asesor",
+          "label": "Asesor",
+          "section": "DATOS_GENERALES",
+          "row": 13,
+          "col": "D",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "D14"
+        },
+        {
+          "field_key": "nombre_vinculado",
+          "label": "Nombre vinculado",
+          "section": "DATOS_VINCULADO",
+          "row": 16,
+          "col": "B",
+          "source_type": "sheet_formula",
+          "source_sheet": "5. PROCESO DE CONTRATACION INCL",
+          "source_cell": "C18"
+        },
+        {
+          "field_key": "cedula_vinculado",
+          "label": "Cédula",
+          "section": "DATOS_VINCULADO",
+          "row": 16,
+          "col": "H",
+          "source_type": "sheet_formula",
+          "source_sheet": "5. PROCESO DE CONTRATACION INCL",
+          "source_cell": "H18"
+        },
+        {
+          "field_key": "cargo_vinculado",
+          "label": "Cargo",
+          "section": "DATOS_VINCULADO",
+          "row": 16,
+          "col": "P",
+          "source_type": "sheet_formula",
+          "source_sheet": "5. PROCESO DE CONTRATACION INCL",
+          "source_cell": "C21"
+        }
+      ],
+      "field_priority": {
+        "nombre_profesional": [
+          "Asistentes"
+        ],
+        "modalidad_servicio": [
+          "Modalidad en DATOS GENERALES",
+          "Modalidad"
+        ]
+      }
+    },
+    {
+      "document_kind": "operational_induction",
+      "sheet_name": "7. INDUCCIÓN OPERATIVA",
+      "code": "IOP-IL",
+      "keep_sections": [
+        "DATOS_GENERALES"
+      ],
+      "ignore_sections": [
+        "DATOS_VINCULADO",
+        "DESARROLLO_INDUCCION_OPERATIVA",
+        "HABILIDADES_SOCIOEMOCIONALES",
+        "NIVEL_APOYO",
+        "AJUSTES_RAZONABLES",
+        "PRIMER_SEGUIMIENTO",
+        "OBSERVACIONES_RECOMENDACIONES",
+        "ASISTENTES"
+      ],
+      "section_aliases": {
+        "DATOS_GENERALES": "1. DATOS GENERALES",
+        "DATOS_VINCULADO": "2. DATOS DEL VINCULADO",
+        "DESARROLLO_INDUCCION_OPERATIVA": "3. DESARROLLO DEL PROCESO DE INDUCCIÓN OPERATIVA",
+        "HABILIDADES_SOCIOEMOCIONALES": "4. HABILIDADES SOCIOEMOCIONALES",
+        "NIVEL_APOYO": "5. NIVEL DE APOYO REQUERIDO",
+        "AJUSTES_RAZONABLES": "6. AJUSTES RAZONABLES REQUERIDOS",
+        "PRIMER_SEGUIMIENTO": "7. PRIMER SEGUIMIENTO ESTABLECIDO PARA EL VINCULADO",
+        "OBSERVACIONES_RECOMENDACIONES": "8. OBSERVACIONES /RECOMENDACIONES",
+        "ASISTENTES": "9.ASISTENTES"
+      },
+      "required_fields": [
+        {
+          "field_key": "fecha_visita",
+          "label": "Fecha de la Visita",
+          "section": "DATOS_GENERALES",
+          "row": 7,
+          "col": "E",
+          "type": "date"
+        },
+        {
+          "field_key": "modalidad",
+          "label": "Modalidad",
+          "section": "DATOS_GENERALES",
+          "row": 7,
+          "col": "M",
+          "type": "dropdown",
+          "options": [
+            "Virtual",
+            "Presencial"
+          ]
+        }
+      ],
+      "field_sources": [
+        {
+          "field_key": "nombre_empresa",
+          "label": "Nombre de la Empresa",
+          "section": "DATOS_GENERALES",
+          "row": 8,
+          "col": "E",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "D8"
+        },
+        {
+          "field_key": "asesor",
+          "label": "Asesor",
+          "section": "DATOS_GENERALES",
+          "row": 13,
+          "col": "E",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "D14"
+        }
+      ],
+      "field_priority": {
+        "nombre_profesional": [
+          "Asistentes"
+        ],
+        "modalidad_servicio": [
+          "Modalidad en DATOS GENERALES",
+          "Modalidad"
+        ]
+      }
+    },
+    {
+      "document_kind": "sensibilizacion",
+      "sheet_name": "8. SENSIBILIZACIÓN ",
+      "code": "SEN-IL",
+      "keep_sections": [
+        "DATOS_EMPRESA",
+        "ASISTENTES"
+      ],
+      "ignore_sections": [
+        "TEMAS_SENSIBILIZACION",
+        "OBSERVACIONES",
+        "REGISTRO_FOTOGRAFICO"
+      ],
+      "section_aliases": {
+        "DATOS_EMPRESA": "1. DATOS DE LA EMPRESA",
+        "TEMAS_SENSIBILIZACION": "2. PRESENTACIÓN DE LOS TEMAS DE LA SENSIBILIZACIÓN",
+        "OBSERVACIONES": "3. OBSERVACIONES",
+        "REGISTRO_FOTOGRAFICO": "4. REGISTRO FOTOGRÁFICO",
+        "ASISTENTES": "5. ASISTENTES"
+      },
+      "required_fields": [
+        {
+          "field_key": "fecha_visita",
+          "label": "Fecha de la Visita",
+          "section": "DATOS_EMPRESA",
+          "row": 7,
+          "col": "D",
+          "type": "date"
+        },
+        {
+          "field_key": "modalidad",
+          "label": "Modalidad",
+          "section": "DATOS_EMPRESA",
+          "row": 7,
+          "col": "N",
+          "type": "dropdown",
+          "options": [
+            "Virtual",
+            "Presencial"
+          ]
+        },
+        {
+          "field_key": "nombre_asistente",
+          "label": "Nombre completo (asistente)",
+          "section": "ASISTENTES",
+          "row": 32,
+          "col": "C",
+          "type": "text"
+        }
+      ],
+      "field_sources": [
+        {
+          "field_key": "nombre_empresa",
+          "label": "Nombre de la Empresa",
+          "section": "DATOS_EMPRESA",
+          "row": 8,
+          "col": "D",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "D8"
+        },
+        {
+          "field_key": "asesor",
+          "label": "Asesor",
+          "section": "DATOS_EMPRESA",
+          "row": 12,
+          "col": "D",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "D14"
+        }
+      ],
+      "field_priority": {
+        "nombre_profesional": [
+          "Asistentes"
+        ],
+        "modalidad_servicio": [
+          "Modalidad en DATOS GENERALES",
+          "Modalidad"
+        ]
+      }
+    },
+    {
+      "document_kind": "follow_up",
+      "sheet_name": "9.  SEGUIMIENTO AL PROCESO DE I",
+      "code": "SEG-IL-01-4.2",
+      "keep_sections": [
+        "DATOS_EMPRESA",
+        "DATOS_VINCULADO",
+        "DATOS_CARGO",
+        "FECHAS_SEGUIMIENTO"
+      ],
+      "ignore_sections": [
+        "FUNCIONES_VINCULADO"
+      ],
+      "section_aliases": {
+        "DATOS_EMPRESA": "1. DATOS DE LA EMPRESA",
+        "DATOS_VINCULADO": "2. DATOS DEL VINCULADO",
+        "DATOS_CARGO": "3. DATOS DEL CARGO OCUPADO POR EL VINCULADO",
+        "FUNCIONES_VINCULADO": "4. FUNCIONES DEL VINCULADO",
+        "FECHAS_SEGUIMIENTO": "5. FECHAS DE SEGUIMIENTO Y ACOMPAÑAMIENTO"
+      },
+      "required_fields": [
+        {
+          "field_key": "fecha_visita",
+          "label": "Fecha de la Visita",
+          "section": "DATOS_EMPRESA",
+          "row": 8,
+          "col": "D",
+          "type": "date"
+        },
+        {
+          "field_key": "modalidad",
+          "label": "Modalidad",
+          "section": "DATOS_EMPRESA",
+          "row": 8,
+          "col": "R",
+          "type": "dropdown",
+          "options": [
+            "Virtual",
+            "Presencial"
+          ]
+        },
+        {
+          "field_key": "cargo_ocupado",
+          "label": "Cargo que ocupa",
+          "section": "DATOS_CARGO",
+          "row": 20,
+          "col": "A",
+          "type": "text"
+        },
+        {
+          "field_key": "seguimiento_1",
+          "label": "Seguimiento 1 (fecha)",
+          "section": "FECHAS_SEGUIMIENTO",
+          "row": 29,
+          "col": "C",
+          "type": "date"
+        },
+        {
+          "field_key": "seguimiento_2",
+          "label": "Seguimiento 2 (fecha)",
+          "section": "FECHAS_SEGUIMIENTO",
+          "row": 30,
+          "col": "C",
+          "type": "date"
+        },
+        {
+          "field_key": "seguimiento_3",
+          "label": "Seguimiento 3 (fecha)",
+          "section": "FECHAS_SEGUIMIENTO",
+          "row": 31,
+          "col": "C",
+          "type": "date"
+        },
+        {
+          "field_key": "seguimiento_4",
+          "label": "Seguimiento 4 (fecha)",
+          "section": "FECHAS_SEGUIMIENTO",
+          "row": 29,
+          "col": "O",
+          "type": "date"
+        },
+        {
+          "field_key": "seguimiento_5",
+          "label": "Seguimiento 5 (fecha)",
+          "section": "FECHAS_SEGUIMIENTO",
+          "row": 30,
+          "col": "O",
+          "type": "date"
+        },
+        {
+          "field_key": "seguimiento_6",
+          "label": "Seguimiento 6 (fecha)",
+          "section": "FECHAS_SEGUIMIENTO",
+          "row": 31,
+          "col": "O",
+          "type": "date"
+        }
+      ],
+      "field_sources": [
+        {
+          "field_key": "nombre_empresa",
+          "label": "Nombre de la Empresa",
+          "section": "DATOS_EMPRESA",
+          "row": 9,
+          "col": "D",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "D8"
+        },
+        {
+          "field_key": "asesor",
+          "label": "Asesor",
+          "section": "DATOS_EMPRESA",
+          "row": 13,
+          "col": "D",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "D14"
+        },
+        {
+          "field_key": "nombre_vinculado",
+          "label": "Nombre vinculado",
+          "section": "DATOS_VINCULADO",
+          "row": 16,
+          "col": "A",
+          "source_type": "sheet_formula",
+          "source_sheet": "5. PROCESO DE CONTRATACION INCL",
+          "source_cell": "C18"
+        },
+        {
+          "field_key": "cedula_vinculado",
+          "label": "Cédula",
+          "section": "DATOS_VINCULADO",
+          "row": 16,
+          "col": "E",
+          "source_type": "sheet_formula",
+          "source_sheet": "5. PROCESO DE CONTRATACION INCL",
+          "source_cell": "H18"
+        },
+        {
+          "field_key": "tipo_discapacidad",
+          "label": "Tipo de Discapacidad",
+          "section": "DATOS_VINCULADO",
+          "row": 18,
+          "col": "N",
+          "source_type": "sheet_formula",
+          "source_sheet": "5. PROCESO DE CONTRATACION INCL",
+          "source_cell": "L18"
+        }
+      ],
+      "field_priority": {
+        "numero_seguimiento": [
+          "Seguimiento No."
+        ],
+        "cargo_objetivo": [
+          "Cargo que ocupa"
+        ],
+        "modalidad_servicio": [
+          "Modalidad en DATOS GENERALES",
+          "Modalidad"
+        ]
+      }
+    },
+    {
+      "document_kind": "follow_up_evaluation",
+      "sheet_name": "SEGUIMIENTO PROCESO IL 1",
+      "code": "SEG-IL (continuación)",
+      "note": "Hojas SEGUIMIENTO PROCESO IL 2 a 6 son idénticas en estructura.",
+      "keep_sections": [
+        "EVALUACION_DESEMPENO",
+        "ASISTENTES"
+      ],
+      "ignore_sections": [
+        "EVALUACION_EMPRESARIAL",
+        "SITUACION_ENCONTRADA",
+        "ESTRATEGIAS_AJUSTES"
+      ],
+      "section_aliases": {
+        "EVALUACION_DESEMPENO": "6. EVALUACIÓN DE DESEMPEÑO DE FUNCIONES PARA EL CARGO",
+        "EVALUACION_EMPRESARIAL": "7. EVALUACIÓN EMPRESARIAL",
+        "SITUACION_ENCONTRADA": "8. SITUACIÓN ENCONTRADA",
+        "ESTRATEGIAS_AJUSTES": "9. ESTRATEGIAS Y AJUSTES RAZONABLES",
+        "ASISTENTES": "10. ASISTENTES"
+      },
+      "required_fields": [
+        {
+          "field_key": "modalidad",
+          "label": "Modalidad",
+          "section": "EVALUACION_DESEMPENO",
+          "row": 8,
+          "col": "A",
+          "type": "dropdown",
+          "options": [
+            "Virtual",
+            "Presencial"
+          ]
+        },
+        {
+          "field_key": "numero_seguimiento",
+          "label": "Seguimiento No.",
+          "section": "EVALUACION_DESEMPENO",
+          "row": 8,
+          "col": "M",
+          "type": "number"
+        },
+        {
+          "field_key": "nombre_asistente",
+          "label": "Nombre completo (asistente)",
+          "section": "ASISTENTES",
+          "row": 47,
+          "col": "A",
+          "type": "text"
+        }
+      ],
+      "field_sources": [],
+      "field_priority": {
+        "modalidad_servicio": [
+          "Modalidad en DATOS GENERALES",
+          "Modalidad"
+        ]
+      }
+    },
+    {
+      "document_kind": "ponderado_final",
+      "sheet_name": "PONDERADO FINAL",
+      "code": "PF-IL",
+      "keep_sections": [
+        "DATOS_EMPRESA",
+        "CONCEPTO_EVALUACION",
+        "FUNCIONES_VINCULADO"
+      ],
+      "ignore_sections": [
+        "OBSERVACIONES_GENERALES"
+      ],
+      "section_aliases": {
+        "DATOS_EMPRESA": "1.DATOS DE LA EMPRESA",
+        "CONCEPTO_EVALUACION": "CONCEPTO DE LA EVALUACIÓN",
+        "OBSERVACIONES_GENERALES": "OBSERVACIONES GENERALES",
+        "FUNCIONES_VINCULADO": "4. FUNCIONES DEL VINCULADO"
+      },
+      "required_fields": [
+        {
+          "field_key": "fecha_visita",
+          "label": "Fecha de la Visita",
+          "section": "DATOS_EMPRESA",
+          "row": 6,
+          "col": "D",
+          "type": "date"
+        },
+        {
+          "field_key": "modalidad",
+          "label": "Modalidad",
+          "section": "DATOS_EMPRESA",
+          "row": 6,
+          "col": "Q",
+          "type": "dropdown",
+          "options": [
+            "Virtual",
+            "Presencial"
+          ]
+        }
+      ],
+      "field_sources": [
+        {
+          "field_key": "nombre_empresa",
+          "label": "Nombre de la Empresa",
+          "section": "DATOS_EMPRESA",
+          "row": 7,
+          "col": "D",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "D8"
+        },
+        {
+          "field_key": "asesor",
+          "label": "Asesor",
+          "section": "DATOS_EMPRESA",
+          "row": 12,
+          "col": "D",
+          "source_type": "sheet_formula",
+          "source_sheet": "1.PRESENTACIÓN DEL PROGRAMA IL",
+          "source_cell": "D14"
+        },
+        {
+          "field_key": "nombre_vinculado",
+          "label": "Nombre vinculado",
+          "section": "CONCEPTO_EVALUACION",
+          "row": 15,
+          "col": "K",
+          "source_type": "sheet_formula",
+          "source_sheet": "9.  SEGUIMIENTO AL PROCESO DE I",
+          "source_cell": "A16"
+        },
+        {
+          "field_key": "cedula_vinculado",
+          "label": "Cédula",
+          "section": "CONCEPTO_EVALUACION",
+          "row": 15,
+          "col": "Q",
+          "source_type": "sheet_formula",
+          "source_sheet": "9.  SEGUIMIENTO AL PROCESO DE I",
+          "source_cell": "E16"
+        },
+        {
+          "field_key": "fecha_firma_contrato",
+          "label": "Fecha de firma de contrato",
+          "section": "FUNCIONES_VINCULADO",
+          "row": 18,
+          "col": "N",
+          "source_type": "sheet_formula",
+          "source_sheet": "9.  SEGUIMIENTO AL PROCESO DE I",
+          "source_cell": "M20"
+        }
+      ]
+    },
+    {
+      "document_kind": "caracterizacion",
+      "sheet_name": "caracterizacion",
+      "code": "CARACT",
+      "note": "Hoja de base de datos (1303 filas x 67 columnas). Solo 1 celda amarilla.",
+      "keep_sections": [
+        "EVALUACION_RIESGO"
+      ],
+      "ignore_sections": [],
+      "section_aliases": {
+        "EVALUACION_RIESGO": "Evaluación de riesgo"
+      },
+      "required_fields": [
+        {
+          "field_key": "nivel_riesgo_bano",
+          "label": "Apertura de entrada al baño con puerta exterior",
+          "section": "EVALUACION_RIESGO",
+          "row": 11,
+          "col": "D",
+          "type": "dropdown",
+          "options": [
+            "Alto",
+            "Medio",
+            "Bajo"
+          ]
+        }
+      ],
+      "field_sources": []
+    },
+    {
+      "document_kind": "interpreter_service",
+      "sheet_name": "SERVICIO INTERPRETE LSC",
+      "code": "LSC",
+      "keep_sections": [
+        "DATOS_GENERALES",
+        "INTERPRETE",
+        "OFERENTE",
+        "ASISTENTES"
+      ],
+      "ignore_sections": [
+        "OBSERVACIONES_RECOMENDACIONES",
+        "DESARROLLO_ACTIVIDAD"
+      ],
+      "section_aliases": {
+        "DATOS_GENERALES": "DATOS GENERALES",
+        "INTERPRETE": "DATOS DEL INTERPRETE",
+        "OFERENTE": "DATOS DEL OFERENTE",
+        "ASISTENTES": "ASISTENTES",
+        "OBSERVACIONES_RECOMENDACIONES": "OBSERVACIONES / RECOMENDACIONES"
+      },
+      "required_fields": [
+        {
+          "field_key": "fecha_visita",
+          "label": "Fecha de la visita",
+          "section": "DATOS_GENERALES",
+          "type": "date"
+        },
+        {
+          "field_key": "nombre_empresa",
+          "label": "Nombre de la empresa",
+          "section": "DATOS_GENERALES",
+          "type": "text"
+        },
+        {
+          "field_key": "nit_empresa",
+          "label": "Numero de NIT",
+          "section": "DATOS_GENERALES",
+          "type": "text"
+        },
+        {
+          "field_key": "nombre_interprete",
+          "label": "Nombre interprete",
+          "section": "INTERPRETE",
+          "type": "text"
+        },
+        {
+          "field_key": "nombre_oferente",
+          "label": "Nombre oferente",
+          "section": "OFERENTE",
+          "type": "text"
+        },
+        {
+          "field_key": "cedula_oferente",
+          "label": "Cedula",
+          "section": "OFERENTE",
+          "type": "text"
+        },
+        {
+          "field_key": "sumatoria_horas_interpretes",
+          "label": "SUMATORIA HORAS INTERPRETES",
+          "section": "DATOS_GENERALES",
+          "type": "number"
+        },
+        {
+          "field_key": "total_tiempo",
+          "label": "Total Tiempo",
+          "section": "DATOS_GENERALES",
+          "type": "number"
+        }
+      ],
+      "field_priority": {
+        "nombre_profesional": [
+          "Nombre interprete"
+        ],
+        "sumatoria_horas_interpretes": [
+          "SUMATORIA HORAS INTERPRETES",
+          "Total Tiempo"
+        ],
+        "nombre_empresa": [
+          "Nombre de la empresa"
+        ],
+        "nit_empresa": [
+          "Numero de NIT"
+        ],
+        "fecha_servicio": [
+          "Fecha de la visita"
+        ],
+        "participantes": [
+          "Nombre oferente",
+          "Cedula"
+        ]
+      }
+    }
+  ]
+}

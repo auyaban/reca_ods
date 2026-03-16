@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 import tempfile
@@ -20,7 +20,7 @@ _GOOGLE_SPREADSHEET_MIME = "application/vnd.google-apps.spreadsheet"
 _EXCEL_EXTENSIONS = {".xlsx", ".xlsm"}
 _PDF_EXTENSIONS = {".pdf"}
 _PDF_BLOCK_RE = re.compile(
-    r"(?ms)(?:^|\n)\s*(?P<idx>[1-9])\s+(?P<body>.*?)(?=(?:\n\s*[1-9]\s+[A-ZÁÉÍÓÚÑ])|\Z)"
+    r"(?ms)(?:^|\n)\s*(?P<idx>[1-9])\s+(?P<body>.*?)(?=(?:\n\s*[1-9]\s+[A-ZÃÃ‰ÃÃ“ÃšÃ‘])|\Z)"
 )
 
 
@@ -42,7 +42,7 @@ def _clean_nit(value: Any) -> str:
     raw = _clean_text(value)
     if not raw:
         return ""
-    match = re.search(r"\b\d{6,12}(?:-\d)?\b", raw)
+    match = re.search(r"\d{6,12}(?:-\d)?", raw)
     return match.group(0) if match else raw
 
 
@@ -50,6 +50,73 @@ def _clean_name(value: Any) -> str:
     text = _clean_text(value)
     text = re.sub(r"\s+", " ", text)
     return text.strip(" .:-")
+
+
+def _looks_like_person_name_for_company(value: Any) -> bool:
+    text = _clean_name(value)
+    if not text or not _is_person_candidate(text):
+        return False
+    norm = normalize_text(text)
+    company_markers = (
+        "sas",
+        "s a s",
+        "sa",
+        "ltda",
+        "ips",
+        "eps",
+        "sucursal",
+        "grupo",
+        "group",
+        "consult",
+        "seguros",
+        "rehabilit",
+        "colombia",
+        "partners",
+        "soluciones",
+        "solutions",
+        "fundacion",
+        "universidad",
+        "clinica",
+        "hospital",
+        "colegio",
+        "empresa",
+    )
+    if any(marker in norm for marker in company_markers):
+        return False
+    tokens = [token for token in re.split(r"\s+", text) if token]
+    return 2 <= len(tokens) <= 4 and all(any(ch.isalpha() for ch in token) for token in tokens)
+
+
+def _company_from_email_domain(text: str) -> str:
+    email_match = re.search(
+        r"(?i)[\w.+-]+@(?P<domain>[a-z0-9.-]+?\.(?:com\.co|edu\.co|org\.co|net\.co|com|org|net|co))",
+        normalize_text(text or ""),
+    )
+    if not email_match:
+        return ""
+    domain = email_match.group("domain").split(".", 1)[0]
+    pieces = re.split(r"[-_.]+", domain)
+    if len(pieces) == 1:
+        collapsed = pieces[0]
+        for marker in (
+            "rehabilitacion",
+            "consulting",
+            "seguros",
+            "colombia",
+            "partners",
+            "solutions",
+            "soluciones",
+            "salud",
+            "industrial",
+            "tecnologia",
+            "tecnologias",
+            "servicios",
+            "logistica",
+        ):
+            collapsed = re.sub(marker, f" {marker}", collapsed, flags=re.IGNORECASE)
+        pieces = [part for part in collapsed.split() if part]
+    company = " ".join(piece.upper() for piece in pieces if piece)
+    return _clean_name(company)
 
 
 def _to_iso_date(value: Any) -> str:
@@ -384,9 +451,25 @@ def _extract_pdf_value(text: str, pattern: str) -> str:
 
 
 def _extract_pdf_nits(text: str) -> list[str]:
+    labeled_matches = re.findall(
+        r"(?i)(?:numero de nit|n[uú]mero de nit|nit empresa|razon social / nit|nit)\s*:\s*([0-9.\- ]+)",
+        str(text or ""),
+    )
     seen: set[str] = set()
     result: list[str] = []
-    for nit in re.findall(r"\b\d{6,12}(?:-\d)?\b", str(text or "")):
+    for nit in labeled_matches:
+        clean = _clean_nit(nit)
+        if not clean or clean in seen:
+            continue
+        seen.add(clean)
+        result.append(clean)
+    if result:
+        return result
+
+    for nit in re.findall(r"\d{6,12}(?:-\d)?", str(text or "")):
+        digits = re.sub(r"\D", "", nit)
+        if len(digits) == 10 and digits.startswith("3"):
+            continue
         clean = _clean_nit(nit)
         if not clean or clean in seen:
             continue
@@ -414,17 +497,29 @@ def _parse_duration_hours(raw_value: str) -> float | None:
 
 
 def _extract_pdf_general_fields(first_page: str) -> tuple[str, str, str]:
-    empresa = _extract_pdf_value(
+    header_text = re.sub(
+        r"(?i)(?<!\n)(fecha de la visita:|modalidad:|nombre de la empresa:|ciudad/municipio:|direcci[oó]n de la empresa:|n[uú]mero de nit:|correo electr[oó]nico:|tel[eé]fonos:|contacto de la empresa:|empresa afiliada a caja(?:de)? compensaci[oó]n:|sede compensar:|asesor:|profesional asignado\s*reca:)",
+        r"\n\1",
         first_page,
-        r"nombre de la empresa:\s*(.+?)(?:ciudad/municipio:|direccion de la empresa:|numero de nit:)",
+    )
+    empresa = _extract_pdf_value(
+        header_text,
+        r"nombre de la empresa:\s*([^\n]+?)(?:\s*(?:ciudad/municipio:|direcci[oó]n de la empresa:|n[uú]mero de nit:|correo electr[oó]nico:|tel[eé]fonos:|contacto de la empresa:|empresa afiliada a caja(?:de)? compensaci[oó]n:|$))",
     )
     fecha_servicio = _to_iso_date(
-        _extract_pdf_value(first_page, r"fecha de la visita:\s*([0-9]{1,2}[/-][0-9]{1,2}[/-][0-9]{4})")
+        _extract_pdf_value(header_text, r"fecha de la visita:\s*([0-9]{1,2}[/-][0-9]{1,2}[/-][0-9]{4})")
     )
     modalidad = _extract_pdf_value(
-        first_page,
-        r"modalidad:\s*(.+?)(?:nombre de la empresa:|ciudad/municipio:|direccion de la empresa:)",
+        header_text,
+        r"modalidad:\s*([^\n]+?)(?:\s*(?:nombre de la empresa:|ciudad/municipio:|direcci[oó]n de la empresa:|n[uú]mero de nit:|correo electr[oó]nico:|tel[eé]fonos:|$))",
     ).rstrip(".")
+
+    if normalize_text(empresa).startswith(("nombre de la empresa", "direccion de la empresa", "dirección de la empresa")):
+        empresa = ""
+    if not empresa or normalize_text(empresa).startswith(
+        ("nombre de la empresa", "direccion de la empresa", "dirección de la empresa")
+    ):
+        empresa = _company_from_email_domain(header_text)
 
     if empresa and fecha_servicio and modalidad:
         return empresa, fecha_servicio, modalidad
@@ -453,6 +548,11 @@ def _extract_pdf_general_fields(first_page: str) -> tuple[str, str, str]:
             next_line = lines[idx + 1]
             if "ciudad/municipio:" in normalize_text(next_line):
                 empresa = _clean_text(re.split(r"(?i)ciudad/municipio:", next_line, maxsplit=1)[0])
+
+    if not empresa or normalize_text(empresa).startswith(
+        ("nombre de la empresa", "direccion de la empresa", "dirección de la empresa")
+    ):
+        empresa = _company_from_email_domain(header_text)
 
     if not empresa:
         for idx, line in enumerate(lines):
@@ -509,6 +609,20 @@ def _split_joined_cedula_percentage(raw_token: str) -> tuple[str, str]:
 
     _, _, cedula, percentage = max(candidates, key=lambda item: (item[0], item[1]))
     return cedula, percentage
+
+
+def _split_joined_cedula_phone(raw_digits: str) -> tuple[str, str]:
+    digits = re.sub(r"\D", "", raw_digits or "")
+    if len(digits) < 17:
+        return "", ""
+    for cedula_len in (10, 9, 8, 7):
+        if len(digits) <= cedula_len:
+            continue
+        cedula = digits[:cedula_len]
+        phone = digits[cedula_len:]
+        if len(phone) == 10 and phone.startswith("3"):
+            return cedula, phone
+    return "", ""
 
 
 def _extract_pdf_participants(text: str) -> list[dict[str, str]]:
@@ -615,38 +729,253 @@ def _extract_pdf_participants(text: str) -> list[dict[str, str]]:
                 "genero_usuario": "",
             }
         )
+    if participants:
+        return _dedupe_participants(participants)
+
+    # Fallback for PDFs where the participant row is extracted outside the
+    # expected section but still preserves name, cÃ©dula, discapacidad, phone,
+    # and result on the same line.
+    line_pattern = re.compile(
+        r"(?i)(?P<nombre>[A-ZÃÃ‰ÃÃ“ÃšÃ‘][A-ZÃÃ‰ÃÃ“ÃšÃ‘a-zÃ¡Ã©Ã­Ã³ÃºÃ¼ÃœÃ±' .-]{8,}?)\s+"
+        r"(?P<cedula>\d{6,12})\s+"
+        r"Discapacidad\s+"
+        r"(?P<discapacidad>.+?)\s+"
+        r"(?P<telefono>\d[\d ]{6,15})\s+"
+        r"(?P<resultado>Pendiente|Aprobado|No aprobado)\b"
+    )
+    for raw_line in str(text or "").splitlines():
+        line = _clean_text(raw_line)
+        if "discapacidad" not in normalize_text(line):
+            continue
+        match = line_pattern.search(line)
+        if not match:
+            continue
+        nombre = _clean_name(match.group("nombre"))
+        cedula = _clean_cedula(match.group("cedula"))
+        if not nombre or not cedula or not _is_person_candidate(nombre):
+            continue
+        participants.append(
+            {
+                "nombre_usuario": nombre,
+                "cedula_usuario": cedula,
+                "discapacidad_usuario": _clean_text(match.group("discapacidad")),
+                "genero_usuario": "",
+            }
+        )
+    if participants:
+        return _dedupe_participants(participants)
+
+    follow_up_pattern = re.compile(
+        r"(?is)persona que atiende la\s*visita.*?"
+        r"(?P<nombre>[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúüÜñ' .-]{8,}?)"
+        r"(?P<cedula_phone>\d{17,22})"
+        r"(?P<email>[\w.+-]+@[\w.-]+)"
+        r"(?P<contacto>[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúüÜñ' .-]{4,})"
+        r"(?:Hermana|Hermano|Madre|Padre|Esposa|Esposo|Pareja|Amiga|Amigo|Tia|Tio|Prima|Primo)"
+        r"\s+\d{7,12}\s+"
+        r"(?P<cargo>.+?)\s+"
+        r"Si\s+No aplica\.\s+Discapacidad\s+(?P<discapacidad>.+?)"
+        r"(?=\s+\d{1,2}/\d{1,2}/\d{4}\b)",
+    )
+    follow_up_patterns = [
+        follow_up_pattern,
+        re.compile(
+            r"(?is)(?P<nombre>[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúüÜñ' .-]{8,}?)"
+            r"(?P<cedula_phone>\d{17,22})"
+            r"(?P<email>[\w.+-]+@[\w.-]+)"
+            r"(?P<contacto>[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúüÜñ' .-]{4,}?)"
+            r"(?:Hermana|Hermano|Madre|Padre|Esposa|Esposo|Pareja|Amiga|Amigo|Tia|Tio|Prima|Primo)"
+            r"\s+\d{7,12}\s+"
+            r"(?P<cargo>.+?)\s+"
+            r"Si\s+No aplica\.\s+Discapacidad\s+(?P<discapacidad>.+?)"
+            r"(?=\s+(?:Seguimiento\s*[1-9]:|\d{1,2}/\d{1,2}/\d{4}\b)|$)",
+        ),
+        re.compile(
+            r"(?is)(?P<nombre>[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúüÜñ' .-]{8,}?)"
+            r"(?P<cedula_phone>\d{17,22})"
+            r"(?P<email>[\w.+-]+@[\w.-]+)"
+            r"(?P<contacto>[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúüÜñ' .-]{4,}?)"
+            r"(?:Hermana|Hermano|Madre|Padre|Esposa|Esposo|Pareja|Amiga|Amigo|Tia|Tio|Prima|Primo)"
+            r"\s+\d{7,12}\s+"
+            r"(?P<cargo>.+?)\s+"
+            r"Si\s+(?:(?P<porcentaje>\d{1,3}(?:[.,]\d{1,2})?)|No refiere|No aplica\.)\s+Discapacidad\s+(?P<discapacidad>.+?)"
+            r"(?=\s+(?:Contrato de trabajo|Seguimiento\s*[1-9]:|\d{1,2}/\d{1,2}/\d{4}\b)|$)",
+        ),
+    ]
+    for follow_up_pattern in follow_up_patterns:
+        follow_up_match = follow_up_pattern.search(str(text or ""))
+        if not follow_up_match:
+            continue
+        nombre = _clean_name(follow_up_match.group("nombre"))
+        cedula, _telefono = _split_joined_cedula_phone(follow_up_match.group("cedula_phone"))
+        discapacidad = _clean_text(follow_up_match.group("discapacidad"))
+        if nombre and cedula and _is_person_candidate(nombre):
+            participants.append(
+                {
+                    "nombre_usuario": nombre,
+                    "cedula_usuario": cedula,
+                    "discapacidad_usuario": discapacidad,
+                    "genero_usuario": "",
+                }
+            )
+            break
     return _dedupe_participants(participants)
 
 
+def _extract_pdf_follow_up_number(text: str) -> str:
+    last_number = ""
+    for match in re.finditer(
+        r"(?i)seguimiento\s*(?P<number>[1-9])\s*:\s*(?P<date>[0-9]{1,2}[/-][0-9]{1,2}[/-][0-9]{4})",
+        str(text or ""),
+    ):
+        if _to_iso_date(match.group("date")):
+            last_number = match.group("number")
+    return last_number
+
+
+def _extract_pdf_vacancy_fields(text: str) -> tuple[str, int]:
+    cargo = _extract_pdf_value(
+        text,
+        r"(?is)nombre de la vacante:\s*(.+?)(?:n[uú]mero de vacantes:|nivel del cargo:|g[eé]nero:|edad:|modalidad de trabajo:|lugar de trabajo:|$)",
+    )
+    total_vacantes = 0
+    vacantes_raw = _extract_pdf_value(
+        text,
+        r"(?is)n[uú]mero de vacantes:\s*(.+?)(?:nivel del cargo:|g[eé]nero:|edad:|modalidad de trabajo:|lugar de trabajo:|salario asignado:|$)",
+    )
+    vacantes_match = re.search(r"\d+", vacantes_raw)
+    if vacantes_match:
+        total_vacantes = int(vacantes_match.group(0))
+    return _clean_text(cargo), total_vacantes
+
+
+def _extract_pdf_selection_cargo(text: str) -> str:
+    section_match = re.search(
+        r"(?is)2\.\s*datos del oferente(?P<section>.*?)(?:(?<!\d)3\.\s*\S|4\.\s*caracterizaci[oó]n del oferente|$)",
+        str(text or ""),
+    )
+    section = section_match.group("section") if section_match else str(text or "")
+    compact = re.sub(r"\s+", " ", section)
+    header_match = re.search(
+        r"(?is)cargo\s*contacto de emergencia\s*parentesco\s*tel[eé]fono(?:\s*fecha de nacimiento\s*edad)?\s*(?P<tail>.+?)(?:(?:[¿?]pendiente otros oferentes|lugar firma de contrato|fecha firma de contrato|3\.)|$)",
+        compact,
+    )
+    if header_match:
+        tail = _clean_text(header_match.group("tail"))
+        tail = re.sub(r"(?<=[a-záéíóúüñ])(?=[A-ZÁÉÍÓÚÑ])", " ", tail)
+        contact_match = re.search(
+            r"(?s)^(?P<cargo>.+?)\s+"
+            r"(?P<contacto>[A-ZÁÉÍÓÚÑ][a-záéíóúüñ]+(?:\s+[A-Za-zÁÉÍÓÚÑáéíóúüñ]+){0,4})\s+"
+            r"(?P<parentesco>Madre|Padre|Hermana|Hermano|Pareja|Esposa|Esposo|Amiga|Amigo|Mamá|Papa|Papá|Tia|Tío|Tio|Abuela|Abuelo)\b",
+            tail,
+        )
+        cargo = _clean_text(contact_match.group("cargo") if contact_match else tail)
+        if cargo:
+            return cargo
+    cargo = _extract_pdf_value(
+        section,
+        r"(?is)cargo\s+(?P<value>.+?)(?:contacto de emergencia|parentesco|tel[eé]fono|fecha de nacimiento|edad|[¿?]pendiente otros oferentes|lugar firma de contrato|fecha firma de contrato|$)",
+    )
+    if normalize_text(cargo).startswith("contacto de emergencia"):
+        return ""
+    return _clean_text(cargo)
+
+
+def _extract_name_from_follow_up_filename(path: Path) -> str:
+    stem = path.stem
+    suffix_match = re.search(r"\s*-\s*\d{2}_[A-Za-z]{3,4}_\d{4}$", stem)
+    if not suffix_match:
+        return ""
+    prefix = stem[: suffix_match.start()]
+    if " - " not in prefix:
+        return ""
+    name = prefix.rsplit(" - ", 1)[-1]
+    name = re.sub(r"^\(\d+\)\s*", "", name).strip()
+    return _clean_name(name)
+
+
+def _extract_follow_up_participant_from_filename(text: str, path: Path) -> list[dict[str, str]]:
+    if "seguimiento al proceso de inclusion laboral" not in normalize_text(text):
+        return []
+    cedula_match = re.search(r"(?P<cedula_phone>\d{17,22})", str(text or ""), re.IGNORECASE)
+    discapacidad_match = re.search(
+        r"(?is)Si\s+(?:\d{1,3}(?:[.,]\d{1,2})?%?|No refiere|No aplica\.)\s+Discapacidad\s+(?P<discapacidad>.+?)"
+        r"(?=\s+(?:Contrato de trabajo|Seguimiento\s*[1-9]:|\d{1,2}/\d{1,2}/\d{4}\b)|$)",
+        str(text or ""),
+    )
+    if not cedula_match or not discapacidad_match:
+        return []
+    nombre = _extract_name_from_follow_up_filename(path)
+    cedula, _telefono = _split_joined_cedula_phone(cedula_match.group("cedula_phone"))
+    discapacidad = _clean_text(discapacidad_match.group("discapacidad"))
+    if not nombre or not cedula:
+        return []
+    return [
+        {
+            "nombre_usuario": nombre,
+            "cedula_usuario": cedula,
+            "discapacidad_usuario": discapacidad,
+            "genero_usuario": "",
+        }
+    ]
+
+
 def _extract_pdf_asistentes_candidates(text: str) -> list[str]:
-    candidates: list[str] = []
+    def _collect(source_text: str) -> list[str]:
+        found: list[str] = []
+        normalized = re.sub(r"(?i)(?<!\n)(nombre completo:)", r"\n\1", source_text)
+        for raw_line in normalized.splitlines():
+            line = raw_line.strip()
+            if not line or "nombre completo:" not in line.lower():
+                continue
+            explicit_name = re.search(
+                r"(?i)nombre completo:\s*(?P<nombre>[A-ZÃÃ‰ÃÃ“ÃšÃ‘][A-Za-zÃÃ‰ÃÃ“ÃšÃ‘Ã¡Ã©Ã­Ã³ÃºÃ¼ÃœÃ±' -]+?)"
+                r"(?:\s+(?:cargo:|profesional\b|lider\b|coordinacion\b|psicolog[aÃ¡]\b)|$)",
+                line,
+            )
+            if explicit_name:
+                candidate = _clean_name(explicit_name.group("nombre"))
+                if candidate and _is_person_candidate(candidate) and candidate not in found:
+                    found.append(candidate)
+                continue
+            for chunk in re.split(r"(?i)nombre completo:\s*", line):
+                candidate = re.split(r"(?i)\bcargo:\s*", chunk, maxsplit=1)[0]
+                candidate = _clean_name(candidate)
+                if candidate and _is_person_candidate(candidate) and candidate not in found:
+                    found.append(candidate)
+        return found
+
     start_match = re.search(r"\b\d+\.\s*asistentes\b", text, re.IGNORECASE)
     asistentes_text = text[start_match.start() :] if start_match else text
-    asistentes_text = re.sub(r"(?i)(?<!\n)(nombre completo:)", r"\n\1", asistentes_text)
+    candidates = _collect(asistentes_text)
+    if candidates or not start_match:
+        return candidates
+    return _collect(text)
 
-    for raw_line in asistentes_text.splitlines():
-        line = raw_line.strip()
-        if not line or "nombre completo:" not in line.lower():
-            continue
-        for chunk in re.split(r"(?i)nombre completo:\s*", line):
-            candidate = re.split(r"(?i)\bcargo:\s*", chunk, maxsplit=1)[0]
-            candidate = _clean_name(candidate)
-            if candidate and _is_person_candidate(candidate) and candidate not in candidates:
-                candidates.append(candidate)
-    return candidates
+
+def _extract_interpreter_names(text: str) -> list[str]:
+    names: list[str] = []
+    pattern = re.compile(
+        r"(?is)nombre\s+int\S?rprete\s*(?:no\s*\d+)?\s*:\s*(?P<nombre>.+?)(?:hora\s+inicial:|hora\s+final:|total\s+tiempo:|\n|$)"
+    )
+    for match in pattern.finditer(str(text or "")):
+        candidate = _clean_name(match.group("nombre"))
+        if candidate and _is_person_candidate(candidate) and candidate not in names:
+            names.append(candidate)
+    return names
 
 
 def _extract_interpreter_participants(text: str) -> tuple[list[dict[str, str]], str]:
     normalized_text = str(text or "")
     section_match = re.search(
-        r"(?is)2\.\s*datos de los oferentes/ vinculados(?P<section>.*?)(?:nombre interprete|3\.)",
+        r"(?is)2\.\s*datos de los oferentes/ vinculados(?P<section>.*?)(?:nombre\s+int\S?rprete|3\.)",
         normalized_text,
     )
     section = _clean_text(section_match.group("section")) if section_match else _clean_text(normalized_text)
     process_name = ""
     participants: list[dict[str, str]] = []
     pattern = re.compile(
-        r"(?P<idx>\d+)\s+(?P<nombre>.+?)\s+(?P<cedula>\d{6,12})\s+(?P<proceso>.+?)(?=(?:\s+\d+\s+[A-ZÁÉÍÓÚÑ])|$)",
+        r"(?P<idx>\d+)\s+(?P<nombre>.+?)\s+(?P<cedula>\d{6,12})\s+(?P<proceso>.+?)(?=(?:\s+\d+\s+[A-Z????????????])|$)",
         re.IGNORECASE,
     )
     for match in pattern.finditer(section):
@@ -678,27 +1007,33 @@ def _parse_interpreter_pdf(first_page: str, full_text: str, path: Path) -> dict:
     )
     empresa = _extract_pdf_value(
         full_text,
-        r"nombre de la empresa:\s*(.+?)(?:direccion:|contacto en la empresa:)",
+        r"nombre de la empresa:\s*(.+?)(?:direcci[oó]n:|contacto en la empresa:|modalidad servicio:|2\.)",
     )
-    modalidad = _extract_pdf_value(
+    modalidad_match = re.search(
+        r"(?is)modalidad servicio:\s*(?:(?:int\S?rprete|nombre int\S?rprete)\s*:\s*.+?\s+)?"
+        r"(?P<modalidad>virtual|presencial|h[ií]brida?)\b",
         full_text,
-        r"modalidad servicio:\s*(.+?)(?:interprete:|profesional reca:|2\.)",
     )
-    profesional = _extract_pdf_value(
+    modalidad = _clean_text(modalidad_match.group("modalidad")) if modalidad_match else ""
+    profesional_reca = _extract_pdf_value(
         full_text,
-        r"profesional reca:\s*(.+?)(?:virtual|presencial|3\.)",
+        r"profesional reca:\s*(.+?)(?:\bvirtual\b|\bpresencial\b|\bh[ií]brida?\b|2\.|3\.)",
     )
+    interpreter_names = _extract_interpreter_names(full_text)
     participants, process_name = _extract_interpreter_participants(full_text)
     sumatoria_raw = _extract_pdf_value(
         full_text,
-        r"sumatoria horas interpretes:\s*(.+?)(?:observaciones:|3\.)",
+        r"(?is)sumatoria horas int\S?rpretes:\s*(.+?)(?:observaciones:|3\.)",
     )
     total_time_raw = _extract_pdf_value(
         full_text,
-        r"total tiempo:\s*(.+?)(?:si el servicio fue realizado en sabana|sumatoria horas interpretes:)",
+        r"(?is)total tiempo:\s*(.+?)(?:si el servicio fue realizado en sabana|sumatoria horas int\S?rpretes:)",
     )
-    horas = _parse_duration_hours(sumatoria_raw) or _parse_duration_hours(total_time_raw)
-    nits = _extract_pdf_nits(full_text)
+    total_time_hours = _parse_duration_hours(total_time_raw)
+    sumatoria_hours = _parse_duration_hours(sumatoria_raw)
+    horas = sumatoria_hours if sumatoria_hours is not None else total_time_hours
+    nit = _clean_nit(_extract_pdf_value(first_page, r"n\S?mero de nit:\s*([0-9.\- ]+)"))
+    nits = [nit] if nit else []
 
     warnings: list[str] = []
     if not empresa:
@@ -709,26 +1044,29 @@ def _parse_interpreter_pdf(first_page: str, full_text: str, path: Path) -> dict:
         warnings.append("No se detectaron oferentes en el PDF.")
     if horas is None:
         warnings.append("No se detecto total de horas interprete en el PDF.")
+    if not interpreter_names and not asistentes_candidates:
+        warnings.append("No se detectaron interpretes ni asistentes en el PDF.")
 
     return {
         "file_path": str(path),
-        "nit_empresa": nits[0] if nits else "",
+        "nit_empresa": nit,
         "nits_empresas": nits,
         "nombre_empresa": empresa,
         "fecha_servicio": fecha_servicio,
-        "nombre_profesional": profesional or (asistentes_candidates[1] if len(asistentes_candidates) > 1 else ""),
-        "candidatos_profesional": asistentes_candidates,
+        "nombre_profesional": interpreter_names[0] if interpreter_names else (asistentes_candidates[0] if asistentes_candidates else (profesional_reca or "")),
+        "interpretes": interpreter_names,
+        "candidatos_profesional": interpreter_names or asistentes_candidates,
+        "asistentes": asistentes_candidates,
         "modalidad_servicio": modalidad,
         "participantes": participants,
         "interpreter_process_name": process_name,
         "interpreter_total_time_raw": total_time_raw,
         "sumatoria_horas_interpretes_raw": sumatoria_raw,
-        "total_horas_interprete": horas,
-        "sumatoria_horas_interpretes": horas,
+        "total_horas_interprete": total_time_hours if total_time_hours is not None else "",
+        "sumatoria_horas_interpretes": sumatoria_hours if sumatoria_hours is not None else "",
         "is_fallido": "fallido" in normalize_text(full_text),
         "warnings": warnings,
     }
-
 
 def parse_acta_excel(file_path: str) -> dict:
     path = Path(file_path)
@@ -810,20 +1148,29 @@ def parse_acta_pdf(file_path: str) -> dict:
 
     full_text = "\n".join(page for page in pages if page)
     first_page = pages[0] if pages else ""
+    normalized_first_page = normalize_text(first_page)
     if "interprete" in normalize_text(first_page) and "sumatoria horas interpretes" in normalize_text(full_text):
         return _parse_interpreter_pdf(first_page, full_text, path)
 
-    nit = _clean_nit(_extract_pdf_value(first_page, r"n[uú]mero de nit:\s*([0-9.\- ]+)"))
+    nit = _clean_nit(_extract_pdf_value(first_page, r"n(?:u|ú|Ãº)mero de nit:\s*([0-9.\- ]+)"))
     empresa, fecha_servicio, modalidad = _extract_pdf_general_fields(first_page)
     asistentes_candidates = _extract_pdf_asistentes_candidates(full_text)
     profesional_reca = _extract_pdf_value(
         first_page,
-        r"profesional asignado\s*reca:\s*(.+?)(?:\n|se informa|$)",
+        r"profesional asignado\s*reca:\s*(.*?)(?:modalidad:|\n|se informa|$)",
     )
-    asesor = _extract_pdf_value(first_page, r"asesor:\s*(.+?)(?:sede compensar:|correo electr[oó]nico:|$)")
+    asesor = _extract_pdf_value(first_page, r"asesor:\s*(.+?)(?:sede compensar:|correo electr[oÃ³]nico:|$)")
+    if normalize_text(profesional_reca).startswith("modalidad"):
+        profesional_reca = ""
     profesional = asistentes_candidates[0] if asistentes_candidates else (profesional_reca or asesor)
     participants = _extract_pdf_participants(full_text)
+    if not participants:
+        participants = _extract_follow_up_participant_from_filename(full_text, path)
     nits = _extract_pdf_nits(full_text)
+    numero_seguimiento = _extract_pdf_follow_up_number(full_text)
+    cargo_objetivo, total_vacantes = _extract_pdf_vacancy_fields(full_text)
+    if not cargo_objetivo and "proceso de seleccion incluyente" in normalized_first_page:
+        cargo_objetivo = _extract_pdf_selection_cargo(full_text)
     if not nit and nits:
         nit = nits[0]
 
@@ -834,7 +1181,11 @@ def parse_acta_pdf(file_path: str) -> dict:
         warnings.append("No se detecto nombre de empresa en el PDF.")
     if not fecha_servicio:
         warnings.append("No se detecto fecha de servicio en formato valido.")
-    if not participants:
+    if (
+        not participants
+        and "evaluacion de accesibilidad" not in normalized_first_page
+        and "revision de las condiciones de la vacante" not in normalized_first_page
+    ):
         warnings.append("No se detectaron oferentes en el PDF.")
 
     return {
@@ -846,6 +1197,9 @@ def parse_acta_pdf(file_path: str) -> dict:
         "nombre_profesional": profesional,
         "candidatos_profesional": asistentes_candidates or ([profesional_reca] if profesional_reca else ([asesor] if asesor else [])),
         "modalidad_servicio": modalidad,
+        "cargo_objetivo": cargo_objetivo,
+        "total_vacantes": total_vacantes,
+        "numero_seguimiento": numero_seguimiento,
         "participantes": participants,
         "warnings": warnings,
     }
@@ -925,3 +1279,5 @@ def parse_acta_source(source: str) -> dict:
     raise RuntimeError(
         "No se pudo resolver el acta. Usa un archivo Excel/PDF local o una URL valida de Google Drive/Sheets."
     )
+
+

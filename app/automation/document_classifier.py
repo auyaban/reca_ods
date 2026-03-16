@@ -19,7 +19,14 @@ class DocumentClassification:
 
 _EXPLICIT_RULES: tuple[tuple[tuple[str, ...], DocumentClassification], ...] = (
     (
-        ("interprete lsc", "interprete", "servicio interprete"),
+        (
+            "interprete lsc",
+            "interprete",
+            "servicio interprete",
+            "int rprete lsc",
+            "servicio int rprete",
+            "servicio int rprete lsc",
+        ),
         DocumentClassification(
             document_kind="interpreter_service",
             document_label="Servicio interprete",

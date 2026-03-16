@@ -121,3 +121,18 @@ class DecisionSuggestion:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class AutomationStagedCase:
+    case_id: str
+    status: str
+    created_at: str
+    updated_at: str
+    message: dict[str, object]
+    attachment: dict[str, object]
+    analysis: dict[str, object]
+    suggestion: dict[str, object]
+
+    def to_dict(self) -> dict:
+        return asdict(self)

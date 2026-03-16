@@ -174,6 +174,13 @@ Salida esperada:
 powershell -ExecutionPolicy Bypass -File release.ps1 vX.Y.Z
 ```
 
+Antes de publicar, `release.ps1` valida:
+
+- `installer_config.iss` con `SUPABASE_URL`, `SUPABASE_ANON_KEY` y `BACKEND_URL` no vacios.
+- `dist\RECA_ODS\RECA_ODS.exe --smoke-test`.
+- instalacion silenciosa temporal del `RECA_ODS_Setup.exe`.
+- `RECA_ODS.exe --smoke-test` ya instalado desde el installer.
+
 Publica en GitHub Release:
 
 - `RECA_ODS_Setup.exe`

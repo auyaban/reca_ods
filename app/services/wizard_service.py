@@ -1,7 +1,13 @@
 from app.automation import (
     get_automation_attachment_analysis as _get_automation_attachment_analysis,
     get_automation_gmail_preview as _get_automation_gmail_preview,
+    process_automation_email_preview as _process_automation_email_preview,
+    publish_automation_email_preview as _publish_automation_email_preview,
+    get_automation_staging_case as _get_automation_staging_case,
+    get_automation_staging_cases as _get_automation_staging_cases,
     get_automation_test_status as _get_automation_test_status,
+    save_automation_staging_case as _save_automation_staging_case,
+    update_automation_staging_case as _update_automation_staging_case,
 )
 from app.services.sections import (
     actas_finalizadas,
@@ -165,8 +171,45 @@ def get_automation_attachment_analysis(payload: dict) -> dict:
     return _get_automation_attachment_analysis(payload)
 
 
+def process_automation_email_preview(payload: dict) -> dict:
+    return _process_automation_email_preview(payload)
+
+
+def publish_automation_email_preview(payload: dict) -> dict:
+    return _publish_automation_email_preview(payload)
+
+
+def get_automation_staging_cases() -> dict:
+    return _get_automation_staging_cases()
+
+
+def save_automation_staging_case(payload: dict) -> dict:
+    return _save_automation_staging_case(payload)
+
+
+def get_automation_staging_case(case_id: str) -> dict:
+    return _get_automation_staging_case(case_id)
+
+
+def update_automation_staging_case(payload: dict) -> dict:
+    return _update_automation_staging_case(payload)
+
+
 def reset_runtime_caches() -> None:
     clear_settings_cache(reload_env=True)
     clear_supabase_client_cache()
     clear_google_sheets_service_cache()
     terminar.clear_schema_cache()
+    from app.services.acta_import_pipeline import clear_import_pipeline_caches
+    clear_import_pipeline_caches()
+    from app.automation.orchestrator import (
+        _companies_cached,
+        _professional_email_map_cached,
+        _usuarios_reca_cached,
+    )
+    _usuarios_reca_cached.cache_clear()
+    _companies_cached.cache_clear()
+    _professional_email_map_cached.cache_clear()
+    from app.automation.rules_engine import _get_company_by_nit_cached, _get_tarifas_cached
+    _get_company_by_nit_cached.cache_clear()
+    _get_tarifas_cached.cache_clear()

@@ -20,13 +20,22 @@ $envPath = Join-Path $root ".env"
 if (!(Test-Path $envPath)) {
     throw ".env no encontrado"
 }
+
 $envLines = Get-Content $envPath
-$supabaseUrl = ($envLines | Where-Object { $_ -match '^SUPABASE_URL=' }) -replace '^SUPABASE_URL=', ''
-$supabaseKey = ($envLines | Where-Object { $_ -match '^SUPABASE_ANON_KEY=' }) -replace '^SUPABASE_ANON_KEY=', ''
-$backendUrl = ($envLines | Where-Object { $_ -match '^BACKEND_URL=' }) -replace '^BACKEND_URL=', ''
-$googleDriveSharedFolderId = ($envLines | Where-Object { $_ -match '^GOOGLE_DRIVE_SHARED_FOLDER_ID=' }) -replace '^GOOGLE_DRIVE_SHARED_FOLDER_ID=', ''
-$googleDriveTemplateSpreadsheetName = ($envLines | Where-Object { $_ -match '^GOOGLE_DRIVE_TEMPLATE_SPREADSHEET_NAME=' }) -replace '^GOOGLE_DRIVE_TEMPLATE_SPREADSHEET_NAME=', ''
-$googleServiceAccountFile = ($envLines | Where-Object { $_ -match '^GOOGLE_SERVICE_ACCOUNT_FILE=' }) -replace '^GOOGLE_SERVICE_ACCOUNT_FILE=', ''
+
+function Get-EnvValue([string]$name) {
+    return ($envLines | Where-Object { $_ -match "^$name=" } | Select-Object -First 1) -replace "^$name=", ''
+}
+
+$supabaseUrl = Get-EnvValue "SUPABASE_URL"
+$supabaseKey = Get-EnvValue "SUPABASE_ANON_KEY"
+$supabaseAuthEmail = Get-EnvValue "SUPABASE_AUTH_EMAIL"
+$supabaseAuthPassword = Get-EnvValue "SUPABASE_AUTH_PASSWORD"
+$backendUrl = Get-EnvValue "BACKEND_URL"
+$googleDriveSharedFolderId = Get-EnvValue "GOOGLE_DRIVE_SHARED_FOLDER_ID"
+$googleDriveTemplateSpreadsheetName = Get-EnvValue "GOOGLE_DRIVE_TEMPLATE_SPREADSHEET_NAME"
+$googleServiceAccountFile = Get-EnvValue "GOOGLE_SERVICE_ACCOUNT_FILE"
+$supabaseEdgeActaExtractionSecret = Get-EnvValue "SUPABASE_EDGE_ACTA_EXTRACTION_SECRET"
 $googleInstalledServiceAccountPath = '%APPDATA%\Sistema de Gestión ODS RECA\secrets\google-service-account.json'
 $hasGoogleServiceAccount = 0
 
@@ -49,10 +58,13 @@ if ($googleServiceAccountFile) {
 $installerConfig = @"
 #define SupabaseUrl `"$(Escape-InnoValue $supabaseUrl)`"
 #define SupabaseKey `"$(Escape-InnoValue $supabaseKey)`"
+#define SupabaseAuthEmail `"$(Escape-InnoValue $supabaseAuthEmail)`"
+#define SupabaseAuthPassword `"$(Escape-InnoValue $supabaseAuthPassword)`"
 #define BackendUrl `"$(Escape-InnoValue $backendUrl)`"
 #define GoogleDriveSharedFolderId `"$(Escape-InnoValue $googleDriveSharedFolderId)`"
 #define GoogleDriveTemplateSpreadsheetName `"$(Escape-InnoValue $googleDriveTemplateSpreadsheetName)`"
 #define GoogleServiceAccountInstalledPath `"$(Escape-InnoValue $googleInstalledServiceAccountPath)`"
+#define SupabaseEdgeActaExtractionSecret `"$(Escape-InnoValue $supabaseEdgeActaExtractionSecret)`"
 #define HasGoogleServiceAccount $hasGoogleServiceAccount
 "@
 Set-Content -Path (Join-Path $root "installer_config.iss") -Value $installerConfig

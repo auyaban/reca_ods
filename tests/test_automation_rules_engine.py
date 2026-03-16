@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import unittest
 from unittest.mock import patch
@@ -134,7 +134,7 @@ class AutomationRulesEngineTests(unittest.TestCase):
 
         self.assertEqual(result.codigo_servicio, "83")
         self.assertEqual(result.confidence, "medium")
-        self.assertIn("visita adicional", result.observaciones.lower())
+        self.assertEqual(result.observaciones, "")
 
     @patch("app.automation.rules_engine._company_by_nit")
     @patch("app.automation.rules_engine._tarifas")
@@ -163,6 +163,215 @@ class AutomationRulesEngineTests(unittest.TestCase):
         self.assertEqual(result.codigo_servicio, "89")
         self.assertEqual(result.confidence, "medium")
 
+    @patch("app.automation.rules_engine._company_by_nit")
+    @patch("app.automation.rules_engine._tarifas")
+    def test_defaults_reactivation_management_to_reca_when_template_is_missing(
+        self,
+        mock_tarifas,
+        mock_company_by_nit,
+    ) -> None:
+        mock_company_by_nit.return_value = {
+            "nombre_empresa": "Empresa Demo",
+            "caja_compensacion": "Compensar",
+            "ciudad_empresa": "Bogota",
+        }
+        mock_tarifas.return_value = (
+            {
+                "codigo_servicio": "37",
+                "referencia_servicio": "IL2.VMR.V.R",
+                "descripcion_servicio": "Visita de Mantenimiento o Reactivacion -Gestion empresarial RECA -VIRTUAL",
+                "modalidad_servicio": "Virtual",
+                "valor_base": 1000,
+            },
+        )
+
+        result = suggest_service_from_analysis(
+            analysis={
+                "nit_empresa": "123",
+                "document_kind": "program_reactivation",
+                "modalidad_servicio": "Virtual",
+                "participantes": [],
+            },
+            message={"subject": "Reactivacion del programa"},
+        )
+
+        self.assertEqual(result.codigo_servicio, "37")
+        self.assertEqual(result.confidence, "low")
+        self.assertIn("reca", result.observaciones.lower())
+
+    @patch("app.automation.rules_engine._company_by_nit")
+    @patch("app.automation.rules_engine._tarifas")
+    def test_defaults_accessibility_company_size_to_under_50_when_missing(
+        self,
+        mock_tarifas,
+        mock_company_by_nit,
+    ) -> None:
+        mock_company_by_nit.return_value = {
+            "nombre_empresa": "Empresa Demo",
+            "caja_compensacion": "Sin dato",
+            "ciudad_empresa": "Bogota",
+        }
+        mock_tarifas.return_value = (
+            {
+                "codigo_servicio": "43",
+                "referencia_servicio": "IL3.EA.ME.B.50",
+                "descripcion_servicio": "Evaluacion de Accesibilidad Microempresa (hasta 50 trabajadores) BOGOTA",
+                "modalidad_servicio": "Bogota",
+                "valor_base": 1000,
+            },
+        )
+
+        result = suggest_service_from_analysis(
+            analysis={
+                "nit_empresa": "123",
+                "document_kind": "accessibility_assessment",
+                "modalidad_servicio": "Bogota",
+                "participantes": [],
+            },
+            message={"subject": "Evaluacion de accesibilidad"},
+        )
+
+        self.assertEqual(result.codigo_servicio, "43")
+        self.assertEqual(result.confidence, "low")
+        self.assertIn("hasta 50", " ".join(result.rationale).lower())
+
+    @patch("app.automation.rules_engine._company_by_nit")
+    @patch("app.automation.rules_engine._tarifas")
+    def test_defaults_presentation_to_reca_and_one_company_when_missing(
+        self,
+        mock_tarifas,
+        mock_company_by_nit,
+    ) -> None:
+        mock_company_by_nit.return_value = {
+            "nombre_empresa": "Empresa Demo",
+            "caja_compensacion": "Compensar",
+            "ciudad_empresa": "Bogota",
+        }
+        mock_tarifas.return_value = (
+            {
+                "codigo_servicio": "1",
+                "referencia_servicio": "IL1.PP.B.R.V",
+                "descripcion_servicio": "Promocion del Programa de Inclusion Laboral Individual -Gestion empresarial RECA -Virtual",
+                "modalidad_servicio": "Virtual",
+                "valor_base": 1000,
+            },
+        )
+
+        result = suggest_service_from_analysis(
+            analysis={
+                "nit_empresa": "123",
+                "document_kind": "program_presentation",
+                "modalidad_servicio": "Virtual",
+                "participantes": [],
+            },
+            message={"subject": "Presentacion del programa"},
+        )
+
+        self.assertEqual(result.codigo_servicio, "1")
+        self.assertEqual(result.confidence, "low")
+        self.assertIn("1", result.observaciones)
+
+    @patch("app.automation.rules_engine._company_by_nit")
+    @patch("app.automation.rules_engine._tarifas")
+    def test_uses_multiple_detected_nits_to_pick_group_presentation_bucket(
+        self,
+        mock_tarifas,
+        mock_company_by_nit,
+    ) -> None:
+        mock_company_by_nit.return_value = {
+            "nombre_empresa": "Empresa Demo",
+            "caja_compensacion": "Sin dato",
+            "ciudad_empresa": "Bogota",
+        }
+        mock_tarifas.return_value = (
+            {
+                "codigo_servicio": "7",
+                "referencia_servicio": "IL1.PP2-3.B.R",
+                "descripcion_servicio": "Promocion del Programa de Inclusion Laboral 2-3 Empresas - Gestion empresarial RECA- Virtual",
+                "modalidad_servicio": "Virtual",
+                "valor_base": 1000,
+            },
+        )
+
+        result = suggest_service_from_analysis(
+            analysis={
+                "nit_empresa": "900123456-1, 800123456-2",
+                "document_kind": "program_presentation",
+                "modalidad_servicio": "Virtual",
+                "participantes": [],
+            },
+            message={"subject": "Presentacion del programa"},
+        )
+
+        self.assertEqual(result.codigo_servicio, "7")
+        self.assertIn("2 nit", " ".join(result.rationale).lower())
+
+    @patch("app.automation.rules_engine._company_by_nit")
+    @patch("app.automation.rules_engine._tarifas")
+    def test_formats_vacancy_review_observations_with_cargo_and_vacancies(self, mock_tarifas, mock_company_by_nit) -> None:
+        mock_company_by_nit.return_value = {
+            "nombre_empresa": "Empresa Demo",
+            "caja_compensacion": "Compensar",
+            "ciudad_empresa": "Bogota",
+        }
+        mock_tarifas.return_value = (
+            {
+                "codigo_servicio": "47",
+                "referencia_servicio": "IL4.RV.V",
+                "descripcion_servicio": "Revision de las Condiciones de la Vacante Virtual",
+                "modalidad_servicio": "Virtual",
+                "valor_base": 1000,
+            },
+        )
+
+        result = suggest_service_from_analysis(
+            analysis={
+                "nit_empresa": "123",
+                "document_kind": "vacancy_review",
+                "modalidad_servicio": "Virtual",
+                "cargo_objetivo": "Auxiliar Administrativo",
+                "total_vacantes": 3,
+                "participantes": [],
+            },
+            message={"subject": "Revision de condiciones de la vacante"},
+        )
+
+        self.assertEqual(result.codigo_servicio, "47")
+        self.assertEqual(result.observaciones, "Auxiliar Administrativo (3)")
+
+    @patch("app.automation.rules_engine._company_by_nit")
+    @patch("app.automation.rules_engine._tarifas")
+    def test_formats_follow_up_observations_with_follow_up_number(self, mock_tarifas, mock_company_by_nit) -> None:
+        mock_company_by_nit.return_value = {
+            "nombre_empresa": "Empresa Demo",
+            "caja_compensacion": "Compensar",
+            "ciudad_empresa": "Bogota",
+        }
+        mock_tarifas.return_value = (
+            {
+                "codigo_servicio": "83",
+                "referencia_servicio": "IL10.SA.V",
+                "descripcion_servicio": "Seguimiento y Acompanamiento al Proceso de Inclusion Laboral Virtual",
+                "modalidad_servicio": "Virtual",
+                "valor_base": 1000,
+            },
+        )
+
+        result = suggest_service_from_analysis(
+            analysis={
+                "nit_empresa": "123",
+                "document_kind": "follow_up",
+                "modalidad_servicio": "Virtual",
+                "numero_seguimiento": "3",
+                "participantes": [],
+            },
+            message={"subject": "Seguimiento virtual inclusion laboral"},
+        )
+
+        self.assertEqual(result.codigo_servicio, "83")
+        self.assertEqual(result.observaciones, "3")
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from app.config import get_settings
+from app.paths import app_data_dir
 from app.utils.text import normalize_search_text
 
 
@@ -13,7 +14,7 @@ def default_process_templates_dir() -> Path:
     configured = str(settings.automation_process_templates_dir or "").strip()
     if configured:
         return Path(os.path.expandvars(configured)).expanduser()
-    return Path.home() / "Desktop" / "RECA_INCLUSION_LABORAL" / "templates"
+    return app_data_dir() / "templates"
 
 
 def list_process_template_names() -> list[str]:

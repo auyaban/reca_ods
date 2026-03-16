@@ -5,6 +5,16 @@
 #define MyAppPublisher "RECA"
 #define MyAppExeName "RECA_ODS.exe"
 
+#ifndef SupabaseAuthEmail
+  #define SupabaseAuthEmail ""
+#endif
+#ifndef SupabaseAuthPassword
+  #define SupabaseAuthPassword ""
+#endif
+#ifndef SupabaseEdgeActaExtractionSecret
+  #define SupabaseEdgeActaExtractionSecret ""
+#endif
+
 #include "installer_config.iss"
 
 [Setup]
@@ -35,7 +45,7 @@ Name: "{userdesktop}\\{#MyAppName}"; Filename: "{app}\\{#MyAppExeName}"; Tasks: 
 Name: "desktopicon"; Description: "Crear icono en el escritorio"; GroupDescription: "Accesos directos:"
 
 [Run]
-Filename: "{app}\\{#MyAppExeName}"; Description: "Abrir {#MyAppName}"; Flags: nowait postinstall
+Filename: "{app}\\{#MyAppExeName}"; Description: "Abrir {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [Code]
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -50,9 +60,15 @@ begin
     EnvPath := ExpandConstant('{userappdata}\\{#MyAppName}\\.env');
     EnvContent := 'SUPABASE_URL={#SupabaseUrl}' + #13#10 +
                   'SUPABASE_ANON_KEY={#SupabaseKey}' + #13#10 +
+                  'SUPABASE_AUTH_EMAIL={#SupabaseAuthEmail}' + #13#10 +
+                  'SUPABASE_AUTH_PASSWORD={#SupabaseAuthPassword}' + #13#10 +
                   'BACKEND_URL={#BackendUrl}' + #13#10 +
                   'GOOGLE_DRIVE_SHARED_FOLDER_ID={#GoogleDriveSharedFolderId}' + #13#10 +
-                  'GOOGLE_DRIVE_TEMPLATE_SPREADSHEET_NAME={#GoogleDriveTemplateSpreadsheetName}' + #13#10;
+                  'GOOGLE_DRIVE_TEMPLATE_SPREADSHEET_NAME={#GoogleDriveTemplateSpreadsheetName}' + #13#10 +
+                  'AUTOMATION_LLM_EXTRACTION_ENABLED=0' + #13#10 +
+                  'SUPABASE_EDGE_ACTA_EXTRACTION_FUNCTION=extract-acta-ods' + #13#10 +
+                  'SUPABASE_EDGE_ACTA_EXTRACTION_SECRET={#SupabaseEdgeActaExtractionSecret}' + #13#10 +
+                  'ODS_AUTOMATION_TEST_ENABLED=0' + #13#10;
     if {#HasGoogleServiceAccount} = 1 then
       EnvContent := EnvContent + 'GOOGLE_SERVICE_ACCOUNT_FILE={#GoogleServiceAccountInstalledPath}' + #13#10
     else

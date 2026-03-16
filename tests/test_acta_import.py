@@ -276,6 +276,29 @@ class ActaImportTests(unittest.TestCase):
             ],
         )
 
+    def test_extract_pdf_participants_reads_selection_row_outside_expected_section(self) -> None:
+        text = (
+            "4. CARACTERIZACION DEL OFERENTE\n"
+            "Por confirmar Fecha firma de contrato:\n"
+            "Angie Lorena Avellaneda Chaparro 1034657640 Discapacidad visual baja vision 3112544990 Pendiente\n"
+            "2. DATOS DEL OFERENTE\n"
+            "CITADO A ENTREVISTA CERTIFICADO TELEFONO RESULTADO: No DISCAPACIDAD NOMBRE OFERENTE CEDULA\n"
+        )
+
+        participants = _extract_pdf_participants(text)
+
+        self.assertEqual(
+            participants,
+            [
+                {
+                    "nombre_usuario": "Angie Lorena Avellaneda Chaparro",
+                    "cedula_usuario": "1034657640",
+                    "discapacidad_usuario": "visual baja vision",
+                    "genero_usuario": "",
+                }
+            ],
+        )
+
     def test_extract_pdf_asistentes_candidates_prefers_nombre_completo_order(self) -> None:
         text = (
             "3. Asistentes\n"
@@ -312,6 +335,24 @@ class ActaImportTests(unittest.TestCase):
                 "Sandra Milena Pachon Rojas",
                 "Ana Maria Malagon",
                 "Francia Palacios",
+            ],
+        )
+
+    def test_extract_pdf_asistentes_candidates_falls_back_to_full_text_when_asistentes_block_is_late(self) -> None:
+        text = (
+            "Nombre completo: Leidy Novoa Profesional de apoyo\n"
+            "Nombre completo: Silvana Pomarico\n"
+            "8. ASISTENTES\n"
+            "Sin firmas registradas.\n"
+        )
+
+        candidates = _extract_pdf_asistentes_candidates(text)
+
+        self.assertEqual(
+            candidates,
+            [
+                "Leidy Novoa",
+                "Silvana Pomarico",
             ],
         )
 
@@ -401,6 +442,161 @@ class ActaImportTests(unittest.TestCase):
         )
 
     @patch("app.services.excel_acta_import._extract_pdf_text_pages")
+    def test_parse_acta_pdf_extracts_selection_candidate_when_row_is_before_section(self, mock_extract_pages) -> None:
+        mock_extract_pages.return_value = [
+            "\n".join(
+                [
+                    "4. CARACTERIZACION DEL OFERENTE",
+                    "Por confirmar Fecha firma de contrato:",
+                    "Angie Lorena Avellaneda Chaparro 1034657640 Discapacidad visual baja vision 3112544990 Pendiente",
+                    "2. DATOS DEL OFERENTE",
+                    "Asesor: Dennis Katherin Lozano Hoyos Profesional asignado RECA:",
+                    "Modalidad: Virtual",
+                    "Nombre completo: Leidy Novoa Profesional de apoyo",
+                    "Nombre completo: Silvana Pomarico",
+                    "8. ASISTENTES",
+                    "1. DATOS DE LA EMPRESA",
+                    "Fecha de la Visita: 02/03/2026",
+                    "Nombre de la Empresa: GALLAGHER CONSULTING LTDA Ciudad/Municipio: Bogota",
+                    "Numero de NIT: 901024978-1",
+                ]
+            )
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            temp_path = Path(tmp.name)
+
+        try:
+            result = parse_acta_pdf(str(temp_path))
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+        self.assertEqual(result["nit_empresa"], "901024978-1")
+        self.assertEqual(result["nombre_empresa"], "GALLAGHER CONSULTING LTDA")
+        self.assertEqual(result["fecha_servicio"], "2026-03-02")
+        self.assertEqual(result["modalidad_servicio"], "Virtual")
+        self.assertEqual(result["nombre_profesional"], "Leidy Novoa")
+        self.assertEqual(len(result["participantes"]), 1)
+
+    @patch("app.services.excel_acta_import._extract_pdf_text_pages")
+    def test_parse_acta_pdf_supports_accessibility_layout_without_false_oferentes(self, mock_extract_pages) -> None:
+        mock_extract_pages.return_value = [
+            "\n".join(
+                [
+                    "EVALUACIÓN DE ACCESIBILIDAD",
+                    "Fecha de la Visita:10/3/2026 Modalidad: PresencialNombre de la Empresa:CARLOS RANGEL GALVIS Ciudad/Municipio:Bogotá",
+                    "Dirección de la Empresa:Av. Cl. 20 # 43A – 32 Número de NIT: 900352592-3Correo electrónico:gestionhumana@rangelrehabilitacion.com.coanalistagghh@rangelrehabilitacion.com.coTeléfonos: 3160273992",
+                    "Contacto de la empresa:Andres Gerardo Maldonado Triana Camilo Andres Palma Cargo: Coordinador de Gestión Humana",
+                    "Empresa afiliada a Caja de Compensación:Compensar Sede Compensar:Suba Asesor: Sergio David Velez España Profesional asignado RECA:Adriana Gonzalez",
+                ]
+            )
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            temp_path = Path(tmp.name)
+
+        try:
+            result = parse_acta_pdf(str(temp_path))
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+        self.assertEqual(result["nit_empresa"], "900352592-3")
+        self.assertEqual(result["nits_empresas"], ["900352592-3"])
+        self.assertEqual(result["fecha_servicio"], "2026-03-10")
+        self.assertEqual(result["modalidad_servicio"], "Presencial")
+        self.assertEqual(result["nombre_empresa"], "CARLOS RANGEL GALVIS")
+        self.assertEqual(result["participantes"], [])
+        self.assertNotIn("No se detectaron oferentes en el PDF.", result["warnings"])
+
+    @patch("app.services.excel_acta_import._extract_pdf_text_pages")
+    def test_parse_acta_pdf_extracts_vacancy_fields_without_false_oferente_warning(self, mock_extract_pages) -> None:
+        mock_extract_pages.return_value = [
+            "\n".join(
+                [
+                    "REVISIÓN DE LAS CONDICIONES DE LA VACANTE",
+                    "Fecha de la Visita: 13/03/2026 Modalidad: Virtual",
+                    "Nombre de la Empresa:PAREX RESOURCES (COLOMBIA) AG SUCURSALCiudad/Municipio:Bogotá",
+                    "Dirección de la Empresa:Calle 113 #7 -21 of 611 torre A Número de NIT: 900268747-9",
+                    "Asesor: Luisa María Angarita Profesional asignado RECA:Alejandra Pérez",
+                    "Nombre de la vacante: Analista HSNúmero de vacantes: 2Nivel del cargo: Administrativo.",
+                ]
+            )
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            temp_path = Path(tmp.name)
+
+        try:
+            result = parse_acta_pdf(str(temp_path))
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+        self.assertEqual(result["nit_empresa"], "900268747-9")
+        self.assertEqual(result["nombre_empresa"], "PAREX RESOURCES (COLOMBIA) AG SUCURSAL")
+        self.assertEqual(result["cargo_objetivo"], "Analista HS")
+        self.assertEqual(result["total_vacantes"], 2)
+        self.assertEqual(result["participantes"], [])
+        self.assertNotIn("No se detectaron oferentes en el PDF.", result["warnings"])
+
+    @patch("app.services.excel_acta_import._extract_pdf_text_pages")
+    def test_parse_acta_pdf_extracts_selection_cargo_from_oferente_section(self, mock_extract_pages) -> None:
+        mock_extract_pages.return_value = [
+            "\n".join(
+                [
+                    "PROCESO DE SELECCIÓN INCLUYENTE INDIVIDUAL",
+                    "Fecha de la Visita:3/10/2026 Modalidad:Virtual",
+                    "Nombre de la Empresa:ICOL CONSULTORES SASCiudad/Municipio:Bogotá",
+                    "Dirección de la Empresa:Cl 100 #19a-30 Número de NIT:901376637-3",
+                    "2. DATOS DEL OFERENTE",
+                    "1 Michael Smit Vargas Guiza101847397850 Discapacidad visual baja visión3224611064Aprobado",
+                    "CARGO CONTACTO DE EMERGENCIA PARENTESCO TELÉFONO FECHA DE NACIMIENTO EDAD",
+                    "Auxiliar administrativo Aura Lucia Guisa Madre 3164699064 05/02/1995 31",
+                    "3. DESARROLLO DE LA ACTIVIDAD",
+                ]
+            )
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            temp_path = Path(tmp.name)
+
+        try:
+            result = parse_acta_pdf(str(temp_path))
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+        self.assertEqual(result["cargo_objetivo"], "Auxiliar administrativo")
+
+    @patch("app.services.excel_acta_import._extract_pdf_text_pages")
+    def test_parse_acta_pdf_extracts_follow_up_participant_with_percentage(self, mock_extract_pages) -> None:
+        mock_extract_pages.return_value = [
+            "\n".join(
+                [
+                    "SEGUIMIENTO AL PROCESO DE INCLUSIÓN LABORAL",
+                    "Fecha de la Visita: 02/03/2026 Modalidad:Presencial",
+                    "Nombre de la Empresa:INCODEPF S.A Ciudad/Municipio:Funza",
+                    "Dirección de la Empresa:Cl. 16 #2-64 Número de NIT: 86045023-4",
+                    "Asesor: Paola Andrea Uribe Ramirez Sede Compensar:Mosquera",
+                    "Andrés Nicolas Gomez Rueda10732549343164601112ruedaandres3144@gmail.comJuan Carlos Gómez Camelo Padre 3112382985",
+                    "Auxiliar AdministrativoSi 27.88% Discapacidad visual baja visión",
+                    "Seguimiento 1:2/3/2026 Seguimiento 4:",
+                ]
+            )
+        ]
+
+        path = Path("SEGUIMIENTO AL PROCESO DE INCLUSION LABORA - (1) Andres Gomez - 02_Mar_2026.pdf")
+        with patch("pathlib.Path.exists", return_value=True):
+            result = parse_acta_pdf(str(path))
+
+        self.assertEqual(result["numero_seguimiento"], "1")
+        self.assertEqual(result["participantes"][0]["nombre_usuario"], "Andres Gomez")
+        self.assertEqual(result["participantes"][0]["cedula_usuario"], "1073254934")
+        self.assertEqual(result["participantes"][0]["discapacidad_usuario"], "visual baja visión")
+
+    @patch("app.services.excel_acta_import._extract_pdf_text_pages")
     def test_parse_acta_pdf_supports_interpreter_layout_and_sumatoria_hours(self, mock_extract_pages) -> None:
         mock_extract_pages.return_value = [
             "\n".join(
@@ -431,8 +627,96 @@ class ActaImportTests(unittest.TestCase):
         self.assertEqual(result["nombre_empresa"], "SOLLA S.A")
         self.assertEqual(result["fecha_servicio"], "2026-03-04")
         self.assertEqual(result["sumatoria_horas_interpretes"], 2.0)
-        self.assertEqual(result["total_horas_interprete"], 2.0)
+        self.assertEqual(result["total_horas_interprete"], 1.0)
         self.assertEqual(result["participantes"][0]["cedula_usuario"], "1073520676")
+
+    @patch("app.services.excel_acta_import._extract_pdf_text_pages")
+    def test_parse_acta_pdf_extracts_follow_up_number_and_vinculado_layout(self, mock_extract_pages) -> None:
+        mock_extract_pages.return_value = [
+            "\n".join(
+                [
+                    "SEGUIMIENTO AL PROCESO DE INCLUSIÓN LABORAL",
+                    "Fecha de la Visita: 09/03/2026 Modalidad:Presencial",
+                    "Nombre de la Empresa:AMBIENTII CONSTRUCTORA INMOBILIARIA S.A.SCiudad/Municipio:Bogotá",
+                    "Dirección de la Empresa:Carrera 16 a No. 78 - 11 Piso 6 Número de NIT: 830060858-1",
+                    "Persona que atiende lavisita en la empresa:Camila MantillaCarolina Olaya Cargo: Gerente AdmnistrativaCoordinadora Talento Humano",
+                    "Asesor: Dennis Katherin Lozano HoyosSede Compensar:Chapinero",
+                    "Lisandro Rivas Segura10039450133202563056rivaslisandro160@gmail.comDarlyn RivasHermana 3112663968",
+                    "Ayudante de Obra InlcusiónLaboral Si No aplica. Discapacidad física",
+                    "Seguimiento 1:9/2/2026 Seguimiento 4:",
+                    "Seguimiento 2:9/3/2026 Seguimiento 5:",
+                    "Seguimiento 3: Seguimiento 6:",
+                ]
+            )
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            temp_path = Path(tmp.name)
+
+        try:
+            result = parse_acta_pdf(str(temp_path))
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+        self.assertEqual(result["nit_empresa"], "830060858-1")
+        self.assertEqual(result["nombre_empresa"], "AMBIENTII CONSTRUCTORA INMOBILIARIA S.A.S")
+        self.assertEqual(result["fecha_servicio"], "2026-03-09")
+        self.assertEqual(result["modalidad_servicio"], "Presencial")
+        self.assertEqual(result["numero_seguimiento"], "2")
+        self.assertEqual(result["participantes"][0]["nombre_usuario"], "Lisandro Rivas Segura")
+        self.assertEqual(result["participantes"][0]["cedula_usuario"], "1003945013")
+
+    @patch("app.services.excel_acta_import._extract_pdf_text_pages")
+    def test_parse_acta_pdf_extracts_follow_up_vinculado_with_percentage_or_no_refiere(self, mock_extract_pages) -> None:
+        dayana_pages = [
+            "\n".join(
+                [
+                    "SEGUIMIENTO AL PROCESO DE INCLUSIÓN LABORAL",
+                    "Fecha de la Visita: 04/03/2026 Modalidad:Virtual",
+                    "Nombre de la Empresa:SIS VIDA SAS Ciudad/Municipio:Bogotá",
+                    "Dirección de la Empresa:Cra. 23 #166-36 Número de NIT: 830132432-6",
+                    "Asesor: Andrea Carolina Guevara GonzalezSede Compensar:Suba",
+                    "12338917973148674569dayana3597@hotmail.comLuz Estella RojasMadre 3138506720",
+                    "Analista Operativo -Inclusión LaboralSi 41.4 Discapacidad física",
+                    "Seguimiento 1:11/12/2025 Seguimiento 4:",
+                    "Seguimiento 2:30/01/2026 Seguimiento 5:",
+                    "Seguimiento 3:04/03/2026 Seguimiento 6:",
+                ]
+            )
+        ]
+        estefania_pages = [
+            "\n".join(
+                [
+                    "SEGUIMIENTO AL PROCESO DE INCLUSIÓN LABORAL",
+                    "Fecha de la Visita: 04/03/2026 Modalidad:Virtual",
+                    "Nombre de la Empresa:SIS VIDA SAS Ciudad/Municipio:Bogotá",
+                    "Dirección de la Empresa:Cra. 23 #166-36 Número de NIT: 830132432-6",
+                    "Asesor: Andrea Carolina Guevara GonzalezSede Compensar:Suba",
+                    "Estefania Zabala Cuadros12338970643142039495stezabala03@gmail.comSonia CuadrosMadre 3103066115",
+                    "Analista Operativo -Inclusión LaboralSi No refiere Discapacidad física",
+                    "Seguimiento 1:11/12/2025 Seguimiento 4:",
+                    "Seguimiento 2:30/01/2026 Seguimiento 5:",
+                    "Seguimiento 3:04/03/2026 Seguimiento 6:",
+                ]
+            )
+        ]
+        mock_extract_pages.side_effect = [dayana_pages, estefania_pages]
+
+        path1 = Path("SEGUIMIENTO AL PROCESO DE INCLUSION LABORAL (3) - Dayana Salazar- 04_Mar_2026.pdf")
+        path2 = Path("SEGUIMIENTO AL PROCESO DE INCLUSION LABORAL (3) - Estefania Zabala - 04_Mar_2026.pdf")
+        with patch("pathlib.Path.exists", return_value=True):
+            result_dayana = parse_acta_pdf(str(path1))
+            result_estefania = parse_acta_pdf(str(path2))
+
+        self.assertEqual(result_dayana["numero_seguimiento"], "3")
+        self.assertEqual(result_dayana["participantes"][0]["nombre_usuario"], "Dayana Salazar")
+        self.assertEqual(result_dayana["participantes"][0]["cedula_usuario"], "1233891797")
+        self.assertEqual(result_dayana["participantes"][0]["discapacidad_usuario"], "física")
+        self.assertEqual(result_estefania["numero_seguimiento"], "3")
+        self.assertEqual(result_estefania["participantes"][0]["nombre_usuario"], "Estefania Zabala")
+        self.assertEqual(result_estefania["participantes"][0]["cedula_usuario"], "1233897064")
+        self.assertEqual(result_estefania["participantes"][0]["discapacidad_usuario"], "física")
 
 
 if __name__ == "__main__":

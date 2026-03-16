@@ -1,0 +1,5 @@
+project_id = "automatizacion"
+
+[functions.extract-acta-ods]
+verify_jwt = false
+

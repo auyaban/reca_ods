@@ -8,11 +8,11 @@ from app.utils.cache import ttl_bucket
 
 _ENV_PATH = app_data_dir() / ".env"
 _SETTINGS_CACHE_TTL_SECONDS = 300
-_DEFAULT_SUPABASE_AUTH_EMAIL = "test@reca.local"
-_DEFAULT_SUPABASE_AUTH_PASSWORD = "Reca.Test.2026!v3"
-_LEGACY_SUPABASE_AUTH_PASSWORDS = {
-    "Reca.Test.2026!",
-}
+_DEFAULT_SUPABASE_AUTH_EMAIL = ""
+_DEFAULT_SUPABASE_AUTH_PASSWORD = ""
+_DEFAULT_AUTOMATION_TEST_SPREADSHEET_ID = ""
+_DEFAULT_AUTOMATION_TEST_SHEET_NAME = "ODS_INPUT"
+_LEGACY_SUPABASE_AUTH_PASSWORDS: tuple[str, ...] = ()
 _ENV_FALLBACK_ENCODINGS = ("utf-8-sig", "utf-8", "cp1252", "latin-1")
 
 
@@ -163,9 +163,33 @@ class Settings:
             os.getenv("GOOGLE_GMAIL_DELEGATED_USER", "")
         )
         self.google_gmail_to_filter = _clean_env(
-            os.getenv("GOOGLE_GMAIL_TO_FILTER", "gestiondocumental@recacolombia.org")
+            os.getenv("GOOGLE_GMAIL_TO_FILTER", "")
         )
-        self.google_gmail_fetch_limit = int(_clean_env(os.getenv("GOOGLE_GMAIL_FETCH_LIMIT", "20")) or "20")
+        try:
+            self.google_gmail_fetch_limit = int(_clean_env(os.getenv("GOOGLE_GMAIL_FETCH_LIMIT", "20")) or "20")
+        except ValueError:
+            self.google_gmail_fetch_limit = 20
+        self.google_sheets_automation_test_spreadsheet_id = _env_or_default(
+            "GOOGLE_SHEETS_AUTOMATION_TEST_SPREADSHEET_ID",
+            _DEFAULT_AUTOMATION_TEST_SPREADSHEET_ID,
+        )
+        self.google_sheets_automation_test_sheet_name = _env_or_default(
+            "GOOGLE_SHEETS_AUTOMATION_TEST_SHEET_NAME",
+            _DEFAULT_AUTOMATION_TEST_SHEET_NAME,
+        )
+        self.automation_decisions_log_path = _clean_env(
+            os.getenv("AUTOMATION_DECISIONS_LOG_PATH", "")
+        )
+        self.automation_llm_extraction_enabled = _env_bool(
+            "AUTOMATION_LLM_EXTRACTION_ENABLED", False
+        )
+        self.supabase_edge_acta_extraction_function = _env_or_default(
+            "SUPABASE_EDGE_ACTA_EXTRACTION_FUNCTION",
+            "extract-acta-ods",
+        )
+        self.supabase_edge_acta_extraction_secret = _clean_env(
+            os.getenv("SUPABASE_EDGE_ACTA_EXTRACTION_SECRET", "")
+        )
         self.ods_automation_test_enabled = _env_bool("ODS_AUTOMATION_TEST_ENABLED", False)
         self.ods_automation_test_users = _env_csv("ODS_AUTOMATION_TEST_USERS")
         self.automation_process_templates_dir = _clean_env(

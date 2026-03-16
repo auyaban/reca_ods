@@ -112,6 +112,33 @@ class Splash(tk.Toplevel):
         self.destroy()
 
 
+def run_smoke_test() -> None:
+    from app.config import get_settings
+    from app.storage import ensure_appdata_files
+    from app.version import get_version
+
+    ensure_appdata_files()
+
+    version = get_version().strip()
+    if not version or version == "0.0.0":
+        raise RuntimeError("Smoke test fallo: VERSION no disponible en runtime.")
+
+    settings = get_settings()
+    missing = []
+    if not settings.supabase_url:
+        missing.append("SUPABASE_URL")
+    if not settings.supabase_anon_key:
+        missing.append("SUPABASE_ANON_KEY")
+    if missing:
+        raise RuntimeError(
+            f"Smoke test fallo: faltan variables requeridas en runtime: {', '.join(missing)}"
+        )
+
+    import app.supabase_client  # noqa: F401
+    import app.updater  # noqa: F401
+    import main_gui  # noqa: F401
+
+
 def main() -> None:
     try:
         from app.storage import ensure_appdata_files
@@ -124,6 +151,9 @@ def main() -> None:
         import main_gui
 
         main_gui.main()
+        return
+    if "--smoke-test" in sys.argv:
+        run_smoke_test()
         return
 
     root = tk.Tk()
