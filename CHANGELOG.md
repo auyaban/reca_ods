@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.9
+- `Actas Terminadas` ahora prioriza `payload_normalized` proveniente de Inclusion Laboral y solo cae al parser del archivo si ese payload falta o es invalido.
+- El pipeline de importacion soporta payloads estructurados versionados para formularios finalizados y seguimientos.
+- Cobertura de pruebas ampliada para importacion payload-first y fallback sobre filas finalizadas.
+
 ## 2.2.8
 - Importador PDF ajustado para evaluaciones de accesibilidad con valores antes de sus etiquetas, evitando bloqueos por mismatch de empresa al crear nueva entrada.
 - Motor de reglas: `observaciones` vuelve a limitarse a cargo y vacantes cuando aplica; el número de seguimiento se conserva en `seguimiento_servicio`.

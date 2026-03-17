@@ -82,7 +82,8 @@ def listar_actas_finalizadas(limit: int = 500) -> dict:
             client.table(_TABLE)
             .select(
                 "registro_id,session_id,created_at,finalizado_at_colombia,finalizado_at_iso,"
-                "nombre_usuario,nombre_empresa,nombre_formato,path_formato,revisado"
+                "nombre_usuario,nombre_empresa,nombre_formato,path_formato,revisado,"
+                "source_item_key,payload_schema_version,payload_source,payload_raw,payload_normalized"
             )
             .order("created_at", desc=True)
             .limit(max(1, min(int(limit), 2000)))

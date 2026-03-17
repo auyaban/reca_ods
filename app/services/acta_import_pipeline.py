@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import difflib
+import logging
 from functools import lru_cache
 from typing import Any
 
@@ -14,6 +15,7 @@ from app.utils.cache import ttl_bucket
 from app.utils.text import normalize_text
 
 _CACHE_TTL_SECONDS = 300
+_LOGGER = logging.getLogger(__name__)
 
 
 def _normalize_import_name(value: str) -> str:
@@ -453,6 +455,47 @@ def build_import_result_from_parsed(
     }
 
 
+def build_import_result_from_completion_payload(
+    payload_normalized: dict,
+    *,
+    source_label: str,
+    row_context: dict | None = None,
+    create_missing_interpreter: bool = True,
+) -> dict:
+    payload = dict(payload_normalized or {})
+    row_data = dict(row_context or {})
+    schema_version = payload.get("schema_version")
+    if schema_version in (None, ""):
+        schema_version = row_data.get("payload_schema_version")
+    try:
+        schema_version_int = int(schema_version)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("El payload_normalized no tiene schema_version válido.") from exc
+    if schema_version_int != 1:
+        raise ValueError(f"Schema de payload no soportado: {schema_version_int}")
+
+    parsed_raw = payload.get("parsed_raw")
+    if not isinstance(parsed_raw, dict) or not parsed_raw:
+        raise ValueError("El payload_normalized no contiene parsed_raw válido.")
+
+    attachment = payload.get("attachment")
+    if not isinstance(attachment, dict) or not attachment:
+        raise ValueError("El payload_normalized no contiene attachment válido.")
+
+    source_label_clean = (
+        str(source_label or "").strip()
+        or str(attachment.get("filename") or "").strip()
+        or str(row_data.get("nombre_formato") or "").strip()
+        or "Acta finalizada"
+    )
+    return build_import_result_from_parsed(
+        parsed_raw,
+        source_label=source_label_clean,
+        attachment=attachment,
+        create_missing_interpreter=create_missing_interpreter,
+    )
+
+
 def build_import_result_from_source(
     source: str,
     *,
@@ -469,3 +512,45 @@ def build_import_result_from_source(
         attachment=attachment,
         create_missing_interpreter=create_missing_interpreter,
     )
+
+
+def build_import_result_from_finalized_record(
+    row: dict,
+    *,
+    create_missing_interpreter: bool = True,
+) -> dict:
+    row_data = dict(row or {})
+    source_label = str(row_data.get("nombre_formato") or "").strip() or "Acta revisada"
+    payload_normalized = row_data.get("payload_normalized")
+    payload_error: Exception | None = None
+
+    if isinstance(payload_normalized, dict) and payload_normalized:
+        try:
+            return build_import_result_from_completion_payload(
+                payload_normalized,
+                source_label=source_label,
+                row_context=row_data,
+                create_missing_interpreter=create_missing_interpreter,
+            )
+        except Exception as exc:
+            payload_error = exc
+            _LOGGER.warning(
+                "Fallo importando payload_normalized de acta finalizada registro_id=%s: %s",
+                row_data.get("registro_id"),
+                exc,
+            )
+
+    source = str(row_data.get("path_formato") or "").strip()
+    if source:
+        return build_import_result_from_source(
+            source,
+            source_label=source_label,
+            create_missing_interpreter=create_missing_interpreter,
+        )
+
+    if payload_error is not None:
+        raise RuntimeError(
+            "El payload del acta finalizada no es válido y no hay path_formato para usar fallback."
+        ) from payload_error
+
+    raise RuntimeError("El acta finalizada no tiene payload_normalized válido ni path_formato.")

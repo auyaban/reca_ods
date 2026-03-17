@@ -3804,15 +3804,49 @@ class WizardApp:
         self._importar_acta_desde_fuente(file_path, source_label=Path(file_path).name)
 
     def _importar_acta_revisada(self, row: dict) -> None:
-        source = str(row.get("path_formato") or "").strip()
-        if not source:
+        row_data = dict(row or {})
+        source = str(row_data.get("path_formato") or "").strip()
+        payload_normalized = row_data.get("payload_normalized")
+        if not source and not (isinstance(payload_normalized, dict) and payload_normalized):
             messagebox.showinfo(
                 "Actas Terminadas",
-                "El acta se marco como revisada, pero no tiene ruta configurada para importar.",
+                "El acta se marco como revisada, pero no tiene payload ni ruta configurada para importar.",
             )
             return
-        source_label = str(row.get("nombre_formato") or "").strip() or "Acta revisada"
-        self._importar_acta_desde_fuente(source, source_label=source_label, start_form_if_needed=True)
+        source_label = str(row_data.get("nombre_formato") or "").strip() or "Acta revisada"
+        loading = LoadingDialog(self.root, "Preparando acta revisada...")
+        self.root.update_idletasks()
+
+        def _worker() -> dict:
+            from app.services.acta_import_pipeline import build_import_result_from_finalized_record
+
+            return build_import_result_from_finalized_record(
+                row_data,
+                create_missing_interpreter=True,
+            )
+
+        def _on_success(result: dict) -> None:
+            loading.close()
+            import_result = dict(result or {})
+
+            def _apply_import() -> None:
+                self._procesar_importacion_acta(import_result, source_label=source_label)
+
+            self.start_new_service(after_ready=_apply_import)
+
+        def _on_error(exc: Exception) -> None:
+            loading.close()
+            self._report_error("No se pudo leer el acta revisada", exc, title="Actas Terminadas")
+
+        self._run_background_task(
+            _worker,
+            _on_success,
+            _on_error,
+            timeout_sec=180,
+            timeout_message="La importacion del acta revisada excedio el tiempo esperado.",
+            poll_ms=200,
+            operation_name="importar_acta_revisada",
+        )
 
     def _importar_acta_desde_fuente(
         self,
