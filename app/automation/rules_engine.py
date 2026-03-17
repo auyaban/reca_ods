@@ -295,7 +295,10 @@ def _build_document_observaciones(*, analysis: dict[str, Any], document_kind: st
             return f"{cargo} ({vacantes})"
         if cargo:
             return cargo
-        return ""
+    return ""
+
+
+def _build_document_seguimiento(*, analysis: dict[str, Any], document_kind: str) -> str:
     if document_kind == "follow_up":
         return _extract_follow_up_number(analysis)
     return ""
@@ -425,9 +428,18 @@ def suggest_service_from_analysis(*, analysis: dict[str, Any], message: dict[str
         rationale=tuple(rationale),
     )
 
-    def finalize(row: dict[str, Any], *, confidence: str, extra_rationale: list[str], observaciones: str = "") -> DecisionSuggestion:
+    def finalize(
+        row: dict[str, Any],
+        *,
+        confidence: str,
+        extra_rationale: list[str],
+        observaciones: str = "",
+        seguimiento_servicio: str = "",
+    ) -> DecisionSuggestion:
         auto_observaciones = _build_document_observaciones(analysis=analysis, document_kind=document_kind)
+        auto_seguimiento = _build_document_seguimiento(analysis=analysis, document_kind=document_kind)
         final_observaciones = observaciones or auto_observaciones
+        final_seguimiento = seguimiento_servicio or auto_seguimiento
         return DecisionSuggestion(
             codigo_servicio=str(row.get("codigo_servicio") or ""),
             referencia_servicio=str(row.get("referencia_servicio") or ""),
@@ -436,7 +448,7 @@ def suggest_service_from_analysis(*, analysis: dict[str, Any], message: dict[str
             valor_base=float(row.get("valor_base") or 0),
             observaciones=final_observaciones,
             observacion_agencia="",
-            seguimiento_servicio="",
+            seguimiento_servicio=final_seguimiento,
             confidence=confidence,
             rationale=tuple([*rationale, *extra_rationale]),
         )
@@ -444,7 +456,6 @@ def suggest_service_from_analysis(*, analysis: dict[str, Any], message: dict[str
     if document_kind == "attendance_support":
         return DecisionSuggestion(
             confidence="low",
-            observaciones="Adjunto de soporte. No usar como acta principal ODS.",
             rationale=tuple([*rationale, "El documento fue clasificado como control de asistencia."]),
         )
 
@@ -478,7 +489,6 @@ def suggest_service_from_analysis(*, analysis: dict[str, Any], message: dict[str
             )
         return DecisionSuggestion(
             confidence="low",
-            observaciones="Servicio interprete detectado. Falta duracion exacta para definir codigo 86/87/88/89 o visita fallida 90.",
             rationale=tuple([*rationale, "Se detecto documento de interprete LSC."]),
         )
 
@@ -565,11 +575,6 @@ def suggest_service_from_analysis(*, analysis: dict[str, Any], message: dict[str
                     family_reason,
                     "Se asigno familia de codigo de mantenimiento/reactivacion.",
                 ],
-                observaciones=(
-                    "Gestion asumida por defecto como RECA al no venir en el templete."
-                    if family_is_default
-                    else ""
-                ),
             )
 
     if document_kind == "program_presentation" and modalidad:
@@ -583,11 +588,6 @@ def suggest_service_from_analysis(*, analysis: dict[str, Any], message: dict[str
             and normalize_text(item.get("modalidad_servicio")) == normalize_text(modalidad)
         )
         if row:
-            observaciones_parts: list[str] = []
-            if family_is_default:
-                observaciones_parts.append("Gestion asumida por defecto como RECA.")
-            if count_is_default:
-                observaciones_parts.append("Cantidad de empresas asumida por defecto como 1.")
             return finalize(
                 row,
                 confidence="low" if (family_is_default or count_is_default) else "medium",
@@ -597,7 +597,6 @@ def suggest_service_from_analysis(*, analysis: dict[str, Any], message: dict[str
                     bucket_reason,
                     "Se asigno familia de codigo de promocion del programa.",
                 ],
-                observaciones=" ".join(observaciones_parts),
             )
 
     if document_kind == "follow_up" and modalidad:
@@ -638,11 +637,6 @@ def suggest_service_from_analysis(*, analysis: dict[str, Any], message: dict[str
                         size_reason,
                         "Se asigno familia de codigo de evaluacion de accesibilidad.",
                     ],
-                    observaciones=(
-                        "Tamano de empresa asumido por defecto como hasta 50 trabajadores."
-                        if size_is_default
-                        else ""
-                    ),
                 )
 
         rationale.extend(
@@ -653,11 +647,6 @@ def suggest_service_from_analysis(*, analysis: dict[str, Any], message: dict[str
         )
         return DecisionSuggestion(
             modalidad_servicio=modalidad,
-            observaciones=(
-                "No fue posible asignar codigo de accesibilidad con la modalidad detectada."
-                if modalidad
-                else "Falta modalidad para escoger codigo exacto de accesibilidad."
-            ),
             confidence="low",
             rationale=tuple(rationale),
         )
@@ -667,7 +656,6 @@ def suggest_service_from_analysis(*, analysis: dict[str, Any], message: dict[str
 
     return DecisionSuggestion(
         modalidad_servicio=modalidad,
-        observaciones="No hubo suficientes señales para proponer un codigo_servicio confiable.",
         confidence="low",
         rationale=tuple(rationale),
     )

@@ -52,7 +52,7 @@ class AutomationRulesEngineTests(unittest.TestCase):
 
         self.assertEqual(result.codigo_servicio, "")
         self.assertEqual(result.confidence, "low")
-        self.assertIn("soporte", result.observaciones.lower())
+        self.assertEqual(result.observaciones, "")
 
     @patch("app.automation.rules_engine._company_by_nit")
     def test_interpreter_service_requires_duration(self, mock_company_by_nit) -> None:
@@ -68,7 +68,7 @@ class AutomationRulesEngineTests(unittest.TestCase):
         )
 
         self.assertEqual(result.codigo_servicio, "")
-        self.assertIn("interprete", result.observaciones.lower())
+        self.assertEqual(result.observaciones, "")
 
     @patch("app.automation.rules_engine._company_by_nit")
     @patch("app.automation.rules_engine._tarifas")
@@ -197,7 +197,7 @@ class AutomationRulesEngineTests(unittest.TestCase):
 
         self.assertEqual(result.codigo_servicio, "37")
         self.assertEqual(result.confidence, "low")
-        self.assertIn("reca", result.observaciones.lower())
+        self.assertEqual(result.observaciones, "")
 
     @patch("app.automation.rules_engine._company_by_nit")
     @patch("app.automation.rules_engine._tarifas")
@@ -269,7 +269,7 @@ class AutomationRulesEngineTests(unittest.TestCase):
 
         self.assertEqual(result.codigo_servicio, "1")
         self.assertEqual(result.confidence, "low")
-        self.assertIn("1", result.observaciones)
+        self.assertEqual(result.observaciones, "")
 
     @patch("app.automation.rules_engine._company_by_nit")
     @patch("app.automation.rules_engine._tarifas")
@@ -369,7 +369,8 @@ class AutomationRulesEngineTests(unittest.TestCase):
         )
 
         self.assertEqual(result.codigo_servicio, "83")
-        self.assertEqual(result.observaciones, "3")
+        self.assertEqual(result.observaciones, "")
+        self.assertEqual(result.seguimiento_servicio, "3")
 
 
 if __name__ == "__main__":

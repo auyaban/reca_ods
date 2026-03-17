@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.8
+- Importador PDF ajustado para evaluaciones de accesibilidad con valores antes de sus etiquetas, evitando bloqueos por mismatch de empresa al crear nueva entrada.
+- Motor de reglas: `observaciones` vuelve a limitarse a cargo y vacantes cuando aplica; el número de seguimiento se conserva en `seguimiento_servicio`.
+- Cobertura de pruebas ampliada para parser PDF y reglas de automatización asociadas a observaciones.
+
 ## 2.2.3
 - Se agrega `Aaron TEST`, un acceso controlado por `username` y flags para probar automatizacion sin exponer funciones nuevas al resto de usuarios.
 - Nuevo flujo de lectura `read-only` de Gmail con service account delegada: lista correos candidatos, PDFs y cruza remitentes contra `profesionales`.

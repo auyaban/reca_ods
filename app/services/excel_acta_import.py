@@ -516,10 +516,6 @@ def _extract_pdf_general_fields(first_page: str) -> tuple[str, str, str]:
 
     if normalize_text(empresa).startswith(("nombre de la empresa", "direccion de la empresa", "dirección de la empresa")):
         empresa = ""
-    if not empresa or normalize_text(empresa).startswith(
-        ("nombre de la empresa", "direccion de la empresa", "dirección de la empresa")
-    ):
-        empresa = _company_from_email_domain(header_text)
 
     if empresa and fecha_servicio and modalidad:
         return empresa, fecha_servicio, modalidad
@@ -561,6 +557,11 @@ def _extract_pdf_general_fields(first_page: str) -> tuple[str, str, str]:
                 if "ciudad/municipio:" in normalize_text(previous_line):
                     empresa = _clean_text(re.split(r"(?i)ciudad/municipio:", previous_line, maxsplit=1)[0])
                     break
+
+    if not empresa or normalize_text(empresa).startswith(
+        ("nombre de la empresa", "direccion de la empresa", "dirección de la empresa")
+    ):
+        empresa = _company_from_email_domain(header_text)
 
     return empresa, fecha_servicio, modalidad
 

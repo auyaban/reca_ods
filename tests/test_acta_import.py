@@ -511,6 +511,43 @@ class ActaImportTests(unittest.TestCase):
         self.assertNotIn("No se detectaron oferentes en el PDF.", result["warnings"])
 
     @patch("app.services.excel_acta_import._extract_pdf_text_pages")
+    def test_parse_acta_pdf_supports_accessibility_layout_with_values_before_labels(self, mock_extract_pages) -> None:
+        mock_extract_pages.return_value = [
+            "\n".join(
+                [
+                    "EVALUACIÓN DE ACCESIBILIDAD",
+                    "1.DATOS DE LA EMPRESA",
+                    "Número de NIT: 900887188-7",
+                    "2/3/2026 Modalidad: Presencial",
+                    "CHAZEY PARTNERS COLOMBIA S A S Ciudad/Municipio: Bogotá",
+                    "Av. Calle 26 No. 92-32, Edificio G2 – G3",
+                    "Fecha de la Visita:",
+                    "Nombre de la Empresa:",
+                    "Dirección de la Empresa:",
+                    "Correo electrónico:",
+                    "luisahernandez@chazeypartner.com",
+                    "Profesional asignado RECA:Gabriela Rubiano",
+                ]
+            )
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            temp_path = Path(tmp.name)
+
+        try:
+            result = parse_acta_pdf(str(temp_path))
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+        self.assertEqual(result["nit_empresa"], "900887188-7")
+        self.assertEqual(result["fecha_servicio"], "2026-03-02")
+        self.assertEqual(result["modalidad_servicio"], "Presencial")
+        self.assertEqual(result["nombre_empresa"], "CHAZEY PARTNERS COLOMBIA S A S")
+        self.assertEqual(result["participantes"], [])
+        self.assertNotIn("No se detecto nombre de empresa en el PDF.", result["warnings"])
+
+    @patch("app.services.excel_acta_import._extract_pdf_text_pages")
     def test_parse_acta_pdf_extracts_vacancy_fields_without_false_oferente_warning(self, mock_extract_pages) -> None:
         mock_extract_pages.return_value = [
             "\n".join(
