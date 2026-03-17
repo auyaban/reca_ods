@@ -6,6 +6,7 @@ import sys
 import time
 import webbrowser
 import difflib
+import uuid
 from collections import OrderedDict
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from dataclasses import dataclass, field
@@ -2623,7 +2624,9 @@ class WizardApp:
         self._initial_data_ready = False
         self._initial_data_loading = False
         self._creation_trace_id: str | None = None
+        self._creation_session_id: str | None = None
         self._creation_started_at: float | None = None
+        self._creation_started_at_iso: str | None = None
 
         self.root.title("SISTEMA DE GESTIÓN ODS - RECA")
         self._set_window_size()
@@ -3349,9 +3352,26 @@ class WizardApp:
     def _ensure_creation_trace(self) -> str:
         if not self._creation_trace_id:
             self._creation_trace_id = f"ods-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
+        if not self._creation_session_id:
+            self._creation_session_id = str(uuid.uuid4())
         if self._creation_started_at is None:
             self._creation_started_at = time.time()
+        if not self._creation_started_at_iso:
+            self._creation_started_at_iso = self._utc_now_iso()
         return self._creation_trace_id
+
+    def _utc_now_iso(self) -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def _build_ods_submission_metadata(self, *, submitted_at: str | None = None) -> dict[str, str]:
+        self._ensure_creation_trace()
+        submitted_value = submitted_at or self._utc_now_iso()
+        started_value = self._creation_started_at_iso or submitted_value
+        return {
+            "session_id": str(self._creation_session_id or ""),
+            "started_at": started_value,
+            "submitted_at": submitted_value,
+        }
 
     def _log_creation_flow(self, event: str, **details) -> None:
         trace_id = self._ensure_creation_trace()
@@ -3368,7 +3388,9 @@ class WizardApp:
     def _finish_creation_trace(self, final_event: str, **details) -> None:
         self._log_creation_flow(final_event, **details)
         self._creation_trace_id = None
+        self._creation_session_id = None
         self._creation_started_at = None
+        self._creation_started_at_iso = None
 
     def _run_background_task(
         self,
@@ -3684,7 +3706,9 @@ class WizardApp:
     def start_new_service(self, after_ready=None) -> None:
         try:
             self._creation_trace_id = f"ods-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
+            self._creation_session_id = str(uuid.uuid4())
             self._creation_started_at = time.time()
+            self._creation_started_at_iso = self._utc_now_iso()
             self._log_creation_flow("inicio_nueva_entrada")
             self.state.reset_service()
             for child in self.main_frame.winfo_children():
@@ -4997,10 +5021,16 @@ class WizardApp:
         loading = LoadingDialog(self.root, "Guardando servicio en la base de datos...")
         self.root.update_idletasks()
         loading.set_status("Guardando servicio...", None)
-        payload = {"ods": ods, "usuarios_nuevos": self.state.usuarios_nuevos}
+        submitted_at = self._utc_now_iso()
+        ods_payload = dict(ods)
+        ods_payload.update(self._build_ods_submission_metadata(submitted_at=submitted_at))
+        payload = {"ods": ods_payload, "usuarios_nuevos": self.state.usuarios_nuevos}
         self._log_creation_flow(
             "guardado_bd_inicio",
             usuarios_nuevos=len(self.state.usuarios_nuevos),
+            session_id=ods_payload.get("session_id"),
+            started_at=ods_payload.get("started_at"),
+            submitted_at=ods_payload.get("submitted_at"),
         )
 
         def _worker() -> dict:

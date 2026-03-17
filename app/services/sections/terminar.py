@@ -23,6 +23,7 @@ _YEAR_FIELD_ALIASES = (
     "a\u00ef\u00bf\u00bdo_servicio",
     "a\u00c3\u0192\u00c2\u00b1o_servicio",
 )
+_ODS_PASSTHROUGH_FIELDS = {"session_id", "started_at", "submitted_at"}
 
 
 @lru_cache
@@ -167,6 +168,9 @@ def _apply_schema(ods_data: dict[str, Any]) -> dict[str, Any]:
     dropped = []
     for key, value in ods_data.items():
         if key not in schema:
+            if key in _ODS_PASSTHROUGH_FIELDS:
+                filtered[key] = value
+                continue
             dropped.append(key)
             continue
         try:

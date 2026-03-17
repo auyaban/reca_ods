@@ -1,5 +1,6 @@
-from datetime import date
+from datetime import date, datetime
 from typing import Any
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
@@ -61,6 +62,9 @@ class OdsPayload(BaseModel):
     seguimiento_servicio: str | None = None
     mes_servicio: int
     ano_servicio: int
+    session_id: str | None = None
+    started_at: str | None = None
+    submitted_at: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -90,6 +94,28 @@ class OdsPayload(BaseModel):
         date.fromisoformat(value.strip())
         return value
 
+    @field_validator("session_id")
+    @classmethod
+    def _validar_session_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        clean = value.strip()
+        if not clean:
+            return None
+        UUID(clean)
+        return clean
+
+    @field_validator("started_at", "submitted_at")
+    @classmethod
+    def _validar_datetime_iso(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        clean = value.strip()
+        if not clean:
+            return None
+        datetime.fromisoformat(clean.replace("Z", "+00:00"))
+        return clean
+
     @field_validator("orden_clausulada")
     @classmethod
     def _validar_orden_clausulada(cls, value: str) -> str:
@@ -116,6 +142,11 @@ class OdsPayload(BaseModel):
         esperado = self.valor_interprete if self.valor_interprete > 0 else base_total
         if abs(self.valor_total - esperado) > 0.01:
             raise ValueError("valor_total no coincide con la suma de los valores")
+        if self.started_at and self.submitted_at:
+            started = datetime.fromisoformat(self.started_at.replace("Z", "+00:00"))
+            submitted = datetime.fromisoformat(self.submitted_at.replace("Z", "+00:00"))
+            if submitted < started:
+                raise ValueError("submitted_at no puede ser anterior a started_at")
         return self
 
 

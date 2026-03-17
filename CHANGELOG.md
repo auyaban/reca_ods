@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.10
+- Instrumentacion de cadencia en `ods`: nuevas columnas `session_id`, `started_at` y `submitted_at` para medir tiempo de captura por entrada.
+- La app registra automaticamente el inicio y envio de cada nueva entrada ODS y persiste esos metadatos junto al guardado.
+- Nueva vista `public.ods_daily_cadence_report` en Supabase para analizar entradas por dia y gaps entre `created_at` consecutivos.
+
 ## 2.2.9
 - `Actas Terminadas` ahora prioriza `payload_normalized` proveniente de Inclusion Laboral y solo cae al parser del archivo si ese payload falta o es invalido.
 - El pipeline de importacion soporta payloads estructurados versionados para formularios finalizados y seguimientos.

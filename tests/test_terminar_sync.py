@@ -42,6 +42,9 @@ def _request() -> TerminarServicioRequest:
         seguimiento_servicio="Pendiente",
         mes_servicio=3,
         ano_servicio=2026,
+        session_id="bce90f35-190b-44a0-a16c-aeafec190742",
+        started_at="2026-03-12T08:00:00+00:00",
+        submitted_at="2026-03-12T08:12:30+00:00",
     )
     return TerminarServicioRequest(ods=ods, usuarios_nuevos=[])
 
@@ -119,6 +122,46 @@ class TerminarServicioSyncTests(unittest.TestCase):
 
         self.assertEqual(response["sync_status"], "warning")
         self.assertEqual(response["sync_error"], "template missing")
+
+    def test_validates_submission_timestamps_order(self) -> None:
+        with self.assertRaisesRegex(ValueError, "submitted_at no puede ser anterior a started_at"):
+            OdsPayload(
+                orden_clausulada="si",
+                nombre_profesional="Ana Perez",
+                nit_empresa="900123456",
+                nombre_empresa="Empresa Demo",
+                caja_compensacion="Compensar",
+                asesor_empresa="Asesor Demo",
+                sede_empresa="Principal",
+                fecha_servicio="2026-03-12",
+                codigo_servicio="COD-001",
+                referencia_servicio="REF-1",
+                descripcion_servicio="Servicio Demo",
+                modalidad_servicio="Virtual",
+                valor_virtual=100.0,
+                valor_bogota=0.0,
+                valor_otro=0.0,
+                todas_modalidades=0.0,
+                horas_interprete=2.5,
+                valor_interprete=0.0,
+                valor_total=100.0,
+                nombre_usuario="Carlos Ruiz",
+                cedula_usuario="123456",
+                discapacidad_usuario="Auditiva",
+                genero_usuario="Masculino",
+                fecha_ingreso="2026-03-01",
+                tipo_contrato="Laboral",
+                cargo_servicio="Analista",
+                total_personas=1,
+                observaciones="Sin novedad",
+                observacion_agencia="Ninguna",
+                seguimiento_servicio="Pendiente",
+                mes_servicio=3,
+                ano_servicio=2026,
+                session_id="bce90f35-190b-44a0-a16c-aeafec190742",
+                started_at="2026-03-12T08:12:30+00:00",
+                submitted_at="2026-03-12T08:00:00+00:00",
+            )
 
 
 if __name__ == "__main__":
