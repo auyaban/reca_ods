@@ -931,7 +931,7 @@ def _extract_pdf_asistentes_candidates(text: str) -> list[str]:
                 continue
             explicit_name = re.search(
                 r"(?i)nombre completo:\s*(?P<nombre>[A-ZÃÃ‰ÃÃ“ÃšÃ‘][A-Za-zÃÃ‰ÃÃ“ÃšÃ‘Ã¡Ã©Ã­Ã³ÃºÃ¼ÃœÃ±' -]+?)"
-                r"(?:\s+(?:cargo:|profesional\b|lider\b|coordinacion\b|psicolog[aÃ¡]\b)|$)",
+                r"(?=(?:\s*cargo:|\s+profesional\b|\s+lider\b|\s+coordinacion\b|\s+psicolog[aÃ¡]\b|$))",
                 line,
             )
             if explicit_name:
@@ -940,7 +940,7 @@ def _extract_pdf_asistentes_candidates(text: str) -> list[str]:
                     found.append(candidate)
                 continue
             for chunk in re.split(r"(?i)nombre completo:\s*", line):
-                candidate = re.split(r"(?i)\bcargo:\s*", chunk, maxsplit=1)[0]
+                candidate = re.split(r"(?i)cargo:\s*", chunk, maxsplit=1)[0]
                 candidate = _clean_name(candidate)
                 if candidate and _is_person_candidate(candidate) and candidate not in found:
                     found.append(candidate)

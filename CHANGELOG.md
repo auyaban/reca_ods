@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.11
+- El importador PDF de actas ODS ahora extrae correctamente asistentes cuando `Cargo:` viene pegado al nombre en el texto del PDF.
+- `Crear nueva entrada` vuelve a resolver el profesional desde la seccion `ASISTENTES` para actas con ese layout, evitando que el campo quede vacio.
+- Se agrega cobertura de pruebas para bloques de asistentes con `Nombre completo` y `Cargo` adheridos.
+
 ## 2.2.10
 - Instrumentacion de cadencia en `ods`: nuevas columnas `session_id`, `started_at` y `submitted_at` para medir tiempo de captura por entrada.
 - La app registra automaticamente el inicio y envio de cada nueva entrada ODS y persiste esos metadatos junto al guardado.

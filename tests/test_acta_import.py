@@ -356,6 +356,28 @@ class ActaImportTests(unittest.TestCase):
             ],
         )
 
+    def test_extract_pdf_asistentes_candidates_supports_attached_cargo_in_full_text_fallback(self) -> None:
+        text = (
+            "Nombre completo:Sandra Milena Pachon RojasCargo:Coordinacion de inclusion laboral\n"
+            "Nombre completo:Katherine Sosa Cargo:Sostenibilidad\n"
+            "Nombre completo:Leidy Flores Cargo:Seleccion\n"
+            "Nombre completo:Dennis Katherin Lozano HoyosCargo:Asesor Agencia\n"
+            "8.ASISTENTES\n"
+            "www.recacolombia.org\n"
+        )
+
+        candidates = _extract_pdf_asistentes_candidates(text)
+
+        self.assertEqual(
+            candidates,
+            [
+                "Sandra Milena Pachon Rojas",
+                "Katherine Sosa",
+                "Leidy Flores",
+                "Dennis Katherin Lozano Hoyos",
+            ],
+        )
+
     @patch("app.services.excel_acta_import._extract_pdf_text_pages")
     def test_parse_acta_pdf_supports_layout_with_values_before_labels(self, mock_extract_pages) -> None:
         mock_extract_pages.return_value = [
