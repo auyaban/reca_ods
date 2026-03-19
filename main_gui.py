@@ -269,6 +269,9 @@ class ApiClient:
             return self._svc.get_automation_staging_case(params.get("case_id", ""))
         if path == "/wizard/automation-test/staging":
             return self._svc.get_automation_staging_cases()
+        if path == "/wizard/automation-batch/scan":
+            limit = params.get("limit")
+            return self._svc.run_batch_eod_scan(limit=int(limit) if limit else None)
         if path == "/wizard/google-drive/status":
             return self._svc.google_drive_status()
         raise RuntimeError(f"Endpoint no soportado: GET {path}")
@@ -310,6 +313,8 @@ class ApiClient:
             return self._svc.update_automation_staging_case(payload)
         if path == "/wizard/automation-test/staging":
             return self._svc.save_automation_staging_case(payload)
+        if path == "/wizard/automation-batch/confirm":
+            return self._svc.confirm_batch_eod_upload(payload)
         raise RuntimeError(f"Endpoint no soportado: POST {path}")
 
 
@@ -3205,6 +3210,7 @@ class WizardApp:
         )
         self._actas_alert_button.pack(side=tk.LEFT)
         self._aaron_test_button = None
+        self._batch_eod_button = None
         if self._should_show_aaron_test_button():
             self._aaron_test_button = tk.Button(
                 actions_right,
@@ -3217,6 +3223,18 @@ class WizardApp:
                 pady=1,
             )
             self._aaron_test_button.pack(side=tk.LEFT, padx=(6, 0))
+        if self._should_show_aaron_test_button():
+            self._batch_eod_button = tk.Button(
+                actions_right,
+                text="Batch Fin de Dia",
+                command=self._open_batch_eod_panel,
+                bg="#1A5276",
+                fg="white",
+                font=("Arial", self._scaled_font(8, 8), "bold"),
+                padx=6,
+                pady=1,
+            )
+            self._batch_eod_button.pack(side=tk.LEFT, padx=(4, 0))
 
         startup_status = ttk.Frame(button_col)
         startup_status.pack(fill=tk.X, pady=(0, max(4, int(6 * self._ui_scale))))
@@ -3308,6 +3326,8 @@ class WizardApp:
         ]
         if self._aaron_test_button is not None:
             self._main_action_buttons.append(self._aaron_test_button)
+        if self._batch_eod_button is not None:
+            self._main_action_buttons.append(self._batch_eod_button)
         if self._initial_data_loading:
             self._set_main_actions_enabled(False)
         elif not self._initial_data_ready:
@@ -3814,6 +3834,326 @@ class WizardApp:
         except (RuntimeError, ValueError, TypeError, OSError, tk.TclError) as exc:
             self._finish_creation_trace("error_inicio_formulario", error=str(exc))
             self._report_error("No se pudo iniciar el formulario", exc)
+
+    def _open_batch_eod_panel(self) -> None:
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Batch Fin de Dia — ODS Automation")
+        dialog.resizable(True, True)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        try:
+            dialog.state("zoomed")
+        except tk.TclError:
+            self._center_dialog(dialog, 1200, 800)
+
+        container = ttk.Frame(dialog, padding=16)
+        container.pack(fill=tk.BOTH, expand=True)
+        container.columnconfigure(0, weight=1)
+        container.rowconfigure(2, weight=1)
+
+        ttk.Label(
+            container,
+            text="Batch Fin de Dia",
+            font=("Arial", 12, "bold"),
+            foreground=COLOR_PURPLE,
+        ).grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            container,
+            text="Escanea todos los correos nuevos, revisa el resumen y confirma la subida a Google Sheets.",
+            foreground="#555555",
+        ).grid(row=1, column=0, sticky="w", pady=(2, 10))
+
+        # ── Toolbar ──────────────────────────────────────────────────────────
+        toolbar = ttk.Frame(container)
+        toolbar.grid(row=2, column=0, sticky="ew")
+
+        scan_btn_holder: dict[str, tk.Button | None] = {"widget": None}
+        confirm_btn_holder: dict[str, tk.Button | None] = {"widget": None}
+        scan_state: dict = {"result": None}
+
+        status_var = tk.StringVar(value="Presiona 'Escanear correos nuevos' para comenzar.")
+        stats_var = tk.StringVar(value="")
+
+        scan_btn = tk.Button(
+            toolbar,
+            text="Escanear correos nuevos",
+            bg=COLOR_TEAL,
+            fg="white",
+            font=("Arial", self._scaled_font(9, 8), "bold"),
+            padx=8,
+            pady=3,
+        )
+        scan_btn.pack(side=tk.LEFT)
+        scan_btn_holder["widget"] = scan_btn
+
+        confirm_btn = tk.Button(
+            toolbar,
+            text="Confirmar y subir a Sheets",
+            bg="#1A5276",
+            fg="white",
+            font=("Arial", self._scaled_font(9, 8), "bold"),
+            padx=8,
+            pady=3,
+            state="disabled",
+        )
+        confirm_btn.pack(side=tk.LEFT, padx=(8, 0))
+        confirm_btn_holder["widget"] = confirm_btn
+
+        ttk.Label(toolbar, textvariable=status_var, foreground="#1F618D",
+                  font=("Arial", 9, "bold")).pack(side=tk.LEFT, padx=(14, 0))
+
+        # ── Stats bar ────────────────────────────────────────────────────────
+        stats_frame = ttk.Frame(container)
+        stats_frame.grid(row=3, column=0, sticky="ew", pady=(6, 0))
+        ttk.Label(stats_frame, textvariable=stats_var, foreground="#555555").pack(anchor="w")
+
+        # ── Preview treeview ─────────────────────────────────────────────────
+        tree_frame = ttk.LabelFrame(container, text="Filas para subir", padding=(8, 6))
+        tree_frame.grid(row=4, column=0, sticky="nsew", pady=(8, 0))
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+        container.rowconfigure(4, weight=3)
+
+        preview_tree = ttk.Treeview(
+            tree_frame,
+            columns=("correo", "documento", "codigo", "empresa", "fecha", "oferente", "cedula", "modalidad", "revisar"),
+            show="headings",
+            height=14,
+        )
+        preview_tree.heading("correo", text="Correo")
+        preview_tree.heading("documento", text="Documento")
+        preview_tree.heading("codigo", text="Codigo")
+        preview_tree.heading("empresa", text="Empresa")
+        preview_tree.heading("fecha", text="Fecha")
+        preview_tree.heading("oferente", text="Oferente")
+        preview_tree.heading("cedula", text="Cedula")
+        preview_tree.heading("modalidad", text="Modalidad")
+        preview_tree.heading("revisar", text="Revisar")
+        preview_tree.column("correo", width=240, anchor="w")
+        preview_tree.column("documento", width=200, anchor="w")
+        preview_tree.column("codigo", width=65, anchor="center")
+        preview_tree.column("empresa", width=200, anchor="w")
+        preview_tree.column("fecha", width=90, anchor="center")
+        preview_tree.column("oferente", width=160, anchor="w")
+        preview_tree.column("cedula", width=100, anchor="w")
+        preview_tree.column("modalidad", width=95, anchor="center")
+        preview_tree.column("revisar", width=65, anchor="center")
+        preview_tree.tag_configure("warn", background="#FFF3CD")
+        pt_scroll_y = ttk.Scrollbar(tree_frame, orient="vertical", command=preview_tree.yview)
+        pt_scroll_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=preview_tree.xview)
+        preview_tree.configure(yscrollcommand=pt_scroll_y.set, xscrollcommand=pt_scroll_x.set)
+        preview_tree.grid(row=0, column=0, sticky="nsew")
+        pt_scroll_y.grid(row=0, column=1, sticky="ns")
+        pt_scroll_x.grid(row=1, column=0, sticky="ew")
+
+        # ── Errors / ignored section ─────────────────────────────────────────
+        issues_frame = ttk.LabelFrame(container, text="Correos ignorados y errores", padding=(8, 6))
+        issues_frame.grid(row=5, column=0, sticky="nsew", pady=(8, 0))
+        issues_frame.columnconfigure(0, weight=1)
+        issues_frame.rowconfigure(0, weight=1)
+        container.rowconfigure(5, weight=1)
+
+        issues_tree = ttk.Treeview(
+            issues_frame,
+            columns=("estado", "correo", "detalle"),
+            show="headings",
+            height=5,
+        )
+        issues_tree.heading("estado", text="Estado")
+        issues_tree.heading("correo", text="Correo / Asunto")
+        issues_tree.heading("detalle", text="Detalle")
+        issues_tree.column("estado", width=90, anchor="center")
+        issues_tree.column("correo", width=400, anchor="w")
+        issues_tree.column("detalle", width=600, anchor="w")
+        issues_tree.tag_configure("error", foreground="#C0392B")
+        issues_tree.tag_configure("ignored", foreground="#7F8C8D")
+        it_scroll = ttk.Scrollbar(issues_frame, orient="vertical", command=issues_tree.yview)
+        issues_tree.configure(yscrollcommand=it_scroll.set)
+        issues_tree.grid(row=0, column=0, sticky="nsew")
+        it_scroll.grid(row=0, column=1, sticky="ns")
+
+        # ── Result label ─────────────────────────────────────────────────────
+        result_var = tk.StringVar(value="")
+        ttk.Label(container, textvariable=result_var, foreground="#1A5276",
+                  font=("Arial", 9, "bold"), wraplength=1100, justify="left").grid(
+            row=6, column=0, sticky="w", pady=(8, 0)
+        )
+
+        # ── Helpers ──────────────────────────────────────────────────────────
+        def _set_scan_enabled(enabled: bool) -> None:
+            btn = scan_btn_holder.get("widget")
+            if btn:
+                btn.configure(state="normal" if enabled else "disabled")
+
+        def _set_confirm_enabled(enabled: bool) -> None:
+            btn = confirm_btn_holder.get("widget")
+            if btn:
+                btn.configure(state="normal" if enabled else "disabled")
+
+        def _render_scan_result(payload: dict) -> None:
+            data = dict(payload.get("data") or {})
+            scan_state["result"] = data
+            stats = dict(data.get("stats") or {})
+            results = list(data.get("results") or [])
+
+            for iid in preview_tree.get_children():
+                preview_tree.delete(iid)
+            for iid in issues_tree.get_children():
+                issues_tree.delete(iid)
+
+            ready_rows = 0
+            for item in results:
+                status = str(item.get("status") or "")
+                subject = str(item.get("subject") or item.get("message_id") or "-")
+                if status == "error":
+                    issues_tree.insert("", "end", tags=("error",), values=(
+                        "ERROR", subject, str(item.get("error") or "Error desconocido"),
+                    ))
+                elif status == "ignored":
+                    issues_tree.insert("", "end", tags=("ignored",), values=(
+                        "Ignorado", subject, "Sin actas validas en este correo.",
+                    ))
+                elif status == "ready":
+                    for row in list(item.get("preview_rows") or []):
+                        is_warn = str(row.get("revisar") or "") == "REVISAR"
+                        tags = ("warn",) if is_warn else ()
+                        preview_tree.insert("", "end", tags=tags, values=(
+                            subject,
+                            str(row.get("documento") or "-"),
+                            str(row.get("codigo") or "-"),
+                            str(row.get("empresa") or "-"),
+                            str(row.get("fecha") or "-"),
+                            str(row.get("oferente") or "-"),
+                            str(row.get("cedula") or "-"),
+                            str(row.get("modalidad") or "-"),
+                            str(row.get("revisar") or ""),
+                        ))
+                        ready_rows += 1
+
+            total = int(stats.get("total_fetched") or 0)
+            already = int(stats.get("already_processed") or 0)
+            ignored = int(stats.get("ignored") or 0)
+            errors = int(stats.get("errors") or 0)
+            ready = int(stats.get("ready") or 0)
+            warnings = int(stats.get("warnings") or 0)
+            stats_var.set(
+                f"Traidos: {total}  |  Ya procesados: {already}  |  "
+                f"Listos: {ready}  |  Ignorados: {ignored}  |  "
+                f"Errores: {errors}  |  Con advertencias: {warnings}"
+            )
+            status_var.set(
+                f"Escaneo completado. {ready_rows} fila(s) listas para subir."
+                if ready_rows
+                else "Escaneo completado. No hay filas nuevas para subir."
+            )
+            _set_confirm_enabled(ready_rows > 0)
+
+        def _do_scan() -> None:
+            _set_scan_enabled(False)
+            _set_confirm_enabled(False)
+            status_var.set("Escaneando correos...")
+            stats_var.set("")
+            result_var.set("")
+            for iid in preview_tree.get_children():
+                preview_tree.delete(iid)
+            for iid in issues_tree.get_children():
+                issues_tree.delete(iid)
+
+            loading = LoadingDialog(dialog, "Escaneando correos nuevos...")
+            dialog.update_idletasks()
+
+            def _worker() -> dict:
+                return self.api.get("/wizard/automation-batch/scan")
+
+            def _on_success(result: dict) -> None:
+                loading.close()
+                _set_scan_enabled(True)
+                _render_scan_result(result)
+
+            def _on_error(exc: Exception) -> None:
+                loading.close()
+                _set_scan_enabled(True)
+                status_var.set("Error al escanear correos.")
+                self._report_error("Error en batch scan", exc, title="Batch Fin de Dia")
+
+            self._run_background_task(
+                _worker,
+                _on_success,
+                _on_error,
+                timeout_sec=600,
+                timeout_message="El escaneo batch excedio el tiempo esperado.",
+                poll_ms=500,
+                operation_name="batch_eod_scan",
+                disable_main_actions=False,
+            )
+
+        def _do_confirm() -> None:
+            data = scan_state.get("result") or {}
+            results = list(data.get("results") or [])
+            ready_count = sum(1 for r in results if str(r.get("status") or "") == "ready")
+            if not messagebox.askyesno(
+                "Confirmar subida",
+                f"Se subirán las filas de {ready_count} correo(s) a Google Sheets.\n\n"
+                "Los correos ignorados también quedarán marcados como procesados.\n\n"
+                "¿Continuar?",
+                parent=dialog,
+            ):
+                return
+
+            _set_scan_enabled(False)
+            _set_confirm_enabled(False)
+            status_var.set("Subiendo a Google Sheets...")
+
+            loading = LoadingDialog(dialog, "Subiendo datos a Google Sheets...")
+            dialog.update_idletasks()
+
+            def _worker() -> dict:
+                return self.api.post("/wizard/automation-batch/confirm", {"results": results})
+
+            def _on_success(result: dict) -> None:
+                loading.close()
+                _set_scan_enabled(True)
+                resp = dict(result.get("data") or result)
+                uploaded = int(resp.get("uploaded") or 0)
+                duplicates = int(resp.get("duplicates") or 0)
+                ignored = int(resp.get("ignored") or 0)
+                errors = int(resp.get("errors") or 0)
+                warnings = int(resp.get("warnings") or 0)
+                result_var.set(
+                    f"Subida completada — "
+                    f"Subidos: {uploaded}  |  Duplicados omitidos: {duplicates}  |  "
+                    f"Ignorados: {ignored}  |  Errores: {errors}  |  Con advertencias (REVISAR): {warnings}"
+                )
+                status_var.set("Listo.")
+                messagebox.showinfo(
+                    "Batch completado",
+                    f"Subidos: {uploaded}\n"
+                    f"Duplicados omitidos: {duplicates}\n"
+                    f"Ignorados: {ignored}\n"
+                    f"Errores (no marcados como procesados): {errors}\n"
+                    f"Filas con REVISAR: {warnings}",
+                    parent=dialog,
+                )
+
+            def _on_error(exc: Exception) -> None:
+                loading.close()
+                _set_scan_enabled(True)
+                _set_confirm_enabled(True)
+                self._report_error("Error al subir a Sheets", exc, title="Batch Fin de Dia")
+
+            self._run_background_task(
+                _worker,
+                _on_success,
+                _on_error,
+                timeout_sec=300,
+                timeout_message="La subida batch excedio el tiempo esperado.",
+                poll_ms=500,
+                operation_name="batch_eod_confirm",
+                disable_main_actions=False,
+            )
+
+        scan_btn.configure(command=_do_scan)
+        confirm_btn.configure(command=_do_confirm)
 
     def _importar_acta_excel(self) -> None:
         file_path = filedialog.askopenfilename(

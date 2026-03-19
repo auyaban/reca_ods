@@ -8,6 +8,8 @@ from app.automation import (
     get_automation_test_status as _get_automation_test_status,
     save_automation_staging_case as _save_automation_staging_case,
     update_automation_staging_case as _update_automation_staging_case,
+    run_batch_eod_scan as _run_batch_eod_scan,
+    confirm_batch_eod_upload as _confirm_batch_eod_upload,
 )
 from app.services.sections import (
     actas_finalizadas,
@@ -193,6 +195,14 @@ def get_automation_staging_case(case_id: str) -> dict:
 
 def update_automation_staging_case(payload: dict) -> dict:
     return _update_automation_staging_case(payload)
+
+
+def run_batch_eod_scan(limit: int | None = None) -> dict:
+    return _run_batch_eod_scan(limit=limit)
+
+
+def confirm_batch_eod_upload(payload: dict) -> dict:
+    return _confirm_batch_eod_upload(payload)
 
 
 def reset_runtime_caches() -> None:

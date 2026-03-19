@@ -43,6 +43,16 @@ def update_automation_staging_case(*args, **kwargs):
     return _impl(*args, **kwargs)
 
 
+def run_batch_eod_scan(*args, **kwargs):
+    from app.automation.orchestrator import run_batch_eod_scan as _impl
+    return _impl(*args, **kwargs)
+
+
+def confirm_batch_eod_upload(*args, **kwargs):
+    from app.automation.orchestrator import confirm_batch_eod_upload as _impl
+    return _impl(*args, **kwargs)
+
+
 __all__ = [
     "get_automation_test_status",
     "get_automation_gmail_preview",
@@ -53,4 +63,6 @@ __all__ = [
     "get_automation_staging_cases",
     "save_automation_staging_case",
     "update_automation_staging_case",
+    "run_batch_eod_scan",
+    "confirm_batch_eod_upload",
 ]

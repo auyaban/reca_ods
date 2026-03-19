@@ -24,7 +24,6 @@ from app.google_sheets_client import read_sheet_values, write_sheet_values
 from app.automation.process_catalog import list_process_template_names
 from app.automation.rules_engine import suggest_service_from_analysis
 from app.services.acta_import_pipeline import build_import_result_from_parsed
-from app.services.acta_llm_extractor import extract_structured_acta_pdf
 from app.services.excel_acta_import import parse_acta_pdf
 from app.automation.staging import AutomationStagingRepository
 from app.config import get_settings
@@ -45,6 +44,7 @@ _NO_PARTICIPANT_ROW_KINDS = {
     "follow_up",
 }
 _AUTOMATION_DEFAULT_ORDER = "no"
+_AUTOMATION_HEADERS = ODS_INPUT_HEADERS + ["REVISAR"]
 
 
 @lru_cache
@@ -490,8 +490,33 @@ def _existing_upload_ids(spreadsheet_id: str, sheet_name: str) -> set[str]:
 
 
 def _next_sheet_row(spreadsheet_id: str, sheet_name: str) -> int:
-    rows = read_sheet_values(spreadsheet_id, f"'{sheet_name}'!A:Y")
+    end_col = chr(64 + len(_AUTOMATION_HEADERS))
+    rows = read_sheet_values(spreadsheet_id, f"'{sheet_name}'!A:{end_col}")
     return len(rows) + 1
+
+
+def _write_rows_to_sheet(*, spreadsheet_id: str, sheet_name: str, rows: list[dict]) -> int:
+    """Write upload rows to Google Sheets. Returns the number of rows written."""
+    if not rows:
+        return 0
+    if len(_AUTOMATION_HEADERS) > 26:
+        raise RuntimeError(
+            f"Las columnas de automatizacion tienen {len(_AUTOMATION_HEADERS)} columnas; "
+            f"el maximo soportado es 26 (A-Z)."
+        )
+    start_row = _next_sheet_row(spreadsheet_id, sheet_name)
+    values = [
+        ods_input_row_from_record(row) + [str(row.get("revisar_flag") or "")]
+        for row in rows
+    ]
+    end_row = start_row + len(values) - 1
+    end_column = chr(64 + len(_AUTOMATION_HEADERS))
+    write_sheet_values(
+        spreadsheet_id,
+        f"'{sheet_name}'!A{start_row}:{end_column}{end_row}",
+        values,
+    )
+    return len(values)
 
 
 def _gmail_gateway(*, limit: int | None = None) -> GmailInboxGateway:
@@ -528,12 +553,7 @@ def _download_and_parse_attachment(*, gateway: GmailInboxGateway, message_ref: G
             temp_path = Path(tmp.name)
             tmp.write(gateway.download_attachment_bytes(message_ref, attachment_ref))
 
-        parsed = extract_structured_acta_pdf(
-            str(temp_path),
-            filename=attachment_ref.filename,
-            subject=str(message_ref.subject or ""),
-            source_label=attachment_ref.filename,
-        )
+        parsed = parse_acta_pdf(str(temp_path))
     finally:
         if temp_path and temp_path.exists():
             try:
@@ -644,7 +664,16 @@ def _base_upload_row(*, message: dict, attachment: dict, analysis: dict, suggest
         "_document_kind": str(attachment.get("document_kind") or "").strip(),
         "_decision_rationale": list(suggestion.get("rationale") or []),
         "_analysis_warnings": list(analysis.get("warnings") or []),
+        "_suggestion_confidence": str(suggestion.get("confidence") or "").strip(),
     }
+
+
+def _should_flag_revisar(row: dict) -> bool:
+    if list(row.get("_analysis_warnings") or []):
+        return True
+    if str(row.get("_suggestion_confidence") or "") == "low":
+        return True
+    return False
 
 
 def _rows_for_document(*, message: dict, attachment: dict, analysis: dict, suggestion: dict) -> tuple[list[dict], list[dict], list[str]]:
@@ -744,6 +773,7 @@ def _rows_for_document(*, message: dict, attachment: dict, analysis: dict, sugge
             str(row.get("cedula_usuario") or ""),
             str(row.get("nombre_profesional") or ""),
         )
+        row["revisar_flag"] = "REVISAR" if _should_flag_revisar(row) else ""
         upload_rows.append(row)
         preview_rows.append(
             {
@@ -757,6 +787,7 @@ def _rows_for_document(*, message: dict, attachment: dict, analysis: dict, sugge
                 "modalidad": str(row.get("modalidad_servicio") or "-"),
                 "horas": str(row.get("horas_interprete") or "-"),
                 "observaciones": str(row.get("observaciones") or "-"),
+                "revisar": row["revisar_flag"],
             }
         )
         decision_entries.append(
@@ -884,20 +915,10 @@ def _publish_email_preview_internal(payload: dict) -> dict:
             continue
         to_write.append(row)
 
-    written_count = 0
+    written_count = _write_rows_to_sheet(
+        spreadsheet_id=spreadsheet_id, sheet_name=sheet_name, rows=to_write,
+    )
     if to_write:
-        start_row = _next_sheet_row(spreadsheet_id, sheet_name)
-        values = [ods_input_row_from_record(row) for row in to_write]
-        end_row = start_row + len(values) - 1
-        if len(ODS_INPUT_HEADERS) > 26:
-            raise RuntimeError(f"ODS_INPUT_HEADERS tiene {len(ODS_INPUT_HEADERS)} columnas; el maximo soportado es 26 (A-Z).")
-        end_column = chr(64 + len(ODS_INPUT_HEADERS))
-        write_sheet_values(
-            spreadsheet_id,
-            f"'{sheet_name}'!A{start_row}:{end_column}{end_row}",
-            values,
-        )
-        written_count = len(values)
         for row in to_write:
             decision_entries.append(
                 _build_decision_log_entry(
@@ -1067,6 +1088,161 @@ def publish_automation_email_preview(payload: dict) -> dict:
     return {"data": _publish_email_preview_internal(payload)}
 
 
+def run_batch_eod_scan(*, limit: int | None = None) -> dict:
+    """Fetch all unprocessed Gmail candidate emails and parse each one.
+    Does NOT write anything to Sheets.  Returns a summary for the confirmation step."""
+    from app.automation.processed_log import ProcessedEmailLog
+
+    log = ProcessedEmailLog()
+    already_processed_ids = log.get_processed_ids()
+    gateway = _gmail_gateway(limit=limit)
+
+    try:
+        messages = gateway.list_candidate_messages()
+    except Exception as exc:
+        error_text = str(exc or "").lower()
+        if "unauthorized_client" in error_text:
+            raise RuntimeError(
+                "Google rechazo la impersonacion Gmail. Revisa Domain-Wide Delegation y el scope gmail.readonly."
+            ) from exc
+        raise
+
+    results: list[dict] = []
+    stats = {
+        "total_fetched": len(messages),
+        "already_processed": 0,
+        "ignored": 0,
+        "errors": 0,
+        "ready": 0,
+        "warnings": 0,
+    }
+
+    for message_ref in messages:
+        message_id = str(message_ref.message_id or "").strip()
+        subject = str(message_ref.subject or "").strip()
+
+        if message_id in already_processed_ids:
+            stats["already_processed"] += 1
+            continue
+
+        try:
+            result = _process_email_preview_internal(message_id)
+        except Exception as exc:
+            stats["errors"] += 1
+            results.append({
+                "status": "error",
+                "message_id": message_id,
+                "subject": subject,
+                "error": str(exc),
+                "upload_rows": [],
+                "preview_rows": [],
+                "decision_log_entries": [],
+            })
+            continue
+
+        upload_rows = list(result.get("upload_rows") or [])
+        if not upload_rows:
+            stats["ignored"] += 1
+            result["status"] = "ignored"
+        else:
+            stats["ready"] += 1
+            result["status"] = "ready"
+            if any(str(row.get("revisar_flag") or "") == "REVISAR" for row in upload_rows):
+                stats["warnings"] += 1
+
+        result.setdefault("message_id", message_id)
+        result.setdefault("subject", subject)
+        results.append(result)
+
+    return {"data": {"stats": stats, "results": results}}
+
+
+def confirm_batch_eod_upload(payload: dict) -> dict:
+    """Write all ready scan results to Sheets and mark each email as processed."""
+    from app.automation.processed_log import ProcessedEmailLog
+
+    log = ProcessedEmailLog()
+    settings = get_settings()
+    spreadsheet_id = str(settings.google_sheets_automation_test_spreadsheet_id or "").strip()
+    sheet_name = str(settings.google_sheets_automation_test_sheet_name or "ODS_INPUT").strip() or "ODS_INPUT"
+    if not spreadsheet_id:
+        raise RuntimeError("Falta GOOGLE_SHEETS_AUTOMATION_TEST_SPREADSHEET_ID para publicar en Sheets.")
+    results = list(payload.get("results") or [])
+    existing_ids = _existing_upload_ids(spreadsheet_id, sheet_name)
+
+    totals: dict[str, int] = {"uploaded": 0, "duplicates": 0, "ignored": 0, "errors": 0, "warnings": 0}
+    all_decision_entries: list[str] = []
+
+    for result in results:
+        status = str(result.get("status") or "")
+        message = dict(result.get("message") or {})
+        message_id = str(result.get("message_id") or message.get("message_id") or "").strip()
+        subject = str(result.get("subject") or message.get("subject") or "").strip()
+
+        all_decision_entries.extend(list(result.get("decision_log_entries") or []))
+
+        if status == "error":
+            totals["errors"] += 1
+            continue
+
+        if status == "ignored":
+            totals["ignored"] += 1
+            log.mark_processed(message_id, subject)
+            continue
+
+        upload_rows = [dict(r) for r in list(result.get("upload_rows") or [])]
+        to_write: list[dict] = []
+        for row in upload_rows:
+            row_id = str(row.get("id") or "").strip()
+            if row_id in existing_ids:
+                totals["duplicates"] += 1
+                all_decision_entries.append(
+                    _build_decision_log_entry(
+                        kind="duplicado",
+                        message=message,
+                        row=row,
+                        details=["La fila ya existia en ODS_INPUT y no se volvio a escribir."],
+                    )
+                )
+            else:
+                to_write.append(row)
+
+        _write_rows_to_sheet(
+            spreadsheet_id=spreadsheet_id, sheet_name=sheet_name, rows=to_write,
+        )
+        for row in to_write:
+            row_id = str(row.get("id") or "").strip()
+            existing_ids.add(row_id)
+            totals["uploaded"] += 1
+            if str(row.get("revisar_flag") or "") == "REVISAR":
+                totals["warnings"] += 1
+            all_decision_entries.append(
+                _build_decision_log_entry(
+                    kind="subido",
+                    message=message,
+                    row=row,
+                    details=["Fila escrita en Google Sheets ODS_INPUT (batch fin de dia)."],
+                )
+            )
+
+        log.mark_processed(message_id, subject)
+
+    try:
+        log_path = _append_decision_log(all_decision_entries)
+        log_path_str = str(log_path)
+    except OSError:
+        log_path_str = str(_decisions_log_path())
+
+    return {
+        "data": {
+            **totals,
+            "decisions_log_path": log_path_str,
+            "spreadsheet_id": spreadsheet_id,
+            "sheet_name": sheet_name,
+        }
+    }
+
+
 def get_automation_attachment_analysis(payload: dict) -> dict:
     message_id = str(payload.get("message_id") or "").strip()
     attachment_id = str(payload.get("attachment_id") or "").strip()
@@ -1102,12 +1278,7 @@ def get_automation_attachment_analysis(payload: dict) -> dict:
             temp_path = Path(tmp.name)
             tmp.write(gateway.download_attachment_bytes(message, attachment))
 
-        parsed = extract_structured_acta_pdf(
-            str(temp_path),
-            filename=attachment.filename,
-            subject=str(message.subject or ""),
-            source_label=attachment.filename,
-        )
+        parsed = parse_acta_pdf(str(temp_path))
         parsed["file_path"] = attachment.filename
     finally:
         if temp_path and temp_path.exists():
