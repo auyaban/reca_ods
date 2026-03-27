@@ -626,7 +626,52 @@ def _split_joined_cedula_phone(raw_digits: str) -> tuple[str, str]:
     return "", ""
 
 
+def _extract_cedula_from_oferente_token(raw_token: str) -> str:
+    token = _clean_text(raw_token)
+    if not token:
+        return ""
+    if "%" in token or re.search(r"\d+[.,]\d", token):
+        cedula, _pct = _split_joined_cedula_percentage(token)
+        if cedula:
+            return cedula
+    match = re.search(r"\d{6,12}", token)
+    return _clean_cedula(match.group(0)) if match else ""
+
+
+def _extract_pdf_groupal_oferente_chunks(text: str) -> list[dict[str, str]]:
+    participants: list[dict[str, str]] = []
+    pattern = re.compile(
+        r"(?is)OFERENTE\s+(?P<label_idx>[1-9])\s*"
+        r"(?:CITADO\s+A\s+ENTREVISTA.*?DISCAPACIDAD)?\s*"
+        r"(?P<row_idx>[1-9])\s*"
+        r"(?P<nombre>.+?)"
+        r"(?P<token>\d[\d.,% ]*(?:No\s*aplica\.)?)\s*"
+        r"Discapacidad\s+"
+        r"(?P<discapacidad>[^0-9]+?)\s*"
+        r"(?P<telefonos>\d[\d\s-]{6,30})?\s*"
+        r"(?P<resultado>Pendiente|Aprobado|No aprobado)(?=\s*CARGO|4\.)"
+    )
+    for match in pattern.finditer(str(text or "")):
+        nombre = _clean_name(match.group("nombre"))
+        cedula = _extract_cedula_from_oferente_token(match.group("token"))
+        if not nombre or not cedula or not _is_person_candidate(nombre):
+            continue
+        participants.append(
+            {
+                "nombre_usuario": nombre,
+                "cedula_usuario": cedula,
+                "discapacidad_usuario": _clean_text(match.group("discapacidad")),
+                "genero_usuario": "",
+            }
+        )
+    return _dedupe_participants(participants)
+
+
 def _extract_pdf_participants(text: str) -> list[dict[str, str]]:
+    chunk_participants = _extract_pdf_groupal_oferente_chunks(text)
+    if chunk_participants:
+        return chunk_participants
+
     participants: list[dict[str, str]] = []
     search_text = _extract_pdf_oferentes_section(text)
 

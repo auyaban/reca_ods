@@ -298,18 +298,33 @@ def _companies_cached(_ttl_bucket: int) -> tuple[dict[str, str], ...]:
     return tuple(dict(row) for row in list(response.data or []))
 
 
+@lru_cache
+def _company_by_nit_details_cached(nit: str, _ttl_bucket: int) -> dict[str, str] | None:
+    nit_clean = str(nit or "").strip()
+    if not nit_clean:
+        return None
+    response = execute_with_reauth(
+        lambda retry_client: (
+            retry_client.table("empresas")
+            .select("nit_empresa,nombre_empresa,caja_compensacion,asesor,zona_empresa,sede_empresa,ciudad_empresa")
+            .eq("nit_empresa", nit_clean)
+            .limit(1)
+            .execute()
+        ),
+        context="automation.empresas.by_nit",
+    )
+    rows = list(response.data or [])
+    if not rows:
+        return None
+    return dict(rows[0])
+
+
 def _companies() -> tuple[dict[str, str], ...]:
     return _companies_cached(ttl_bucket(_CACHE_TTL_SECONDS))
 
 
 def _company_by_nit_details(nit: str) -> dict[str, str] | None:
-    nit_clean = str(nit or "").strip()
-    if not nit_clean:
-        return None
-    for row in _companies():
-        if str(row.get("nit_empresa") or "").strip() == nit_clean:
-            return dict(row)
-    return None
+    return _company_by_nit_details_cached(str(nit or "").strip(), ttl_bucket(_CACHE_TTL_SECONDS))
 
 
 def _company_by_name_strong(name: str) -> dict[str, str] | None:

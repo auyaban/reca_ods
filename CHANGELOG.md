@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.13
+- El parser PDF ahora reconoce bloques `OFERENTE N` en actas grupales de selección incluyente, incluyendo filas con cédula/porcentaje pegados y casos con `No aplica.` antes de la discapacidad.
+- Las actas de `Revisión de las Condiciones de la Vacante` dejan de quedar omitidas por conciliación incompleta de empresa: la resolución por NIT ahora consulta Supabase directamente y no depende de un cache parcial.
+- La automatización vuelve a generar filas `sin oferente` para actas de vacante válidas cuando traen empresa, cargo y vacantes, con cobertura de pruebas ampliada en parser, pipeline y preview.
+
 ## 2.2.11
 - El importador PDF de actas ODS ahora extrae correctamente asistentes cuando `Cargo:` viene pegado al nombre en el texto del PDF.
 - `Crear nueva entrada` vuelve a resolver el profesional desde la seccion `ASISTENTES` para actas con ese layout, evitando que el campo quede vacio.

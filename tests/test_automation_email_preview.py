@@ -132,6 +132,95 @@ class AutomationEmailPreviewTests(unittest.TestCase):
     @patch("app.automation.orchestrator.build_import_result_from_parsed")
     @patch("app.automation.orchestrator.suggest_service_from_analysis")
     @patch("app.automation.orchestrator._gmail_gateway")
+    def test_process_email_preview_keeps_vacancy_review_without_participants(
+        self,
+        mock_gateway_factory,
+        mock_suggest_service,
+        mock_build_import_result,
+        mock_download_and_parse,
+        mock_company_by_nit,
+        mock_company_by_name,
+    ) -> None:
+        message = GmailMessageRef(
+            message_id="msg-vac-1",
+            thread_id="thread-vac-1",
+            subject="Revision de las condiciones de la vacante TERPEL",
+            sender="Sara Zambrano <sara@recacolombia.org>",
+            sender_email="sara@recacolombia.org",
+            to_address="gestiondocumental@recacolombia.org",
+            received_at="Fri, 26 Mar 2026 10:00:00 -0500",
+        )
+        attachments = [
+            AttachmentRef(
+                attachment_id="att-vac-1",
+                filename="vacante_terpel.pdf",
+                mime_type="application/pdf",
+                size_bytes=1234,
+                document_kind="vacancy_review",
+                document_label="Revision de condicion o vacante",
+                is_ods_candidate=True,
+                classification_reason="Acta ODS candidata.",
+            ),
+        ]
+        gateway = MagicMock()
+        gateway.get_message_ref.return_value = message
+        gateway.list_pdf_attachments.return_value = attachments
+        gateway.download_attachment_bytes.return_value = b"%PDF-1.4"
+        mock_gateway_factory.return_value = gateway
+        mock_download_and_parse.return_value = {"file_path": "vacante_terpel.pdf"}
+        mock_build_import_result.return_value = {
+            "analysis": {
+                "nombre_empresa": "TERPEL SA",
+                "nit_empresa": "830095213-0",
+                "fecha_servicio": "2026-03-26",
+                "nombre_profesional": "Sara Zambrano",
+                "modalidad_servicio": "Virtual",
+                "document_kind": "vacancy_review",
+                "cargo_objetivo": "Analista planeación financiera",
+                "total_vacantes": 1,
+                "participantes": [],
+                "warnings": [],
+            }
+        }
+        mock_suggest_service.return_value = _SuggestionStub(
+            {
+                "codigo_servicio": "47",
+                "referencia_servicio": "IL4.RV.V",
+                "descripcion_servicio": "Revisión de las Condiciones de la Vacante Virtual",
+                "modalidad_servicio": "Virtual",
+                "valor_base": 121274,
+                "confidence": "high",
+                "observaciones": "Analista planeación financiera (1)",
+                "observacion_agencia": "",
+                "seguimiento_servicio": "",
+                "rationale": ["Regla de vacante."],
+            }
+        )
+        mock_company_by_nit.return_value = {
+            "nit_empresa": "830095213-0",
+            "nombre_empresa": "TERPEL SA",
+            "caja_compensacion": "Compensar",
+            "asesor": "Angie Stephanie Ramos Machuca",
+            "sede_empresa": "Principal",
+            "ciudad_empresa": "Bogotá",
+        }
+        mock_company_by_name.return_value = None
+
+        result = process_automation_email_preview({"message_id": "msg-vac-1"})
+
+        data = result["data"]
+        self.assertTrue(data["ready_to_upload"])
+        self.assertEqual(len(data["upload_rows"]), 1)
+        self.assertEqual(data["upload_rows"][0]["total_personas"], 0)
+        self.assertEqual(data["upload_rows"][0]["nit_empresa"], "830095213-0")
+        self.assertEqual(data["preview_rows"][0]["observaciones"], "Analista planeación financiera (1)")
+
+    @patch("app.automation.orchestrator._company_by_name_strong")
+    @patch("app.automation.orchestrator._company_by_nit_details")
+    @patch("app.automation.orchestrator._download_and_parse_attachment")
+    @patch("app.automation.orchestrator.build_import_result_from_parsed")
+    @patch("app.automation.orchestrator.suggest_service_from_analysis")
+    @patch("app.automation.orchestrator._gmail_gateway")
     def test_process_email_preview_resolves_interpreter_context_from_same_email(
         self,
         mock_gateway_factory,
@@ -365,7 +454,8 @@ class AutomationEmailPreviewTests(unittest.TestCase):
         mock_write_sheet_values.assert_called_once()
         args = mock_write_sheet_values.call_args[0]
         self.assertEqual(args[0], "spreadsheet-123")
-        self.assertEqual(args[1], "'ODS_INPUT'!A3:Y3")
+        end_col = chr(64 + len(ODS_INPUT_HEADERS) + 1)
+        self.assertEqual(args[1], f"'ODS_INPUT'!A3:{end_col}3")
         self.assertEqual(len(args[2]), 1)
 
 

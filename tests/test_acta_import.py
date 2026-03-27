@@ -630,6 +630,77 @@ class ActaImportTests(unittest.TestCase):
         self.assertEqual(result["cargo_objetivo"], "Auxiliar administrativo")
 
     @patch("app.services.excel_acta_import._extract_pdf_text_pages")
+    def test_parse_acta_pdf_extracts_groupal_oferentes_from_offerente_chunks(self, mock_extract_pages) -> None:
+        mock_extract_pages.return_value = [
+            "\n".join(
+                [
+                    "PROCESO DE SELECCIÓN INCLUYENTE GRUPAL - 2 A 4 OFERENTES",
+                    "Fecha de la Visita:09/03/2026 Modalidad:Virtual.",
+                    "Nombre de la Empresa:FALABELLA.COM Ciudad/Municipio:Bogotá.",
+                    "Dirección de la Empresa:Calle 99# 14-49. Número de NIT: 900499362-8",
+                    "2. DESARROLLO DE LA ACTIVIDAD",
+                    "Se realizó la entrevista grupal para el cargo de Front Office Customer Service Agent.",
+                    "3. DATOS DEL OFERENTE",
+                    "OFERENTE 1CITADO A ENTREVISTA CERTIFICADOTELÉFONORESULTADO: No NOMBRE OFERENTECÉDULA % DISCAPACIDAD1 Eduard Alejandro Capera Martínez.102655179750.00%Discapacidad física320 9860840No aprobado",
+                    "CARGOCONTACTO DE EMERGENCIAPARENTESCOTELÉFONO FECHA DE NACIMIENTOEDADFront Office Customer Service Agent. Deisy Cristina Martinez Madre. 3134082575 25/05/2004 21 años.",
+                    "4. CARACTERIZACIÓN DEL OFERENTE",
+                ]
+            ),
+            "\n".join(
+                [
+                    "OFERENTE 2CITADO A ENTREVISTA CERTIFICADOTELÉFONORESULTADO: No NOMBRE OFERENTECÉDULA % DISCAPACIDAD2 Edward Mauricio Riaño Zamora8075054626.30%Discapacidad física310 2691234Aprobado",
+                    "CARGOCONTACTO DE EMERGENCIAPARENTESCOTELÉFONO FECHA DE NACIMIENTOEDADFront Office Customer Service Agent. Leonardo ZamoraHermano 320 4167513 28/07/1985 40 años.",
+                    "4. CARACTERIZACIÓN DEL OFERENTE",
+                ]
+            ),
+            "\n".join(
+                [
+                    "OFERENTE 3CITADO A ENTREVISTA CERTIFICADOTELÉFONORESULTADO: No NOMBRE OFERENTECÉDULA % DISCAPACIDAD3 Diego Armando López Zuluaga.1000853866No aplica. Discapacidad física3222304587 - 3104764213Pendiente",
+                    "CARGOCONTACTO DE EMERGENCIAPARENTESCOTELÉFONO FECHA DE NACIMIENTOEDADFront Office Customer Service Agent. No aplica. No aplica. No aplica. No aplica. No aplica.",
+                    "4. CARACTERIZACIÓN DEL OFERENTE",
+                ]
+            ),
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            temp_path = Path(tmp.name)
+
+        try:
+            result = parse_acta_pdf(str(temp_path))
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+        self.assertEqual(result["nit_empresa"], "900499362-8")
+        self.assertEqual(result["nombre_empresa"], "FALABELLA.COM")
+        self.assertEqual(result["fecha_servicio"], "2026-03-09")
+        self.assertEqual(result["cargo_objetivo"], "Front Office Customer Service Agent.")
+        self.assertEqual(
+            result["participantes"],
+            [
+                {
+                    "nombre_usuario": "Eduard Alejandro Capera Martínez",
+                    "cedula_usuario": "1026551797",
+                    "discapacidad_usuario": "física",
+                    "genero_usuario": "",
+                },
+                {
+                    "nombre_usuario": "Edward Mauricio Riaño Zamora",
+                    "cedula_usuario": "80750546",
+                    "discapacidad_usuario": "física",
+                    "genero_usuario": "",
+                },
+                {
+                    "nombre_usuario": "Diego Armando López Zuluaga",
+                    "cedula_usuario": "1000853866",
+                    "discapacidad_usuario": "física",
+                    "genero_usuario": "",
+                },
+            ],
+        )
+        self.assertNotIn("No se detectaron oferentes en el PDF.", result["warnings"])
+
+    @patch("app.services.excel_acta_import._extract_pdf_text_pages")
     def test_parse_acta_pdf_extracts_follow_up_participant_with_percentage(self, mock_extract_pages) -> None:
         mock_extract_pages.return_value = [
             "\n".join(

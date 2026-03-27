@@ -133,11 +133,33 @@ def _companies_cached(_ttl_bucket: int) -> tuple[dict[str, Any], ...]:
     return tuple(dict(row) for row in list(response.data or []))
 
 
+@lru_cache
+def _company_by_nit_cached(nit: str, _ttl_bucket: int) -> dict[str, Any] | None:
+    nit_clean = str(nit or "").strip()
+    if not nit_clean:
+        return None
+    response = execute_with_reauth(
+        lambda retry_client: (
+            retry_client.table("empresas")
+            .select("nit_empresa,nombre_empresa,caja_compensacion,asesor,zona_empresa,sede_empresa,ciudad_empresa")
+            .eq("nit_empresa", nit_clean)
+            .limit(1)
+            .execute()
+        ),
+        context="acta_import_pipeline.company_by_nit",
+    )
+    rows = list(response.data or [])
+    if not rows:
+        return None
+    return dict(rows[0])
+
+
 def clear_import_pipeline_caches() -> None:
     _professionals_cached.cache_clear()
     _interpreters_cached.cache_clear()
     _users_cached.cache_clear()
     _companies_cached.cache_clear()
+    _company_by_nit_cached.cache_clear()
 
 
 def _professionals() -> tuple[dict[str, Any], ...]:
@@ -158,6 +180,10 @@ def _users_by_cedula() -> dict[str, dict[str, Any]]:
 
 def _companies() -> tuple[dict[str, Any], ...]:
     return _companies_cached(ttl_bucket(_CACHE_TTL_SECONDS))
+
+
+def _company_by_nit(nit: str) -> dict[str, Any] | None:
+    return _company_by_nit_cached(str(nit or "").strip(), ttl_bucket(_CACHE_TTL_SECONDS))
 
 
 def _professional_email_map() -> dict[str, str]:
@@ -323,10 +349,7 @@ def _resolve_company(parsed: dict) -> tuple[dict[str, Any] | None, list[str]]:
     warnings: list[str] = []
 
     if nit:
-        company_by_nit = next(
-            (dict(row) for row in _companies() if str(row.get("nit_empresa") or "").strip() == nit),
-            None,
-        )
+        company_by_nit = _company_by_nit(nit)
         if not company_by_nit:
             return None, [f"El NIT {nit} no existe en Supabase."]
         canonical_name = str(company_by_nit.get("nombre_empresa") or "").strip()
