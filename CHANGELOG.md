@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.2.14
+- Se corrige el guardado final de nuevas entradas ODS cuando falla la lectura del schema remoto de Supabase: la app ahora usa un schema local de respaldo para mapear `ano_servicio` a `año_servicio` y tipar correctamente `orden_clausulada`.
+- Cobertura de pruebas ampliada para validar el fallback local del schema y la coerción del payload antes del insert final en `ods`.
+
 ## 2.2.13
 - El parser PDF ahora reconoce bloques `OFERENTE N` en actas grupales de selección incluyente, incluyendo filas con cédula/porcentaje pegados y casos con `No aplica.` antes de la discapacidad.
 - Las actas de `Revisión de las Condiciones de la Vacante` dejan de quedar omitidas por conciliación incompleta de empresa: la resolución por NIT ahora consulta Supabase directamente y no depende de un cache parcial.

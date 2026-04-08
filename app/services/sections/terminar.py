@@ -15,15 +15,53 @@ _logger = get_logger(LOGGER_BACKEND_INSERT)
 
 
 _ODS_SCHEMA_CACHE_TTL_SECONDS = 180
+_ODS_YEAR_DB_FIELD = "a\u00f1o_servicio"
 _YEAR_FIELD_ALIASES = (
     "ano_servicio",
-    "año_servicio",
+    _ODS_YEAR_DB_FIELD,
     "a\u00c3\u00b1o_servicio",
     "a?o_servicio",
     "a\u00ef\u00bf\u00bdo_servicio",
     "a\u00c3\u0192\u00c2\u00b1o_servicio",
 )
 _ODS_PASSTHROUGH_FIELDS = {"session_id", "started_at", "submitted_at"}
+_ODS_FALLBACK_SCHEMA: dict[str, dict[str, Any]] = {
+    "orden_clausulada": {"type": "boolean"},
+    "nombre_profesional": {"type": "string"},
+    "nit_empresa": {"type": "string"},
+    "nombre_empresa": {"type": "string"},
+    "caja_compensacion": {"type": "string"},
+    "asesor_empresa": {"type": "string"},
+    "sede_empresa": {"type": "string"},
+    "fecha_servicio": {"type": "string", "format": "date"},
+    "codigo_servicio": {"type": "string"},
+    "referencia_servicio": {"type": "string"},
+    "descripcion_servicio": {"type": "string"},
+    "modalidad_servicio": {"type": "string"},
+    "valor_virtual": {"type": "number"},
+    "valor_bogota": {"type": "number"},
+    "valor_otro": {"type": "number"},
+    "todas_modalidades": {"type": "number"},
+    "horas_interprete": {"type": "number"},
+    "valor_interprete": {"type": "number"},
+    "valor_total": {"type": "number"},
+    "nombre_usuario": {"type": "string"},
+    "cedula_usuario": {"type": "string"},
+    "discapacidad_usuario": {"type": "string"},
+    "genero_usuario": {"type": "string"},
+    "fecha_ingreso": {"type": "string", "format": "date"},
+    "tipo_contrato": {"type": "string"},
+    "cargo_servicio": {"type": "string"},
+    "total_personas": {"type": "integer"},
+    "observaciones": {"type": "string"},
+    "observacion_agencia": {"type": "string"},
+    "seguimiento_servicio": {"type": "string"},
+    "mes_servicio": {"type": "integer"},
+    _ODS_YEAR_DB_FIELD: {"type": "integer"},
+    "session_id": {"type": "string"},
+    "started_at": {"type": "string"},
+    "submitted_at": {"type": "string"},
+}
 
 
 @lru_cache
@@ -59,11 +97,15 @@ def _fetch_ods_schema_cached(
 
 def _fetch_ods_schema() -> dict[str, dict[str, Any]]:
     settings = get_settings()
-    return _fetch_ods_schema_cached(
+    schema = _fetch_ods_schema_cached(
         settings.supabase_url,
         settings.supabase_anon_key,
         ttl_bucket(_ODS_SCHEMA_CACHE_TTL_SECONDS),
     )
+    if schema:
+        return schema
+    _logger.warning("Usando schema ODS local de respaldo.")
+    return dict(_ODS_FALLBACK_SCHEMA)
 
 
 def clear_schema_cache() -> None:
@@ -149,8 +191,6 @@ def _coerce_value(field: str, value: Any, schema: dict[str, Any]) -> Any:
 
 def _apply_schema(ods_data: dict[str, Any]) -> dict[str, Any]:
     schema = _fetch_ods_schema()
-    if not schema:
-        return ods_data
 
     year_schema_key = next((name for name in _YEAR_FIELD_ALIASES if name in schema), None)
     if year_schema_key:

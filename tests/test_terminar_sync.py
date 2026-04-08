@@ -57,6 +57,34 @@ def _inserted_row() -> dict:
 
 
 class TerminarServicioSyncTests(unittest.TestCase):
+    @patch("app.services.sections.terminar._fetch_ods_schema_cached", return_value={})
+    @patch("app.services.sections.terminar.get_settings")
+    def test_fetch_schema_uses_local_fallback_when_remote_schema_unavailable(
+        self,
+        mock_get_settings,
+        _mock_fetch_cached,
+    ) -> None:
+        mock_get_settings.return_value = SimpleNamespace(
+            supabase_url="https://example.supabase.co",
+            supabase_anon_key="anon-key",
+        )
+
+        schema = terminar._fetch_ods_schema()
+
+        self.assertEqual(schema["orden_clausulada"]["type"], "boolean")
+        self.assertEqual(schema["a\u00f1o_servicio"]["type"], "integer")
+
+    @patch(
+        "app.services.sections.terminar._fetch_ods_schema",
+        return_value=dict(terminar._ODS_FALLBACK_SCHEMA),
+    )
+    def test_apply_schema_maps_year_field_and_boolean_with_local_schema(self, _mock_schema) -> None:
+        applied = terminar._apply_schema(_request().ods.model_dump())
+
+        self.assertTrue(applied["orden_clausulada"])
+        self.assertNotIn("ano_servicio", applied)
+        self.assertEqual(applied["a\u00f1o_servicio"], 2026)
+
     @patch("app.services.sections.terminar.sync_new_ods_record")
     @patch("app.services.sections.terminar.execute_with_reauth")
     @patch("app.services.sections.terminar._fetch_ods_schema")
@@ -66,7 +94,7 @@ class TerminarServicioSyncTests(unittest.TestCase):
         mock_execute_with_reauth,
         mock_sync_new_ods_record,
     ) -> None:
-        mock_schema.return_value = {}
+        mock_schema.return_value = dict(terminar._ODS_FALLBACK_SCHEMA)
         mock_execute_with_reauth.return_value = SimpleNamespace(data=[_inserted_row()])
         mock_sync_new_ods_record.return_value = {
             "sync_status": "ok",
@@ -88,7 +116,7 @@ class TerminarServicioSyncTests(unittest.TestCase):
         mock_execute_with_reauth,
         mock_sync_new_ods_record,
     ) -> None:
-        mock_schema.return_value = {}
+        mock_schema.return_value = dict(terminar._ODS_FALLBACK_SCHEMA)
         mock_execute_with_reauth.return_value = SimpleNamespace(data=[_inserted_row()])
         mock_sync_new_ods_record.return_value = {
             "sync_status": "pending",
@@ -110,7 +138,7 @@ class TerminarServicioSyncTests(unittest.TestCase):
         mock_execute_with_reauth,
         mock_sync_new_ods_record,
     ) -> None:
-        mock_schema.return_value = {}
+        mock_schema.return_value = dict(terminar._ODS_FALLBACK_SCHEMA)
         mock_execute_with_reauth.return_value = SimpleNamespace(data=[_inserted_row()])
         mock_sync_new_ods_record.return_value = {
             "sync_status": "warning",
