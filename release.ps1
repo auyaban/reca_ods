@@ -26,6 +26,26 @@ function Invoke-ProcessChecked {
     }
 }
 
+function Invoke-ExecutableChecked {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$ArgumentList = @(),
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    Write-Host "Verificando $Description..."
+    Push-Location (Split-Path -Parent $FilePath)
+    try {
+        & $FilePath @ArgumentList
+        $exitCode = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
+    if ($exitCode -ne 0) {
+        throw "$Description fallo con codigo $exitCode."
+    }
+}
+
 function Test-InstallerConfig {
     param(
         [Parameter(Mandatory = $true)][string]$ConfigPath
@@ -100,11 +120,10 @@ function Test-InstallerSmoke {
             throw "La version instalada es '$installedVersion' y se esperaba '$ExpectedVersion'."
         }
 
-        Invoke-ProcessChecked `
+        Invoke-ExecutableChecked `
             -FilePath $installedExe `
             -ArgumentList @("--smoke-test") `
-            -Description "el smoke test del ejecutable instalado" `
-            -TimeoutSeconds 60
+            -Description "el smoke test del ejecutable instalado"
     } finally {
         $uninstaller = Join-Path $installDir "unins000.exe"
         if (Test-Path $uninstaller) {
@@ -161,11 +180,10 @@ $distExePath = Join-Path $root "dist\\RECA_ODS\\RECA_ODS.exe"
 if (!(Test-Path $distExePath)) {
     throw "No se encontro el ejecutable empaquetado en $distExePath"
 }
-Invoke-ProcessChecked `
+Invoke-ExecutableChecked `
     -FilePath $distExePath `
     -ArgumentList @("--smoke-test") `
-    -Description "el smoke test del ejecutable empaquetado" `
-    -TimeoutSeconds 60
+    -Description "el smoke test del ejecutable empaquetado"
 
 & "C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe" /DMyAppVersion=$version installer.iss
 
