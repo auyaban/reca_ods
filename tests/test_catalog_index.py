@@ -42,6 +42,25 @@ def _usuario(*, cedula: str, nombre: str, updated_at: str) -> dict[str, str]:
     }
 
 
+def _tarifa(
+    *,
+    codigo: str,
+    referencia: str,
+    descripcion: str,
+    modalidad: str,
+    valor_base: float,
+    updated_at: str,
+) -> dict[str, str | float]:
+    return {
+        "codigo_servicio": codigo,
+        "referencia_servicio": referencia,
+        "descripcion_servicio": descripcion,
+        "modalidad_servicio": modalidad,
+        "valor_base": valor_base,
+        "updated_at": updated_at,
+    }
+
+
 class CatalogIndexTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -78,6 +97,19 @@ class CatalogIndexTests(unittest.TestCase):
             patch(
                 "app.catalog_index._fetch_usuarios_rows",
                 return_value=[_usuario(cedula="123", nombre="Carlos Ruiz", updated_at="2026-04-01T10:15:00+00:00")],
+            ),
+            patch(
+                "app.catalog_index._fetch_tarifas_rows",
+                return_value=[
+                    _tarifa(
+                        codigo="S-001",
+                        referencia="REF-1",
+                        descripcion="Servicio demo",
+                        modalidad="Virtual",
+                        valor_base=120000,
+                        updated_at="2026-04-01T10:20:00+00:00",
+                    )
+                ],
             ),
         ):
             result = catalog_index.sync_local_catalog_indexes()
@@ -128,6 +160,19 @@ class CatalogIndexTests(unittest.TestCase):
                 }
             ],
         )
+        self.assertEqual(
+            catalog_index.get_indexed_tarifas(),
+            [
+                {
+                    "codigo_servicio": "S-001",
+                    "referencia_servicio": "REF-1",
+                    "descripcion_servicio": "Servicio demo",
+                    "modalidad_servicio": "Virtual",
+                    "valor_base": 120000,
+                    "updated_at": "2026-04-01T10:20:00+00:00",
+                }
+            ],
+        )
 
     def test_incremental_sync_upserts_only_changed_rows(self) -> None:
         with (
@@ -144,6 +189,19 @@ class CatalogIndexTests(unittest.TestCase):
                 "app.catalog_index._fetch_usuarios_rows",
                 return_value=[_usuario(cedula="123", nombre="Carlos Ruiz", updated_at="2026-04-01T10:15:00+00:00")],
             ),
+            patch(
+                "app.catalog_index._fetch_tarifas_rows",
+                return_value=[
+                    _tarifa(
+                        codigo="S-001",
+                        referencia="REF-1",
+                        descripcion="Servicio demo",
+                        modalidad="Virtual",
+                        valor_base=120000,
+                        updated_at="2026-04-01T10:20:00+00:00",
+                    )
+                ],
+            ),
         ):
             catalog_index.sync_local_catalog_indexes()
 
@@ -152,21 +210,40 @@ class CatalogIndexTests(unittest.TestCase):
                 "app.catalog_index._fetch_empresas_rows",
                 return_value=[_empresa(nit="9001", nombre="Empresa Demo Renombrada", updated_at="2026-04-01T11:00:00+00:00")],
             ) as mock_empresas,
-            patch("app.catalog_index._fetch_profesionales_rows", return_value=[]) as mock_profesionales,
+            patch(
+                "app.catalog_index._fetch_profesionales_rows",
+                return_value=[_profesional(record_id="1", nombre="Ana Perez", updated_at="2026-04-01T10:05:00+00:00")],
+            ) as mock_profesionales,
             patch("app.catalog_index._fetch_interpretes_rows", return_value=[]) as mock_interpretes,
             patch("app.catalog_index._fetch_usuarios_rows", return_value=[]) as mock_usuarios,
+            patch(
+                "app.catalog_index._fetch_tarifas_rows",
+                return_value=[
+                    _tarifa(
+                        codigo="S-001",
+                        referencia="REF-1B",
+                        descripcion="Servicio demo actualizado",
+                        modalidad="Bogotá",
+                        valor_base=125000,
+                        updated_at="2026-04-01T11:20:00+00:00",
+                    )
+                ],
+            ) as mock_tarifas,
         ):
             result = catalog_index.sync_local_catalog_indexes()
 
         self.assertEqual(result["catalogs"]["empresas"]["mode"], "incremental")
+        self.assertEqual(result["catalogs"]["profesionales"]["mode"], "full")
         self.assertEqual(catalog_index.get_indexed_empresas()[0]["nombre_empresa"], "Empresa Demo Renombrada")
         self.assertEqual(catalog_index.get_indexed_profesionales()[0]["nombre_profesional"], "Ana Perez")
         self.assertEqual(catalog_index.get_indexed_usuarios()[0]["cedula_usuario"], "123")
+        self.assertEqual(catalog_index.get_indexed_tarifas()[0]["descripcion_servicio"], "Servicio demo actualizado")
         mock_empresas.assert_called_once()
         self.assertIsNotNone(mock_empresas.call_args.kwargs.get("updated_after"))
-        self.assertIsNotNone(mock_profesionales.call_args.kwargs.get("updated_after"))
-        self.assertIsNotNone(mock_interpretes.call_args.kwargs.get("updated_after"))
+        self.assertEqual(mock_profesionales.call_args.kwargs, {})
+        self.assertEqual(mock_interpretes.call_args.kwargs, {})
         self.assertIsNotNone(mock_usuarios.call_args.kwargs.get("updated_after"))
+        self.assertIsNotNone(mock_tarifas.call_args.kwargs.get("updated_after"))
 
     def test_corrupt_local_db_is_recreated(self) -> None:
         db_path = self._appdata / "catalog_indexes.sqlite3"
@@ -180,6 +257,7 @@ class CatalogIndexTests(unittest.TestCase):
             patch("app.catalog_index._fetch_profesionales_rows", return_value=[]),
             patch("app.catalog_index._fetch_interpretes_rows", return_value=[]),
             patch("app.catalog_index._fetch_usuarios_rows", return_value=[]),
+            patch("app.catalog_index._fetch_tarifas_rows", return_value=[]),
         ):
             catalog_index.sync_local_catalog_indexes(force_full=True)
 

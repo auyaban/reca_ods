@@ -19,7 +19,7 @@ _REMOTE_PAGE_SIZE = 1000
 _DETAIL_CACHE_TTL_SECONDS = 300
 _FULL_REBUILD_INTERVAL = timedelta(days=7)
 _INCREMENTAL_MARGIN = timedelta(minutes=5)
-_SUPPORTED_CATALOGS = ("empresas", "profesionales", "usuarios")
+_SUPPORTED_CATALOGS = ("empresas", "profesionales", "usuarios", "tarifas")
 
 
 def _utc_now() -> datetime:
@@ -67,6 +67,11 @@ def _sync_cutoff(last_sync: str | None) -> str | None:
     return _format_datetime(parsed - _INCREMENTAL_MARGIN)
 
 
+def _row_sync_value(row: dict[str, Any]) -> str | None:
+    value = str(row.get("updated_at") or row.get("created_at") or "").strip()
+    return value or None
+
+
 def _ensure_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
@@ -100,6 +105,15 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
             updated_at TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS tarifas_index (
+            codigo_servicio TEXT PRIMARY KEY,
+            referencia_servicio TEXT,
+            descripcion_servicio TEXT NOT NULL,
+            modalidad_servicio TEXT,
+            valor_base REAL,
+            updated_at TEXT
+        );
+
         CREATE INDEX IF NOT EXISTS idx_empresas_nombre_empresa
         ON empresas_index(nombre_empresa COLLATE NOCASE);
 
@@ -108,6 +122,9 @@ def _ensure_schema(connection: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_usuarios_nombre_usuario
         ON usuarios_index(nombre_usuario COLLATE NOCASE);
+
+        CREATE INDEX IF NOT EXISTS idx_tarifas_descripcion_servicio
+        ON tarifas_index(descripcion_servicio COLLATE NOCASE);
         """
     )
 
@@ -197,6 +214,8 @@ def _catalog_table_name(catalog: str) -> str:
         return "profesionales_index"
     if catalog == "usuarios":
         return "usuarios_index"
+    if catalog == "tarifas":
+        return "tarifas_index"
     raise ValueError(f"Catalogo no soportado: {catalog}")
 
 
@@ -258,13 +277,10 @@ def _fetch_profesionales_rows(*, updated_after: str | None = None) -> list[dict[
     def _query(client, offset: int):
         query = (
             client.table("profesionales")
-            .select("id,nombre_profesional,correo_profesional,programa,updated_at")
-            .order("updated_at")
+            .select("id,nombre_profesional,correo_profesional,programa")
             .order("id")
             .range(offset, offset + _REMOTE_PAGE_SIZE - 1)
         )
-        if updated_after:
-            query = query.gt("updated_at", updated_after)
         return query
 
     return _fetch_remote_pages(_query, context="catalog_index.profesionales")
@@ -274,13 +290,13 @@ def _fetch_interpretes_rows(*, updated_after: str | None = None) -> list[dict[st
     def _query(client, offset: int):
         query = (
             client.table("interpretes")
-            .select("nombre,updated_at")
-            .order("updated_at")
+            .select("nombre,created_at")
+            .order("created_at")
             .order("nombre")
             .range(offset, offset + _REMOTE_PAGE_SIZE - 1)
         )
         if updated_after:
-            query = query.gt("updated_at", updated_after)
+            query = query.gt("created_at", updated_after)
         return query
 
     return _fetch_remote_pages(_query, context="catalog_index.interpretes")
@@ -290,39 +306,72 @@ def _fetch_usuarios_rows(*, updated_after: str | None = None) -> list[dict[str, 
     def _query(client, offset: int):
         query = (
             client.table("usuarios_reca")
-            .select("cedula_usuario,nombre_usuario,updated_at")
-            .order("updated_at")
+            .select("cedula_usuario,nombre_usuario,created_at")
+            .order("created_at")
             .order("cedula_usuario")
+            .range(offset, offset + _REMOTE_PAGE_SIZE - 1)
+        )
+        if updated_after:
+            query = query.gt("created_at", updated_after)
+        return query
+
+    return _fetch_remote_pages(_query, context="catalog_index.usuarios")
+
+
+def _fetch_tarifas_rows(*, updated_after: str | None = None) -> list[dict[str, Any]]:
+    def _query(client, offset: int):
+        query = (
+            client.table("tarifas")
+            .select(
+                "codigo_servicio,referencia_servicio,descripcion_servicio,modalidad_servicio,valor_base,updated_at"
+            )
+            .order("updated_at")
+            .order("codigo_servicio")
             .range(offset, offset + _REMOTE_PAGE_SIZE - 1)
         )
         if updated_after:
             query = query.gt("updated_at", updated_after)
         return query
 
-    return _fetch_remote_pages(_query, context="catalog_index.usuarios")
+    return _fetch_remote_pages(_query, context="catalog_index.tarifas")
 
 
 def _replace_empresas(connection: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+    payload_by_nit: dict[str, tuple[str | None, str, str, str | None]] = {}
+    for row in rows:
+        nit = str(row.get("nit_empresa") or "").strip()
+        nombre = str(row.get("nombre_empresa") or "").strip()
+        if not nit or not nombre:
+            continue
+        payload_by_nit[nit] = (
+            str(row.get("id") or "") or None,
+            nit,
+            nombre,
+            _row_sync_value(row),
+        )
     connection.execute("DELETE FROM empresas_index")
     connection.executemany(
         """
         INSERT INTO empresas_index(remote_id, nit_empresa, nombre_empresa, updated_at)
         VALUES(?, ?, ?, ?)
         """,
-        [
-            (
-                str(row.get("id") or "") or None,
-                str(row.get("nit_empresa") or "").strip(),
-                str(row.get("nombre_empresa") or "").strip(),
-                str(row.get("updated_at") or "").strip() or None,
-            )
-            for row in rows
-            if str(row.get("nit_empresa") or "").strip() and str(row.get("nombre_empresa") or "").strip()
-        ],
+        list(payload_by_nit.values()),
     )
 
 
 def _upsert_empresas(connection: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+    payload_by_nit: dict[str, tuple[str | None, str, str, str | None]] = {}
+    for row in rows:
+        nit = str(row.get("nit_empresa") or "").strip()
+        nombre = str(row.get("nombre_empresa") or "").strip()
+        if not nit or not nombre:
+            continue
+        payload_by_nit[nit] = (
+            str(row.get("id") or "") or None,
+            nit,
+            nombre,
+            _row_sync_value(row),
+        )
     connection.executemany(
         """
         INSERT INTO empresas_index(remote_id, nit_empresa, nombre_empresa, updated_at)
@@ -332,16 +381,7 @@ def _upsert_empresas(connection: sqlite3.Connection, rows: list[dict[str, Any]])
             nombre_empresa = excluded.nombre_empresa,
             updated_at = excluded.updated_at
         """,
-        [
-            (
-                str(row.get("id") or "") or None,
-                str(row.get("nit_empresa") or "").strip(),
-                str(row.get("nombre_empresa") or "").strip(),
-                str(row.get("updated_at") or "").strip() or None,
-            )
-            for row in rows
-            if str(row.get("nit_empresa") or "").strip() and str(row.get("nombre_empresa") or "").strip()
-        ],
+        list(payload_by_nit.values()),
     )
 
 
@@ -360,7 +400,7 @@ def _professional_index_rows(rows: list[dict[str, Any]]) -> list[tuple[str, str,
                 str(row.get("correo_profesional") or "").strip() or None,
                 str(row.get("programa") or "").strip() or "Inclusión Laboral",
                 0,
-                str(row.get("updated_at") or "").strip() or None,
+                _row_sync_value(row),
             )
         )
     return payload
@@ -381,7 +421,7 @@ def _interpreter_index_rows(rows: list[dict[str, Any]]) -> list[tuple[str, str, 
                 None,
                 "Interprete",
                 1,
-                str(row.get("updated_at") or "").strip() or None,
+                _row_sync_value(row),
             )
         )
     return payload
@@ -427,25 +467,39 @@ def _upsert_profesionales(
 
 
 def _replace_usuarios(connection: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+    payload_by_cedula: dict[str, tuple[str, str, str | None]] = {}
+    for row in rows:
+        cedula = str(row.get("cedula_usuario") or "").strip()
+        nombre = str(row.get("nombre_usuario") or "").strip()
+        if not cedula or not nombre:
+            continue
+        payload_by_cedula[cedula] = (
+            cedula,
+            nombre,
+            _row_sync_value(row),
+        )
     connection.execute("DELETE FROM usuarios_index")
     connection.executemany(
         """
         INSERT INTO usuarios_index(cedula_usuario, nombre_usuario, updated_at)
         VALUES(?, ?, ?)
         """,
-        [
-            (
-                str(row.get("cedula_usuario") or "").strip(),
-                str(row.get("nombre_usuario") or "").strip(),
-                str(row.get("updated_at") or "").strip() or None,
-            )
-            for row in rows
-            if str(row.get("cedula_usuario") or "").strip() and str(row.get("nombre_usuario") or "").strip()
-        ],
+        list(payload_by_cedula.values()),
     )
 
 
 def _upsert_usuarios(connection: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+    payload_by_cedula: dict[str, tuple[str, str, str | None]] = {}
+    for row in rows:
+        cedula = str(row.get("cedula_usuario") or "").strip()
+        nombre = str(row.get("nombre_usuario") or "").strip()
+        if not cedula or not nombre:
+            continue
+        payload_by_cedula[cedula] = (
+            cedula,
+            nombre,
+            _row_sync_value(row),
+        )
     connection.executemany(
         """
         INSERT INTO usuarios_index(cedula_usuario, nombre_usuario, updated_at)
@@ -454,15 +508,66 @@ def _upsert_usuarios(connection: sqlite3.Connection, rows: list[dict[str, Any]])
             nombre_usuario = excluded.nombre_usuario,
             updated_at = excluded.updated_at
         """,
-        [
-            (
-                str(row.get("cedula_usuario") or "").strip(),
-                str(row.get("nombre_usuario") or "").strip(),
-                str(row.get("updated_at") or "").strip() or None,
-            )
-            for row in rows
-            if str(row.get("cedula_usuario") or "").strip() and str(row.get("nombre_usuario") or "").strip()
-        ],
+        list(payload_by_cedula.values()),
+    )
+
+
+def _replace_tarifas(connection: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+    payload_by_codigo: dict[str, tuple[str, str | None, str, str | None, Any, str | None]] = {}
+    for row in rows:
+        codigo = str(row.get("codigo_servicio") or "").strip()
+        descripcion = str(row.get("descripcion_servicio") or "").strip()
+        if not codigo or not descripcion:
+            continue
+        payload_by_codigo[codigo] = (
+            codigo,
+            str(row.get("referencia_servicio") or "").strip() or None,
+            descripcion,
+            str(row.get("modalidad_servicio") or "").strip() or None,
+            row.get("valor_base"),
+            _row_sync_value(row),
+        )
+    connection.execute("DELETE FROM tarifas_index")
+    connection.executemany(
+        """
+        INSERT INTO tarifas_index(
+            codigo_servicio, referencia_servicio, descripcion_servicio, modalidad_servicio, valor_base, updated_at
+        )
+        VALUES(?, ?, ?, ?, ?, ?)
+        """,
+        list(payload_by_codigo.values()),
+    )
+
+
+def _upsert_tarifas(connection: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
+    payload_by_codigo: dict[str, tuple[str, str | None, str, str | None, Any, str | None]] = {}
+    for row in rows:
+        codigo = str(row.get("codigo_servicio") or "").strip()
+        descripcion = str(row.get("descripcion_servicio") or "").strip()
+        if not codigo or not descripcion:
+            continue
+        payload_by_codigo[codigo] = (
+            codigo,
+            str(row.get("referencia_servicio") or "").strip() or None,
+            descripcion,
+            str(row.get("modalidad_servicio") or "").strip() or None,
+            row.get("valor_base"),
+            _row_sync_value(row),
+        )
+    connection.executemany(
+        """
+        INSERT INTO tarifas_index(
+            codigo_servicio, referencia_servicio, descripcion_servicio, modalidad_servicio, valor_base, updated_at
+        )
+        VALUES(?, ?, ?, ?, ?, ?)
+        ON CONFLICT(codigo_servicio) DO UPDATE SET
+            referencia_servicio = excluded.referencia_servicio,
+            descripcion_servicio = excluded.descripcion_servicio,
+            modalidad_servicio = excluded.modalidad_servicio,
+            valor_base = excluded.valor_base,
+            updated_at = excluded.updated_at
+        """,
+        list(payload_by_codigo.values()),
     )
 
 
@@ -490,35 +595,20 @@ def _sync_empresas(connection: sqlite3.Connection, *, force_full: bool) -> dict[
 
 
 def _sync_profesionales(connection: sqlite3.Connection, *, force_full: bool) -> dict[str, Any]:
-    full_rebuild = _catalog_needs_full_rebuild(connection, "profesionales", force_full=force_full)
     synced_at = _format_datetime(_utc_now())
-    if full_rebuild:
-        profesionales_rows = _fetch_profesionales_rows()
-        interpretes_rows = _fetch_interpretes_rows()
-        with connection:
-            _replace_profesionales(connection, profesionales_rows, interpretes_rows)
-            _set_sync_state(
-                connection,
-                "profesionales",
-                last_incremental_sync_at=synced_at,
-                last_full_sync_at=synced_at,
-            )
-        return {
-            "catalog": "profesionales",
-            "mode": "full",
-            "rows": len(profesionales_rows) + len(interpretes_rows),
-        }
-
-    state = _get_sync_state(connection, "profesionales")
-    cutoff = _sync_cutoff(state["last_incremental_sync_at"])
-    profesionales_rows = _fetch_profesionales_rows(updated_after=cutoff)
-    interpretes_rows = _fetch_interpretes_rows(updated_after=cutoff)
+    profesionales_rows = _fetch_profesionales_rows()
+    interpretes_rows = _fetch_interpretes_rows()
     with connection:
-        _upsert_profesionales(connection, profesionales_rows, interpretes_rows)
-        _set_sync_state(connection, "profesionales", last_incremental_sync_at=synced_at)
+        _replace_profesionales(connection, profesionales_rows, interpretes_rows)
+        _set_sync_state(
+            connection,
+            "profesionales",
+            last_incremental_sync_at=synced_at,
+            last_full_sync_at=synced_at,
+        )
     return {
         "catalog": "profesionales",
-        "mode": "incremental",
+        "mode": "full",
         "rows": len(profesionales_rows) + len(interpretes_rows),
     }
 
@@ -546,6 +636,29 @@ def _sync_usuarios(connection: sqlite3.Connection, *, force_full: bool) -> dict[
     return {"catalog": "usuarios", "mode": "incremental", "rows": len(rows)}
 
 
+def _sync_tarifas(connection: sqlite3.Connection, *, force_full: bool) -> dict[str, Any]:
+    full_rebuild = _catalog_needs_full_rebuild(connection, "tarifas", force_full=force_full)
+    synced_at = _format_datetime(_utc_now())
+    if full_rebuild:
+        rows = _fetch_tarifas_rows()
+        with connection:
+            _replace_tarifas(connection, rows)
+            _set_sync_state(
+                connection,
+                "tarifas",
+                last_incremental_sync_at=synced_at,
+                last_full_sync_at=synced_at,
+            )
+        return {"catalog": "tarifas", "mode": "full", "rows": len(rows)}
+
+    state = _get_sync_state(connection, "tarifas")
+    rows = _fetch_tarifas_rows(updated_after=_sync_cutoff(state["last_incremental_sync_at"]))
+    with connection:
+        _upsert_tarifas(connection, rows)
+        _set_sync_state(connection, "tarifas", last_incremental_sync_at=synced_at)
+    return {"catalog": "tarifas", "mode": "incremental", "rows": len(rows)}
+
+
 def sync_local_catalog_indexes(
     *,
     force_full: bool = False,
@@ -559,6 +672,7 @@ def sync_local_catalog_indexes(
         "empresas": _sync_empresas,
         "profesionales": _sync_profesionales,
         "usuarios": _sync_usuarios,
+        "tarifas": _sync_tarifas,
     }
 
     with _connection() as connection:
@@ -652,6 +766,54 @@ def get_indexed_usuarios() -> list[dict[str, str]]:
         }
         for row in rows
     ]
+
+
+def get_indexed_tarifas() -> list[dict[str, Any]]:
+    with _connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT codigo_servicio, referencia_servicio, descripcion_servicio, modalidad_servicio, valor_base, updated_at
+            FROM tarifas_index
+            ORDER BY codigo_servicio COLLATE NOCASE
+            """
+        ).fetchall()
+    return [
+        {
+            "codigo_servicio": str(row["codigo_servicio"] or "").strip(),
+            "referencia_servicio": str(row["referencia_servicio"] or "").strip(),
+            "descripcion_servicio": str(row["descripcion_servicio"] or "").strip(),
+            "modalidad_servicio": str(row["modalidad_servicio"] or "").strip(),
+            "valor_base": row["valor_base"],
+            "updated_at": str(row["updated_at"] or "").strip(),
+        }
+        for row in rows
+    ]
+
+
+def get_tarifa_by_codigo(codigo: str) -> dict[str, Any] | None:
+    codigo_clean = str(codigo or "").strip()
+    if not codigo_clean:
+        return None
+    with _connection() as connection:
+        row = connection.execute(
+            """
+            SELECT codigo_servicio, referencia_servicio, descripcion_servicio, modalidad_servicio, valor_base, updated_at
+            FROM tarifas_index
+            WHERE codigo_servicio = ?
+            LIMIT 1
+            """,
+            (codigo_clean,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "codigo_servicio": str(row["codigo_servicio"] or "").strip(),
+        "referencia_servicio": str(row["referencia_servicio"] or "").strip(),
+        "descripcion_servicio": str(row["descripcion_servicio"] or "").strip(),
+        "modalidad_servicio": str(row["modalidad_servicio"] or "").strip(),
+        "valor_base": row["valor_base"],
+        "updated_at": str(row["updated_at"] or "").strip(),
+    }
 
 
 @lru_cache

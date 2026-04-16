@@ -5,15 +5,33 @@ import math
 
 from pydantic import BaseModel
 
+from app.catalog_index import get_indexed_tarifas, get_tarifa_by_codigo, sync_local_catalog_indexes
 from app.logging_utils import LOGGER_BACKEND, get_file_logger
 from app.domain.service_calculation import CalculoServicioInput, calcular_servicio
-from app.services.errors import SUPABASE_ERRORS, ServiceError
-from app.supabase_client import execute_with_reauth
+from app.services.errors import ServiceError
 
 _ROOT_DIR = Path(__file__).resolve().parents[3]
 _LOG_FILE = _ROOT_DIR / "logs" / "backend.log"
 
 _logger = get_file_logger(LOGGER_BACKEND, _LOG_FILE, announce=True)
+
+
+def _ensure_tarifas_index() -> list[dict]:
+    try:
+        rows = list(get_indexed_tarifas())
+    except (RuntimeError, ValueError, TypeError, OSError) as exc:
+        raise ServiceError(f"No se pudo leer indice local de tarifas: {exc}", status_code=500) from exc
+
+    if rows:
+        return rows
+
+    try:
+        sync_local_catalog_indexes(catalogs=("tarifas",), allow_stale=False)
+        rows = list(get_indexed_tarifas())
+    except Exception as exc:
+        raise ServiceError(f"No se pudo sincronizar indice local de tarifas: {exc}", status_code=502) from exc
+
+    return rows
 
 
 def _to_decimal(value: float | int | str) -> Decimal:
@@ -29,41 +47,19 @@ def _to_decimal(value: float | int | str) -> Decimal:
 
 
 def get_codigos_servicio() -> dict:
-    try:
-        response = execute_with_reauth(
-            lambda client: (
-                client.table("tarifas")
-                .select(
-                    "codigo_servicio,referencia_servicio,descripcion_servicio,modalidad_servicio,valor_base"
-                )
-                .execute()
-            ),
-            context="seccion3.get_codigos_servicio",
-        )
-    except SUPABASE_ERRORS as exc:
-        raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
-
-    return {"data": response.data}
+    return {"data": _ensure_tarifas_index()}
 
 
 def get_tarifa_por_codigo(codigo: str) -> dict:
     try:
-        response = execute_with_reauth(
-            lambda client: (
-                client.table("tarifas")
-                .select(
-                    "codigo_servicio,referencia_servicio,descripcion_servicio,modalidad_servicio,valor_base"
-                )
-                .eq("codigo_servicio", codigo)
-                .limit(1)
-                .execute()
-            ),
-            context="seccion3.get_tarifa_por_codigo",
-        )
-    except SUPABASE_ERRORS as exc:
-        raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
+        tarifa = get_tarifa_by_codigo(codigo)
+        if tarifa is None:
+            _ensure_tarifas_index()
+            tarifa = get_tarifa_by_codigo(codigo)
+    except (RuntimeError, ValueError, TypeError, OSError) as exc:
+        raise ServiceError(f"No se pudo leer indice local de tarifas: {exc}", status_code=500) from exc
 
-    return {"data": response.data}
+    return {"data": [tarifa] if tarifa else []}
 
 
 class Seccion3ConfirmarRequest(BaseModel):

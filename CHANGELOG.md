@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.17
+- `tarifas` ahora se sincroniza a un indice local SQLite y la Seccion 3 carga desde ese cache, evitando que el arranque y `Crear nueva entrada` dependan de una consulta remota en vivo.
+- El cliente de Supabase usa un timeout HTTP explicito de 20 segundos para cortar antes cuando la red o el backend no responden.
+- La sincronizacion local de catalogos ya no asume `updated_at` en tablas que no lo tienen y tolera filas duplicadas al reconstruir el indice.
+
 ## 2.2.16
 - Se normaliza `GOOGLE_SERVICE_ACCOUNT_FILE` cuando un `.env` legado todavia apunta a `Sistema de Gestión ODS RECA`, evitando fallos de smoke test y arranque contra la ruta canonica de AppData.
 - La migracion de `.env` desde directorios legacy ahora preserva correctamente los valores ya canonicos del destino y solo toma del origen lo que falte.

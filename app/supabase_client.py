@@ -1,7 +1,8 @@
 from functools import lru_cache
 
-from supabase import create_client, Client
+from supabase import Client, ClientOptions, create_client
 from supabase_auth.errors import AuthApiError, AuthInvalidCredentialsError
+from httpx import Client as HttpxClient, Timeout
 
 from app.config import get_settings, persist_supabase_auth_credentials
 from app.logging_utils import LOGGER_BACKEND, get_logger
@@ -9,6 +10,7 @@ from app.services.errors import SUPABASE_ERRORS
 from app.utils.cache import ttl_bucket
 
 _SUPABASE_CLIENT_CACHE_TTL_SECONDS = 300
+_SUPABASE_HTTP_TIMEOUT_SECONDS = 20
 _LOGGER = get_logger(LOGGER_BACKEND)
 _AUTH_ERROR_MARKERS = (
     "authentication failed",
@@ -140,7 +142,9 @@ def _get_supabase_client_cached(
     if not supabase_auth_email or not supabase_auth_passwords:
         raise RuntimeError("Missing SUPABASE_AUTH_EMAIL or SUPABASE_AUTH_PASSWORD")
 
-    client = create_client(supabase_url, supabase_anon_key)
+    http_client = HttpxClient(timeout=Timeout(_SUPABASE_HTTP_TIMEOUT_SECONDS))
+    options = ClientOptions(httpx_client=http_client)
+    client = create_client(supabase_url, supabase_anon_key, options=options)
     _ensure_authenticated(client, supabase_auth_email, supabase_auth_passwords)
     return client
 
