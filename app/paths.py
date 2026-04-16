@@ -9,6 +9,7 @@ _LEGACY_APP_NAMES = (
     "Sistema de GestiÃ³n ODS RECA",
     "Sistema de GestiÃƒÂ³n ODS RECA",
 )
+_NORMALIZED_ENV_PATH_KEYS = {"GOOGLE_SERVICE_ACCOUNT_FILE"}
 _TEXT_FALLBACK_ENCODINGS = ("utf-8-sig", "utf-8", "cp1252", "latin-1")
 
 
@@ -33,6 +34,15 @@ def _read_text(path: Path) -> str | None:
     return raw.decode("latin-1", errors="replace")
 
 
+def normalize_appdata_path_reference(value: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return ""
+    for legacy_name in _LEGACY_APP_NAMES:
+        normalized = normalized.replace(legacy_name, APP_NAME)
+    return normalized
+
+
 def _merge_env_file(source: Path, destination: Path) -> None:
     source_text = _read_text(source)
     if source_text is None:
@@ -52,6 +62,8 @@ def _merge_env_file(source: Path, destination: Path) -> None:
             value = value.strip()
             if not key:
                 continue
+            if key in _NORMALIZED_ENV_PATH_KEYS:
+                value = normalize_appdata_path_reference(value)
             if key not in merged:
                 ordered_keys.append(key)
             if prefer_existing and key in merged and merged[key]:
@@ -59,8 +71,8 @@ def _merge_env_file(source: Path, destination: Path) -> None:
             if value or key not in merged:
                 merged[key] = value
 
-    consume(source_text, prefer_existing=False)
-    consume(destination_text or "", prefer_existing=True)
+    consume(destination_text or "", prefer_existing=False)
+    consume(source_text, prefer_existing=True)
 
     if not ordered_keys:
         return

@@ -10,13 +10,13 @@ from app import config
 
 
 class ConfigEnvEncodingTests(unittest.TestCase):
-    def test_get_settings_loads_cp1252_env_and_rewrites_utf8(self) -> None:
+    def test_get_settings_loads_cp1252_env_normalizes_paths_and_rewrites_utf8(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             env_path = Path(tmpdir) / ".env"
             env_text = (
                 "SUPABASE_URL=https://example.supabase.co\n"
                 "SUPABASE_ANON_KEY=test-key\n"
-                "GOOGLE_SERVICE_ACCOUNT_FILE=%APPDATA%\\Sistema de Gestión ODS RECA\\secrets\\google-service-account.json\n"
+                "GOOGLE_SERVICE_ACCOUNT_FILE=%APPDATA%\\Sistema de Gesti\u00f3n ODS RECA\\secrets\\google-service-account.json\n"
             )
             env_path.write_bytes(env_text.encode("cp1252"))
 
@@ -43,8 +43,18 @@ class ConfigEnvEncodingTests(unittest.TestCase):
 
             self.assertEqual(settings.supabase_url, "https://example.supabase.co")
             self.assertEqual(settings.supabase_anon_key, "test-key")
-            self.assertIn("Gestión ODS RECA", settings.google_service_account_file)
-            self.assertEqual(env_path.read_text(encoding="utf-8"), env_text)
+            self.assertEqual(
+                settings.google_service_account_file,
+                "%APPDATA%\\Sistema de Gestion ODS RECA\\secrets\\google-service-account.json",
+            )
+            self.assertEqual(
+                env_path.read_text(encoding="utf-8"),
+                (
+                    "SUPABASE_URL=https://example.supabase.co\n"
+                    "SUPABASE_ANON_KEY=test-key\n"
+                    "GOOGLE_SERVICE_ACCOUNT_FILE=%APPDATA%\\Sistema de Gestion ODS RECA\\secrets\\google-service-account.json\n"
+                ),
+            )
 
 
 if __name__ == "__main__":

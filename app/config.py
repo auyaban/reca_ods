@@ -3,7 +3,7 @@ import os
 
 from pathlib import Path
 
-from app.paths import app_data_dir
+from app.paths import app_data_dir, normalize_appdata_path_reference
 from app.utils.cache import ttl_bucket
 
 _ENV_PATH = app_data_dir() / ".env"
@@ -13,6 +13,7 @@ _DEFAULT_SUPABASE_AUTH_PASSWORD = ""
 _DEFAULT_AUTOMATION_TEST_SPREADSHEET_ID = ""
 _DEFAULT_AUTOMATION_TEST_SHEET_NAME = "ODS_INPUT"
 _LEGACY_SUPABASE_AUTH_PASSWORDS: tuple[str, ...] = ()
+_NORMALIZED_ENV_PATH_KEYS = {"GOOGLE_SERVICE_ACCOUNT_FILE"}
 _ENV_FALLBACK_ENCODINGS = ("utf-8-sig", "utf-8", "cp1252", "latin-1")
 
 
@@ -39,6 +40,12 @@ def _rewrite_env_utf8(path: Path, text: str, source_encoding: str) -> None:
         return
 
 
+def _normalize_env_value(key: str, value: str) -> str:
+    if key in _NORMALIZED_ENV_PATH_KEYS:
+        return normalize_appdata_path_reference(value)
+    return value
+
+
 def _load_env_file(path: Path, *, override: bool) -> None:
     if not path.exists():
         return
@@ -47,21 +54,34 @@ def _load_env_file(path: Path, *, override: bool) -> None:
     if loaded is None:
         return
     raw_text, source_encoding = loaded
-    _rewrite_env_utf8(path, raw_text, source_encoding)
     raw_lines = raw_text.splitlines()
+    normalized_lines: list[str] = []
+    rewritten_text = source_encoding not in {"utf-8", "utf-8-sig"}
 
     for raw_line in raw_lines:
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
+            normalized_lines.append(raw_line)
             continue
         key, value = line.split("=", 1)
         key = key.strip().lstrip("\ufeff")
         value = value.strip()
+        normalized_value = _normalize_env_value(key, value)
+        if normalized_value != value:
+            raw_line = f"{key}={normalized_value}"
+            rewritten_text = True
+        normalized_lines.append(raw_line)
         if not key or value == "":
             continue
         if not override and key in os.environ:
             continue
-        os.environ[key] = value
+        os.environ[key] = normalized_value
+
+    if rewritten_text:
+        try:
+            path.write_text("\n".join(normalized_lines) + "\n", encoding="utf-8")
+        except OSError:
+            _rewrite_env_utf8(path, raw_text, source_encoding)
 
 
 def _load_env() -> None:
