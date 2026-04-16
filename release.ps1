@@ -218,6 +218,6 @@ if ($exists) {
 } else {
     Write-Host "Release $releaseTag no existe. Creandolo..."
     & $gh release create $releaseTag $installerPath (Join-Path $root "installer\\RECA_ODS_Setup.exe.sha256") `
-      --title "Sistema de Gestión ODS RECA v$version" `
+      --title "Sistema de Gestion ODS RECA v$version" `
       --notes "Release v$version"
 }

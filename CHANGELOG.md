@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.16
+- Se normaliza `GOOGLE_SERVICE_ACCOUNT_FILE` cuando un `.env` legado todavia apunta a `Sistema de Gestión ODS RECA`, evitando fallos de smoke test y arranque contra la ruta canonica de AppData.
+- La migracion de `.env` desde directorios legacy ahora preserva correctamente los valores ya canonicos del destino y solo toma del origen lo que falte.
+- Se agrega cobertura de pruebas para normalizacion de rutas legacy y merge de `.env`.
+
 ## 2.2.15
 - Nuevo indice local SQLite para catalogos de empresas, profesionales y usuarios, con sincronizacion incremental/full y recuperacion automatica si el store local se corrompe.
 - El wizard y la automatizacion ahora consumen esos catalogos locales para reducir lecturas repetidas a Supabase y pedir detalle remoto solo cuando hace falta.
