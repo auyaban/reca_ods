@@ -3,6 +3,7 @@ import sys
 import time
 import subprocess
 import tkinter as tk
+from pathlib import Path
 from tkinter import ttk
 
 from app.logging_utils import LOGGER_GUI, get_logger
@@ -133,6 +134,27 @@ def run_smoke_test() -> None:
         raise RuntimeError(
             f"Smoke test fallo: faltan variables requeridas en runtime: {', '.join(missing)}"
         )
+
+    google_features_configured = any(
+        (
+            settings.google_drive_shared_folder_id,
+            settings.google_drive_template_spreadsheet_name,
+            settings.google_sheets_default_spreadsheet_id,
+        )
+    )
+    if google_features_configured:
+        if not settings.google_service_account_file:
+            raise RuntimeError(
+                "Smoke test fallo: Google Drive/Sheets esta configurado pero falta GOOGLE_SERVICE_ACCOUNT_FILE en runtime."
+            )
+        service_account_path = Path(
+            os.path.expandvars(settings.google_service_account_file)
+        )
+        if not service_account_path.exists():
+            raise RuntimeError(
+                "Smoke test fallo: GOOGLE_SERVICE_ACCOUNT_FILE apunta a una ruta inexistente en runtime: "
+                f"{service_account_path}"
+            )
 
     import app.supabase_client  # noqa: F401
     import app.updater  # noqa: F401

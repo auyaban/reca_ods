@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 
+from app.catalog_index import get_indexed_usuarios, get_user_detail_by_cedula
 from app.services.errors import SUPABASE_ERRORS, ServiceError
-from app.supabase_client import execute_with_reauth
 from app.utils.text import normalize_key
 
 DISCAPACIDADES = {
@@ -22,91 +22,32 @@ GENEROS = {
 
 TIPOS_CONTRATO = ["Laboral", "Contrato Aprendiz Especial", "Orientación Laboral"]
 
-_USUARIOS_PAGE_SIZE = 1000
-
 def get_usuarios_reca() -> dict:
-    rows: list[dict] = []
-    last_cedula: str | None = None
     try:
-        while True:
-            response = execute_with_reauth(
-                lambda client: (
-                    client.table("usuarios_reca")
-                    .select("nombre_usuario,cedula_usuario,discapacidad_usuario,genero_usuario")
-                    .order("cedula_usuario")
-                    .gt("cedula_usuario", last_cedula)
-                    .limit(_USUARIOS_PAGE_SIZE)
-                    .execute()
-                    if last_cedula
-                    else client.table("usuarios_reca")
-                    .select("nombre_usuario,cedula_usuario,discapacidad_usuario,genero_usuario")
-                    .order("cedula_usuario")
-                    .limit(_USUARIOS_PAGE_SIZE)
-                    .execute()
-                ),
-                context="seccion4.get_usuarios_reca",
-            )
-            batch = list(response.data or [])
-            if not batch:
-                break
-
-            rows.extend(batch)
-            if len(batch) < _USUARIOS_PAGE_SIZE:
-                break
-
-            raw_last = batch[-1].get("cedula_usuario")
-            if raw_last in (None, ""):
-                raise ServiceError(
-                    "No se pudo paginar usuarios_reca: cedula_usuario ausente.",
-                    status_code=502,
-                )
-            next_last = str(raw_last)
-            if last_cedula is not None and next_last <= last_cedula:
-                raise ServiceError(
-                    "No se pudo paginar usuarios_reca: secuencia no monotona.",
-                    status_code=502,
-                )
-            last_cedula = next_last
-    except SUPABASE_ERRORS as exc:
-        raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
+        rows = list(get_indexed_usuarios())
+    except (RuntimeError, ValueError, TypeError, OSError) as exc:
+        raise ServiceError(f"No se pudo leer indice local de usuarios: {exc}", status_code=500) from exc
 
     return {"data": rows}
 
 
 def get_usuario_por_cedula(cedula: str) -> dict:
     try:
-        response = execute_with_reauth(
-            lambda client: (
-                client.table("usuarios_reca")
-                .select("nombre_usuario,cedula_usuario,discapacidad_usuario,genero_usuario")
-                .eq("cedula_usuario", cedula)
-                .limit(1)
-                .execute()
-            ),
-            context="seccion4.get_usuario_por_cedula",
-        )
+        detail = get_user_detail_by_cedula(cedula)
     except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
+    except (RuntimeError, ValueError, TypeError, OSError) as exc:
+        raise ServiceError(f"No se pudo leer detalle de usuario: {exc}", status_code=500) from exc
 
-    return {"data": response.data}
+    return {"data": [detail] if detail else []}
 
 
 def verificar_usuario_existe(cedula: str) -> dict:
+    cedula_clean = str(cedula or "").strip()
     try:
-        response = execute_with_reauth(
-            lambda client: (
-                client.table("usuarios_reca")
-                .select("cedula_usuario")
-                .eq("cedula_usuario", cedula)
-                .limit(1)
-                .execute()
-            ),
-            context="seccion4.verificar_usuario_existe",
-        )
-    except SUPABASE_ERRORS as exc:
-        raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
-
-    existe = bool(response.data)
+        existe = any(str(item.get("cedula_usuario") or "").strip() == cedula_clean for item in get_indexed_usuarios())
+    except (RuntimeError, ValueError, TypeError, OSError) as exc:
+        raise ServiceError(f"No se pudo leer indice local de usuarios: {exc}", status_code=500) from exc
     return {"data": {"existe": existe}}
 
 

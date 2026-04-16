@@ -3,6 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from app.catalog_index import get_indexed_profesionales, sync_local_catalog_indexes
 from app.services.errors import SUPABASE_ERRORS, ServiceError
 from app.supabase_client import execute_with_reauth
 from app.utils.text import normalize_text
@@ -61,67 +62,27 @@ def get_orden_clausulada_opciones() -> dict:
 
 def get_profesionales(programa: str | None = None) -> dict:
     programa_resuelto = _resolve_programa(programa or "")
-    profesionales: list[dict[str, str]] = []
-    interpretes: list[dict[str, str]] = []
-
     try:
-        if programa_resuelto == _PROGRAMA_INTERPRETE:
-            interpretes = (
-                execute_with_reauth(
-                    lambda retry_client: retry_client.table("interpretes").select("nombre").execute(),
-                    context="seccion1.get_profesionales.interpretes",
-                ).data
-                or []
-            )
-        elif programa_resuelto == _PROGRAMA_INCLUSION:
-            profesionales = (
-                execute_with_reauth(
-                    lambda retry_client: (
-                        retry_client.table("profesionales")
-                        .select("nombre_profesional")
-                        .eq("programa", _PROGRAMA_INCLUSION)
-                        .execute()
-                    ),
-                    context="seccion1.get_profesionales.inclusion",
-                )
-                .data
-                or []
-            )
-        else:
-            profesionales = (
-                execute_with_reauth(
-                    lambda retry_client: retry_client.table("profesionales").select("nombre_profesional").execute(),
-                    context="seccion1.get_profesionales.all_profesionales",
-                ).data
-                or []
-            )
-            interpretes = (
-                execute_with_reauth(
-                    lambda retry_client: retry_client.table("interpretes").select("nombre").execute(),
-                    context="seccion1.get_profesionales.all_interpretes",
-                ).data
-                or []
-            )
-    except SUPABASE_ERRORS as exc:
-        raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
+        rows = list(get_indexed_profesionales())
+    except (RuntimeError, ValueError, TypeError, OSError) as exc:
+        raise ServiceError(f"No se pudo leer indice local de profesionales: {exc}", status_code=500) from exc
 
     nombres_meta: dict[str, dict[str, Any]] = {}
-    for item in profesionales:
+    for item in rows:
         nombre = (item.get("nombre_profesional") or "").strip()
-        if nombre:
-            nombres_meta[nombre] = {
-                "nombre_profesional": nombre,
-                "programa": _PROGRAMA_INCLUSION,
-                "es_interprete": False,
-            }
-    for item in interpretes:
-        nombre = (item.get("nombre") or "").strip()
-        if nombre:
-            nombres_meta[nombre] = {
-                "nombre_profesional": nombre,
-                "programa": _PROGRAMA_INTERPRETE,
-                "es_interprete": True,
-            }
+        programa_item = _resolve_programa(str(item.get("programa") or ""))
+        es_interprete = bool(item.get("es_interprete")) or programa_item == _PROGRAMA_INTERPRETE
+        if not nombre:
+            continue
+        if programa_resuelto == _PROGRAMA_INTERPRETE and not es_interprete:
+            continue
+        if programa_resuelto == _PROGRAMA_INCLUSION and es_interprete:
+            continue
+        nombres_meta[nombre] = {
+            "nombre_profesional": nombre,
+            "programa": _PROGRAMA_INTERPRETE if es_interprete else (programa_item or _PROGRAMA_INCLUSION),
+            "es_interprete": es_interprete,
+        }
 
     nombres = sorted(nombres_meta.keys(), key=lambda value: value.lower())
     return {"data": [nombres_meta[nombre] for nombre in nombres]}
@@ -166,9 +127,17 @@ def crear_profesional(payload: CrearProfesionalRequest) -> dict:
                 lambda retry_client: retry_client.table("interpretes").insert({"nombre": nombre}).execute(),
                 context="seccion1.crear_profesional.interprete",
             )
+            try:
+                sync_local_catalog_indexes(catalogs=("profesionales",))
+            except Exception:
+                pass
             return {"data": {"nombre_profesional": nombre}}
 
         _insert_profesional(nombre=nombre, programa=programa)
+        try:
+            sync_local_catalog_indexes(catalogs=("profesionales",))
+        except Exception:
+            pass
     except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
 

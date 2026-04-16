@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timezone
 from difflib import SequenceMatcher
-from functools import lru_cache
 import hashlib
 import os
 from pathlib import Path
@@ -22,17 +21,20 @@ from app.automation.models import (
 from app.google_sheet_layouts import ODS_INPUT_HEADERS, ods_input_row_from_record
 from app.google_sheets_client import read_sheet_values, write_sheet_values
 from app.automation.process_catalog import list_process_template_names
+from app.catalog_index import (
+    get_company_detail_by_nit,
+    get_indexed_empresas,
+    get_indexed_profesionales,
+    get_user_details_by_cedulas,
+)
 from app.automation.rules_engine import suggest_service_from_analysis
 from app.services.acta_import_pipeline import build_import_result_from_parsed
 from app.services.excel_acta_import import parse_acta_pdf
 from app.automation.staging import AutomationStagingRepository
 from app.config import get_settings
 from app.services.sections.seccion4 import DISCAPACIDADES, GENEROS
-from app.supabase_client import execute_with_reauth
-from app.utils.cache import ttl_bucket
 from app.utils.text import normalize_text
 
-_CACHE_TTL_SECONDS = 300
 _NO_PARTICIPANT_ROW_KINDS = {
     "program_presentation",
     "program_reactivation",
@@ -47,23 +49,14 @@ _AUTOMATION_DEFAULT_ORDER = "no"
 _AUTOMATION_HEADERS = ODS_INPUT_HEADERS + ["REVISAR"]
 
 
-@lru_cache
-def _professional_email_map_cached(_ttl_bucket: int) -> dict[str, str]:
-    response = execute_with_reauth(
-        lambda retry_client: retry_client.table("profesionales").select("nombre_profesional,correo_profesional").execute(),
-        context="automation.professionals.list",
-    )
+def _professional_email_map() -> dict[str, str]:
     allowed: dict[str, str] = {}
-    for row in list(response.data or []):
+    for row in get_indexed_profesionales():
         email = str(row.get("correo_profesional") or "").strip().lower()
         name = str(row.get("nombre_profesional") or "").strip()
         if email and name:
             allowed[email] = name
     return allowed
-
-
-def _professional_email_map() -> dict[str, str]:
-    return _professional_email_map_cached(ttl_bucket(_CACHE_TTL_SECONDS))
 
 
 def _professional_name_score(candidate: str, professional_name: str) -> float:
@@ -142,28 +135,10 @@ def _resolve_professional_name(analysis: dict, *, sender_match: str = "") -> str
     return str(sender_match or analysis.get("nombre_profesional") or "").strip()
 
 
-@lru_cache
-def _usuarios_reca_cached(_ttl_bucket: int) -> tuple[dict[str, str], ...]:
-    response = execute_with_reauth(
-        lambda retry_client: (
-            retry_client.table("usuarios_reca")
-            .select(
-                "nombre_usuario,cedula_usuario,discapacidad_usuario,genero_usuario,"
-                "tipo_contrato,fecha_firma_contrato,cargo_oferente"
-            )
-            .order("cedula_usuario")
-            .execute()
-        ),
-        context="automation.usuarios_reca.list",
-    )
-    return tuple(dict(row) for row in list(response.data or []))
-
-
-def _usuarios_reca_by_cedula() -> dict[str, dict[str, str]]:
-    rows = _usuarios_reca_cached(ttl_bucket(_CACHE_TTL_SECONDS))
+def _usuarios_reca_by_cedula(cedulas: list[str]) -> dict[str, dict[str, str]]:
     return {
         str(item.get("cedula_usuario") or "").strip(): dict(item)
-        for item in rows
+        for item in get_user_details_by_cedulas(cedulas).values()
         if str(item.get("cedula_usuario") or "").strip()
     }
 
@@ -215,7 +190,9 @@ def _build_minimum_user(persona: dict) -> dict | None:
 
 def _prepare_automation_participants(parsed: dict) -> tuple[list[dict], list[str], list[str]]:
     participantes_raw = list(parsed.get("participantes") or [])
-    usuarios_by_cedula = _usuarios_reca_by_cedula()
+    usuarios_by_cedula = _usuarios_reca_by_cedula(
+        [str(item.get("cedula_usuario") or "").strip() for item in participantes_raw]
+    )
 
     participantes: list[dict] = []
     descartados: list[str] = []
@@ -283,48 +260,12 @@ def _participant_summary(participants: list[dict], discarded_ids: list[str]) -> 
     }
 
 
-@lru_cache
-def _companies_cached(_ttl_bucket: int) -> tuple[dict[str, str], ...]:
-    response = execute_with_reauth(
-        lambda retry_client: (
-            retry_client.table("empresas")
-            .select(
-                "nit_empresa,nombre_empresa,caja_compensacion,asesor,zona_empresa,sede_empresa,ciudad_empresa"
-            )
-            .execute()
-        ),
-        context="automation.empresas.list",
-    )
-    return tuple(dict(row) for row in list(response.data or []))
-
-
-@lru_cache
-def _company_by_nit_details_cached(nit: str, _ttl_bucket: int) -> dict[str, str] | None:
-    nit_clean = str(nit or "").strip()
-    if not nit_clean:
-        return None
-    response = execute_with_reauth(
-        lambda retry_client: (
-            retry_client.table("empresas")
-            .select("nit_empresa,nombre_empresa,caja_compensacion,asesor,zona_empresa,sede_empresa,ciudad_empresa")
-            .eq("nit_empresa", nit_clean)
-            .limit(1)
-            .execute()
-        ),
-        context="automation.empresas.by_nit",
-    )
-    rows = list(response.data or [])
-    if not rows:
-        return None
-    return dict(rows[0])
-
-
 def _companies() -> tuple[dict[str, str], ...]:
-    return _companies_cached(ttl_bucket(_CACHE_TTL_SECONDS))
+    return tuple(dict(row) for row in get_indexed_empresas())
 
 
 def _company_by_nit_details(nit: str) -> dict[str, str] | None:
-    return _company_by_nit_details_cached(str(nit or "").strip(), ttl_bucket(_CACHE_TTL_SECONDS))
+    return get_company_detail_by_nit(str(nit or "").strip())
 
 
 def _company_by_name_strong(name: str) -> dict[str, str] | None:
@@ -363,7 +304,8 @@ def _canonicalize_company_in_analysis(analysis: dict) -> dict[str, str] | None:
         if name and normalize_text(name) != normalize_text(company.get("nombre_empresa") or ""):
             warnings.append("Empresa ajustada al registro canonico de Supabase por NIT.")
     elif company_by_name:
-        company = dict(company_by_name)
+        nit_match = str(company_by_name.get("nit_empresa") or "").strip()
+        company = dict(_company_by_nit_details(nit_match) or company_by_name)
         if nit and str(company.get("nit_empresa") or "").strip() != nit:
             warnings.append("NIT ajustado al registro canonico de Supabase por nombre de empresa.")
     else:

@@ -1,53 +1,27 @@
 from pydantic import BaseModel
 
+from app.catalog_index import get_company_detail_by_nit, get_indexed_empresas
 from app.services.errors import SUPABASE_ERRORS, ServiceError
-from app.supabase_client import execute_with_reauth
 
 
 def get_empresas() -> dict:
     try:
-        page_size = 1000
-        offset = 0
-        rows = []
-        while True:
-            response = execute_with_reauth(
-                lambda client: (
-                    client.table("empresas")
-                    .select("nit_empresa,nombre_empresa,caja_compensacion,asesor,zona_empresa")
-                    .range(offset, offset + page_size - 1)
-                    .execute()
-                ),
-                context="seccion2.get_empresas",
-            )
-            batch = list(response.data or [])
-            rows.extend(batch)
-            if len(batch) < page_size:
-                break
-            offset += page_size
-    except SUPABASE_ERRORS as exc:
-        raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
+        rows = list(get_indexed_empresas())
+    except (RuntimeError, ValueError, TypeError, OSError) as exc:
+        raise ServiceError(f"No se pudo leer indice local de empresas: {exc}", status_code=500) from exc
 
     return {"data": rows}
 
 
 def get_empresa_por_nit(nit: str) -> dict:
     try:
-        response = execute_with_reauth(
-            lambda client: (
-                client.table("empresas")
-                .select(
-                    "nit_empresa,nombre_empresa,caja_compensacion,asesor,zona_empresa"
-                )
-                .eq("nit_empresa", nit)
-                .limit(1)
-                .execute()
-            ),
-            context="seccion2.get_empresa_por_nit",
-        )
+        detail = get_company_detail_by_nit(nit)
     except SUPABASE_ERRORS as exc:
         raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
+    except (RuntimeError, ValueError, TypeError, OSError) as exc:
+        raise ServiceError(f"No se pudo leer detalle de empresa: {exc}", status_code=500) from exc
 
-    return {"data": response.data}
+    return {"data": [detail] if detail else []}
 
 
 class Seccion2ConfirmarRequest(BaseModel):

@@ -58,6 +58,8 @@ Aplicacion de escritorio (Tkinter + Python) para gestionar servicios ODS, persis
 Para build/release:
 - Inno Setup 6
 - GitHub CLI (`gh`) autenticado
+- Python 3.10 a 3.14 para empaquetado con PyInstaller
+- Recomendado: Python 3.13.x
 
 ## Configuracion
 
@@ -67,6 +69,7 @@ Para build/release:
 - `SUPABASE_URL`
 - `SUPABASE_ANON_KEY`
 - `GOOGLE_SERVICE_ACCOUNT_FILE`
+- `GOOGLE_SERVICE_ACCOUNT_BUILD_SOURCE_FILE` en la maquina de build si el JSON real no vive ya en la ruta portable de AppData
 - `GOOGLE_DRIVE_SHARED_FOLDER_ID`
 - `GOOGLE_DRIVE_TEMPLATE_SPREADSHEET_NAME`
 
@@ -75,6 +78,11 @@ Nota: en runtime instalado, la app prioriza `.env` en:
 
 Para despliegue en equipos finales, usa una ruta portable para `GOOGLE_SERVICE_ACCOUNT_FILE`, por ejemplo:
 `%APPDATA%\Sistema de Gestion ODS RECA\secrets\google-service-account.json`
+
+Para build/release:
+- `GOOGLE_SERVICE_ACCOUNT_FILE` es la ruta que usara la app ya instalada.
+- `GOOGLE_SERVICE_ACCOUNT_BUILD_SOURCE_FILE` puede apuntar al JSON real en la maquina de empaquetado.
+- Si Google Drive/Sheets esta configurado y no existe un JSON valido para empaquetar, `build.ps1` ahora falla antes de generar un installer incompleto.
 
 ## Ejecucion local
 
@@ -180,6 +188,7 @@ Antes de publicar, `release.ps1` valida:
 - `dist\RECA_ODS\RECA_ODS.exe --smoke-test`.
 - instalacion silenciosa temporal del `RECA_ODS_Setup.exe`.
 - `RECA_ODS.exe --smoke-test` ya instalado desde el installer.
+- que Python de build este en rango soportado para empaquetado (`3.10` a `3.14`).
 
 Publica en GitHub Release:
 
@@ -198,3 +207,9 @@ Publica en GitHub Release:
 - Verificar credenciales del service account.
 - Verificar acceso al Shared Drive y a la plantilla mensual.
 - Reintentar desde el boton de sincronizacion Drive.
+
+### "El build/release falla por GOOGLE_SERVICE_ACCOUNT_FILE"
+
+- Verificar que `GOOGLE_DRIVE_SHARED_FOLDER_ID` o `GOOGLE_DRIVE_TEMPLATE_SPREADSHEET_NAME` no hayan quedado configurados por error.
+- Si Google si debe estar activo, definir `GOOGLE_SERVICE_ACCOUNT_BUILD_SOURCE_FILE` con el JSON real en la maquina de build.
+- Confirmar que el installer deja el archivo en `%APPDATA%\Sistema de Gestion ODS RECA\secrets\google-service-account.json`.

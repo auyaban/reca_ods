@@ -11,6 +11,10 @@ from app.automation import (
     run_batch_eod_scan as _run_batch_eod_scan,
     confirm_batch_eod_upload as _confirm_batch_eod_upload,
 )
+from app.catalog_index import (
+    clear_runtime_caches as clear_catalog_index_runtime_caches,
+    sync_local_catalog_indexes as _sync_local_catalog_indexes,
+)
 from app.services.sections import (
     actas_finalizadas,
     google_drive,
@@ -205,21 +209,29 @@ def confirm_batch_eod_upload(payload: dict) -> dict:
     return _confirm_batch_eod_upload(payload)
 
 
+def sync_local_catalog_indexes(
+    *,
+    force_full: bool = False,
+    catalogs: tuple[str, ...] | None = None,
+    status_callback=None,
+    allow_stale: bool = False,
+) -> dict:
+    return _sync_local_catalog_indexes(
+        force_full=force_full,
+        catalogs=catalogs,
+        status_callback=status_callback,
+        allow_stale=allow_stale,
+    )
+
+
 def reset_runtime_caches() -> None:
     clear_settings_cache(reload_env=True)
     clear_supabase_client_cache()
     clear_google_sheets_service_cache()
+    clear_catalog_index_runtime_caches()
     terminar.clear_schema_cache()
     from app.services.acta_import_pipeline import clear_import_pipeline_caches
     clear_import_pipeline_caches()
-    from app.automation.orchestrator import (
-        _companies_cached,
-        _professional_email_map_cached,
-        _usuarios_reca_cached,
-    )
-    _usuarios_reca_cached.cache_clear()
-    _companies_cached.cache_clear()
-    _professional_email_map_cached.cache_clear()
     from app.automation.rules_engine import _get_company_by_nit_cached, _get_tarifas_cached
     _get_company_by_nit_cached.cache_clear()
     _get_tarifas_cached.cache_clear()

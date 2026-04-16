@@ -1,4 +1,4 @@
-#define MyAppName "Sistema de Gestión ODS RECA"
+#define MyAppName "Sistema de Gestion ODS RECA"
 #ifndef MyAppVersion
   #define MyAppVersion "1.0.0"
 #endif
@@ -29,7 +29,8 @@ OutputBaseFilename=RECA_ODS_Setup
 Compression=lzma
 SolidCompression=yes
 PrivilegesRequired=lowest
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
 SetupIconFile=logo\logo_reca.ico
 

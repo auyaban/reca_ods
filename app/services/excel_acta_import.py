@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import json
 import re
 import tempfile
 from datetime import date, datetime
@@ -630,12 +631,58 @@ def _extract_cedula_from_oferente_token(raw_token: str) -> str:
     token = _clean_text(raw_token)
     if not token:
         return ""
-    if "%" in token or re.search(r"\d+[.,]\d", token):
+    digits = re.sub(r"\D", "", token)
+    if "%" in token or re.search(r"\d+[.,]\d", token) or len(digits) > 10:
         cedula, _pct = _split_joined_cedula_percentage(token)
         if cedula:
             return cedula
     match = re.search(r"\d{6,12}", token)
     return _clean_cedula(match.group(0)) if match else ""
+
+
+def _extract_pdf_loose_participant_from_block(body: str) -> dict[str, str] | None:
+    compact = _clean_text(body)
+    if not compact:
+        return None
+
+    name_match = re.search(
+        r"^(?P<nombre>[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúüÜñ' .-]{6,}?)(?P<rest>\d.*)$",
+        compact,
+    )
+    if not name_match:
+        return None
+
+    nombre = _clean_name(name_match.group("nombre"))
+    rest = str(name_match.group("rest") or "")
+    token_window = re.split(
+        r"(?is)(?:Discapacidad|Cra\.\s*|CARGO\b|CONTACTO\b|PARENTESCO\b|TEL[EÉ]FONO\b|FECHA DE NACIMIENTO\b|EDAD\b|Pendiente|Aprobado|No aprobado|No aplica|[¿?]|4\.\s*CARACTERIZACI)",
+        rest,
+        maxsplit=1,
+    )[0]
+    cedula = _extract_cedula_from_oferente_token(token_window[:40])
+    if not nombre or not cedula or not _is_person_candidate(nombre):
+        return None
+
+    discapacidad = ""
+    search_windows = [
+        rest[:220],
+        compact[:420],
+    ]
+    for window in search_windows:
+        disc_match = re.search(
+            r"(?is)Discapacidad\s+(?P<value>.+?)(?=(?:\d{7,12}|Pendiente|Aprobado|No aprobado|No aplica|CARGO\b|CONTACTO\b|PARENTESCO\b|TEL[EÉ]FONO\b|FECHA DE NACIMIENTO\b|EDAD\b|OBSERVACIONES\b|[¿?]|OFERENTE\s+[1-9]|4\.\s*CARACTERIZACI|$))",
+            window,
+        )
+        if disc_match:
+            discapacidad = _clean_text(disc_match.group("value"))
+            break
+
+    return {
+        "nombre_usuario": nombre,
+        "cedula_usuario": cedula,
+        "discapacidad_usuario": discapacidad,
+        "genero_usuario": "",
+    }
 
 
 def _extract_pdf_groupal_oferente_chunks(text: str) -> list[dict[str, str]]:
@@ -677,41 +724,40 @@ def _extract_pdf_participants(text: str) -> list[dict[str, str]]:
 
     for match in _PDF_BLOCK_RE.finditer(search_text):
         body = _clean_text(match.group("body"))
-        if "discapacidad" not in normalize_text(body):
-            continue
-        first_line = body.split(" Agente de ", 1)[0]
-        first_match = re.search(
-            r"^(?P<nombre>.+?)(?P<token>\d{7,13}(?:[.,]\d{1,2})?%?)(?:\s*)Discapacidad\s+(?P<tail>.+)$",
-            first_line,
-            re.IGNORECASE,
-        )
-        if not first_match:
+        strict_participant: dict[str, str] | None = None
+        if "discapacidad" in normalize_text(body):
+            first_line = body.split(" Agente de ", 1)[0]
+            first_match = re.search(
+                r"^(?P<nombre>.+?)(?P<token>\d{7,13}(?:[.,]\d{1,2})?%?)(?:\s*)Discapacidad\s+(?P<tail>.+)$",
+                first_line,
+                re.IGNORECASE,
+            )
+            if first_match:
+                nombre = _clean_name(first_match.group("nombre"))
+                if nombre and _is_person_candidate(nombre):
+                    cedula = _extract_cedula_from_oferente_token(first_match.group("token"))
+                    if cedula:
+                        tail = _clean_text(first_match.group("tail"))
+                        tail_match = re.search(
+                            r"^(?P<discapacidad>[^0-9]+?)(?P<telefono>\d[\d ]{6,15})(?P<resultado>Pendiente|Aprobado|No aprobado|No aplica)",
+                            tail,
+                            re.IGNORECASE,
+                        )
+                        if tail_match:
+                            strict_participant = {
+                                "nombre_usuario": nombre,
+                                "cedula_usuario": cedula,
+                                "discapacidad_usuario": _clean_text(tail_match.group("discapacidad")),
+                                "genero_usuario": "",
+                            }
+
+        if strict_participant:
+            participants.append(strict_participant)
             continue
 
-        nombre = _clean_name(first_match.group("nombre"))
-        if not nombre or not _is_person_candidate(nombre):
-            continue
-        cedula, _pct = _split_joined_cedula_percentage(first_match.group("token"))
-        if not cedula:
-            continue
-
-        tail = _clean_text(first_match.group("tail"))
-        tail_match = re.search(
-            r"^(?P<discapacidad>[^0-9]+?)(?P<telefono>\d[\d ]{6,15})(?P<resultado>Pendiente|Aprobado|No aprobado)",
-            tail,
-            re.IGNORECASE,
-        )
-        if not tail_match:
-            continue
-        discapacidad = _clean_text(tail_match.group("discapacidad")) if tail_match else ""
-        participants.append(
-            {
-                "nombre_usuario": nombre,
-                "cedula_usuario": cedula,
-                "discapacidad_usuario": discapacidad,
-                "genero_usuario": "",
-            }
-        )
+        loose_participant = _extract_pdf_loose_participant_from_block(body)
+        if loose_participant:
+            participants.append(loose_participant)
 
     if participants:
         return _dedupe_participants(participants)
@@ -727,7 +773,7 @@ def _extract_pdf_participants(text: str) -> list[dict[str, str]]:
         nombre = _clean_name(match.group("nombre"))
         if not nombre or not _is_person_candidate(nombre):
             continue
-        cedula, _pct = _split_joined_cedula_percentage(match.group("token"))
+        cedula = _extract_cedula_from_oferente_token(match.group("token"))
         if not cedula:
             continue
 
@@ -764,7 +810,7 @@ def _extract_pdf_participants(text: str) -> list[dict[str, str]]:
         nombre = _clean_name(match.group("nombre"))
         if not nombre or not _is_person_candidate(nombre):
             continue
-        cedula, _pct = _split_joined_cedula_percentage(match.group("token"))
+        cedula = _extract_cedula_from_oferente_token(match.group("token"))
         if not cedula:
             continue
         participants.append(
@@ -1183,10 +1229,40 @@ def parse_acta_excel(file_path: str) -> dict:
     }
 
 
+def _try_read_reca_metadata(file_path: str) -> dict | None:
+    """Intenta leer la metadata estructurada /RECA_Data del PDF.
+
+    Los PDFs generados por RECA INCLUSION LABORAL embeben un JSON con todos los
+    datos del acta en el campo de metadata ``/RECA_Data``. Si ese campo existe y
+    contiene JSON válido, se retorna directamente sin necesidad de parsing por regex.
+
+    Returns:
+        Diccionario con los datos del acta, o ``None`` si el PDF no tiene metadata RECA.
+    """
+    try:
+        from pypdf import PdfReader
+
+        reader = PdfReader(file_path)
+        raw = (reader.metadata or {}).get("/RECA_Data")
+        if raw:
+            return json.loads(raw)
+    except Exception:
+        pass
+    return None
+
+
 def parse_acta_pdf(file_path: str) -> dict:
     path = Path(file_path)
     if not path.exists():
         raise RuntimeError(f"No existe el archivo: {file_path}")
+
+    # Intentar leer metadata estructurada primero (PDFs generados por RECA INCLUSION LABORAL)
+    reca_metadata = _try_read_reca_metadata(str(path))
+    if reca_metadata:
+        # Garantizar que file_path esté en el resultado y que tenga warnings vacío si no existe
+        reca_metadata.setdefault("file_path", str(path))
+        reca_metadata.setdefault("warnings", [])
+        return reca_metadata
 
     pages = _extract_pdf_text_pages(str(path))
     if not pages:

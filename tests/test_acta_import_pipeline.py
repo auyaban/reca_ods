@@ -166,6 +166,56 @@ class ActaImportPipelineTests(unittest.TestCase):
             result["analysis"]["nombre_profesional"],
             "Leidy Johana Novoa Casasbuenas",
         )
+        mock_users.assert_called_once_with([])
+
+    @patch("app.services.acta_import_pipeline._companies")
+    @patch("app.services.acta_import_pipeline._users_by_cedula")
+    @patch("app.services.acta_import_pipeline._professionals")
+    def test_build_import_result_fetches_existing_users_in_batch(
+        self,
+        mock_professionals,
+        mock_users,
+        mock_companies,
+    ) -> None:
+        mock_professionals.return_value = ()
+        mock_users.return_value = {}
+        mock_companies.return_value = (
+            {
+                "nit_empresa": "890900291-8",
+                "nombre_empresa": "SOLLA S.A",
+            },
+        )
+
+        build_import_result_from_parsed(
+            {
+                "nombre_profesional": "",
+                "candidatos_profesional": [],
+                "asistentes": [],
+                "nombre_empresa": "SOLLA S.A",
+                "nit_empresa": "890900291-8",
+                "fecha_servicio": "2026-03-04",
+                "modalidad_servicio": "Virtual",
+                "participantes": [
+                    {"nombre_usuario": "Ana", "cedula_usuario": "123"},
+                    {"nombre_usuario": "Luis", "cedula_usuario": "456"},
+                ],
+                "warnings": [],
+            },
+            source_label="seleccion.pdf",
+            attachment={
+                "filename": "seleccion.pdf",
+                "document_kind": "inclusive_selection",
+                "document_label": "Seleccion incluyente",
+                "is_ods_candidate": True,
+                "classification_score": 0.9,
+                "classification_reason": "Acta ODS",
+                "process_hint": "",
+                "process_score": 0.0,
+            },
+            create_missing_interpreter=True,
+        )
+
+        mock_users.assert_called_once_with(["123", "456"])
 
     @patch("app.services.acta_import_pipeline._companies")
     @patch("app.services.acta_import_pipeline._users_by_cedula")

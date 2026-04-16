@@ -57,7 +57,7 @@ def _load_env_file(path: Path, *, override: bool) -> None:
         key, value = line.split("=", 1)
         key = key.strip().lstrip("\ufeff")
         value = value.strip()
-        if not key:
+        if not key or value == "":
             continue
         if not override and key in os.environ:
             continue
@@ -66,9 +66,8 @@ def _load_env_file(path: Path, *, override: bool) -> None:
 
 def _load_env() -> None:
     _load_env_file(_ENV_PATH, override=True)
-    if not _ENV_PATH.exists():
-        fallback = Path(__file__).resolve().parents[1] / ".env"
-        _load_env_file(fallback, override=False)
+    fallback = Path(__file__).resolve().parents[1] / ".env"
+    _load_env_file(fallback, override=False)
 
 
 _load_env()

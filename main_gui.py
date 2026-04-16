@@ -115,10 +115,7 @@ def _load_logo(subsample: int = 12) -> tk.PhotoImage | None:
 
 INITIAL_PREFETCH_ITEMS: list[tuple[str, dict | None, str]] = [
     ("/wizard/seccion-1/orden-clausulada/opciones", None, "opciones de orden"),
-    ("/wizard/seccion-1/profesionales", None, "profesionales"),
-    ("/wizard/seccion-2/empresas", None, "empresas"),
     ("/wizard/seccion-3/tarifas", None, "tarifas"),
-    ("/wizard/seccion-4/usuarios", None, "usuarios"),
     ("/wizard/seccion-4/discapacidades", None, "discapacidades"),
     ("/wizard/seccion-4/generos", None, "generos"),
     ("/wizard/seccion-4/contratos", None, "contratos"),
@@ -126,6 +123,7 @@ INITIAL_PREFETCH_ITEMS: list[tuple[str, dict | None, str]] = [
 
 
 def _prefetch_initial_data(api: "ApiClient", status_callback=None) -> None:
+    api.sync_local_catalog_indexes(status_callback=status_callback, allow_stale=True)
     api.prefetch(INITIAL_PREFETCH_ITEMS, status_callback=status_callback)
 
 
@@ -211,6 +209,35 @@ class ApiClient:
 
     def reset_runtime_caches(self) -> None:
         self._svc.reset_runtime_caches()
+
+    def sync_local_catalog_indexes(
+        self,
+        *,
+        force_full: bool = False,
+        status_callback=None,
+        allow_stale: bool = False,
+        catalogs: tuple[str, ...] | None = None,
+    ) -> dict:
+        try:
+            return self._svc.sync_local_catalog_indexes(
+                force_full=force_full,
+                catalogs=catalogs,
+                status_callback=status_callback,
+                allow_stale=allow_stale,
+            )
+        except (
+            RuntimeError,
+            ValueError,
+            TypeError,
+            OSError,
+            KeyError,
+            IndexError,
+            AttributeError,
+            tk.TclError,
+            ServiceError,
+        ) as exc:
+            detail = getattr(exc, "detail", None) or str(exc)
+            raise RuntimeError(detail) from exc
 
     def post(self, path: str, payload: dict | None = None, timeout: int | float = 10) -> dict:
         try:
@@ -987,13 +1014,22 @@ class Seccion2Frame(BaseSection):
             return
         self._is_updating = True
         empresa = self._empresas_by_nit.get(nit)
-        if not empresa:
-            data = self.api.get_cached("/wizard/seccion-2/empresa", params={"nit": nit})
+        requires_detail = not empresa or not any(
+            key in empresa for key in ("caja_compensacion", "asesor", "zona_empresa", "sede_empresa")
+        )
+        if requires_detail:
+            data = self.api.get("/wizard/seccion-2/empresa", params={"nit": nit})
             if not data["data"]:
-                self.nombre_var.set("")
                 self.caja_var.set("")
                 self.asesor_var.set("")
                 self.sede_var.set("")
+                if empresa:
+                    self.nombre_var.set(empresa.get("nombre_empresa", ""))
+                    nit_value = str(empresa.get("nit_empresa", "")).strip()
+                    if nit_value:
+                        self.nit_var.set(nit_value)
+                else:
+                    self.nombre_var.set("")
                 self._is_updating = False
                 return
             empresa = data["data"][0]
@@ -1012,7 +1048,7 @@ class Seccion2Frame(BaseSection):
         self.nombre_var.set(empresa.get("nombre_empresa", ""))
         self.caja_var.set(empresa.get("caja_compensacion", ""))
         self.asesor_var.set(empresa.get("asesor", ""))
-        self.sede_var.set(empresa.get("zona_empresa", ""))
+        self.sede_var.set(empresa.get("sede_empresa", "") or empresa.get("zona_empresa", ""))
         nit_value = str(empresa.get("nit_empresa", "")).strip()
         if nit_value:
             self.nit_var.set(nit_value)
@@ -1034,18 +1070,22 @@ class Seccion2Frame(BaseSection):
                     break
         if not empresa:
             self.nombre_var.set("")
+            self.nit_var.set("")
             self.caja_var.set("")
             self.asesor_var.set("")
             self.sede_var.set("")
             self._is_updating = False
             return
-        self.nombre_var.set(empresa.get("nombre_empresa", ""))
-        self.caja_var.set(empresa.get("caja_compensacion", ""))
-        self.asesor_var.set(empresa.get("asesor", ""))
-        self.sede_var.set(empresa.get("zona_empresa", ""))
         nit_value = str(empresa.get("nit_empresa", "")).strip()
         if nit_value:
             self.nit_var.set(nit_value)
+            self._is_updating = False
+            self._fetch_empresa(nit_value)
+            return
+        self.nombre_var.set(empresa.get("nombre_empresa", ""))
+        self.caja_var.set("")
+        self.asesor_var.set("")
+        self.sede_var.set("")
         self._is_updating = False
 
     def get_payload(self) -> dict:
@@ -1863,8 +1903,11 @@ class Seccion4Frame(BaseSection):
         if not cedula:
             return
         user = self.usuarios_by_cedula.get(cedula)
-        if not user:
-            data = self.api.get_cached("/wizard/seccion-4/usuario", params={"cedula": cedula})
+        requires_detail = not user or not any(
+            key in user for key in ("discapacidad_usuario", "genero_usuario", "tipo_contrato", "fecha_firma_contrato")
+        )
+        if requires_detail:
+            data = self.api.get("/wizard/seccion-4/usuario", params={"cedula": cedula})
             if not data["data"]:
                 return
             user = data["data"][0]
@@ -3552,6 +3595,7 @@ class WizardApp:
         self._startup_status_var.set("Cargando datos iniciales...")
 
         def _worker() -> bool:
+            self.api.sync_local_catalog_indexes(status_callback=None, allow_stale=True)
             self.api.prefetch(INITIAL_PREFETCH_ITEMS)
             return True
 
@@ -3789,8 +3833,13 @@ class WizardApp:
             loading = LoadingDialog(self.root, "Cargando datos del formulario...", determinate=True)
             loading.set_status("Sincronizando cache local...", 10)
 
+            def _status(message: str, progress: int | None = None) -> None:
+                self.root.after(0, lambda: loading.set_status(message, progress))
+
             def _worker() -> dict:
-                return self.api.build_cache(INITIAL_PREFETCH_ITEMS)
+                if not self._initial_data_ready:
+                    self.api.sync_local_catalog_indexes(status_callback=_status, allow_stale=True)
+                return self.api.build_cache(INITIAL_PREFETCH_ITEMS, status_callback=_status)
 
             def _on_success(new_cache: dict) -> None:
                 loading.set_status("Aplicando datos...", 80)
@@ -5003,8 +5052,9 @@ class WizardApp:
             self.root.after(0, lambda: dialog.set_status(message, progress))
 
         def _worker() -> dict:
-            _status("Conectando a Supabase...", 0)
+            _status("Sincronizando catalogos locales...", 0)
             self.api.reset_runtime_caches()
+            self.api.sync_local_catalog_indexes(force_full=True, status_callback=_status, allow_stale=False)
             return self.api.build_cache(INITIAL_PREFETCH_ITEMS, status_callback=_status)
 
         def _on_success(new_cache: dict) -> None:

@@ -9,12 +9,12 @@ from app.automation.orchestrator import get_automation_attachment_analysis
 
 class AutomationAttachmentAnalysisTests(unittest.TestCase):
     @patch("app.automation.orchestrator.build_import_result_from_parsed")
-    @patch("app.automation.orchestrator.extract_structured_acta_pdf")
+    @patch("app.automation.orchestrator.parse_acta_pdf")
     @patch("app.automation.orchestrator._gmail_gateway")
     def test_returns_parsed_attachment_analysis(
         self,
         mock_gateway_factory,
-        mock_extract_structured,
+        mock_parse_acta_pdf,
         mock_build_import_result,
     ) -> None:
         message = GmailMessageRef(
@@ -39,7 +39,7 @@ class AutomationAttachmentAnalysisTests(unittest.TestCase):
         gateway.list_pdf_attachments.return_value = [attachment]
         gateway.download_attachment_bytes.return_value = b"%PDF-1.4"
         mock_gateway_factory.return_value = gateway
-        mock_extract_structured.return_value = {
+        mock_parse_acta_pdf.return_value = {
             "nombre_empresa": "Empresa Demo",
             "nit_empresa": "900123456",
             "fecha_servicio": "2026-03-13",

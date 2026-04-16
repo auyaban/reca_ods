@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.2.15
+- Nuevo indice local SQLite para catalogos de empresas, profesionales y usuarios, con sincronizacion incremental/full y recuperacion automatica si el store local se corrompe.
+- El wizard y la automatizacion ahora consumen esos catalogos locales para reducir lecturas repetidas a Supabase y pedir detalle remoto solo cuando hace falta.
+- El importador PDF de actas mejora la extraccion de oferentes en OCR desordenado y puede leer metadata estructurada `/RECA_Data` cuando el PDF fue generado por RECA.
+- El build/release valida rango de Python soportado, exige credencial Google empaquetable cuando Drive/Sheets esta activo y endurece el smoke test del runtime instalado.
+
 ## 2.2.14
 - Se corrige el guardado final de nuevas entradas ODS cuando falla la lectura del schema remoto de Supabase: la app ahora usa un schema local de respaldo para mapear `ano_servicio` a `año_servicio` y tipar correctamente `orden_clausulada`.
 - Cobertura de pruebas ampliada para validar el fallback local del schema y la coerción del payload antes del insert final en `ods`.

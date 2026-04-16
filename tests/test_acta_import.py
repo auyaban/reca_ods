@@ -701,6 +701,165 @@ class ActaImportTests(unittest.TestCase):
         self.assertNotIn("No se detectaron oferentes en el PDF.", result["warnings"])
 
     @patch("app.services.excel_acta_import._extract_pdf_text_pages")
+    def test_parse_acta_pdf_extracts_groupal_oferentes_when_ocr_reorders_fields(self, mock_extract_pages) -> None:
+        mock_extract_pages.return_value = [
+            "\n".join(
+                [
+                    "PROCESO DE SELECCION INCLUYENTE GRUPAL - 5 A 7 OFERENTES",
+                    "Fecha de la Visita: 18/03/2026 Modalidad:Presencial",
+                    "Nombre de la Empresa:COLVANES SAS Ciudad/Municipio:Bogota",
+                    "Direccion de la Empresa:Cra 88 #17b-10 Numero de NIT: 800185306-4",
+                    "3. DATOS DEL OFERENTE",
+                    "1 Diana Lucia Portilla Canas 1000337651 Discapacidad intelectual 3204265218 Pendiente",
+                    "2 Juan Pablo Grijalba Pena 1019984959 Cra. 88 #17b-10",
+                    "3 Diego Fernando Ospina Quintero 1000859608 CARGO CONTACTO DE EMERGENCIA",
+                    "4 Manuel Ricardo Bogota Gordo 1032385703 No aprobadoDiscapacidad multiple 3208711614",
+                    "5 Cristian Andres Beltran Pulido 1032473838 Discapacidad Auditiva 3214866801 No aplica",
+                    "6 Yulder Alexander Acosta Sanchez 1007646046 Discapacidad Auditiva 3204210943 No aplica",
+                    "4. CARACTERIZACION DEL OFERENTE",
+                ]
+            )
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            temp_path = Path(tmp.name)
+
+        try:
+            result = parse_acta_pdf(str(temp_path))
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+        self.assertEqual(result["nit_empresa"], "800185306-4")
+        self.assertEqual(result["nombre_empresa"], "COLVANES SAS")
+        self.assertEqual(result["fecha_servicio"], "2026-03-18")
+        self.assertEqual(
+            result["participantes"],
+            [
+                {
+                    "nombre_usuario": "Diana Lucia Portilla Canas",
+                    "cedula_usuario": "1000337651",
+                    "discapacidad_usuario": "intelectual",
+                    "genero_usuario": "",
+                },
+                {
+                    "nombre_usuario": "Juan Pablo Grijalba Pena",
+                    "cedula_usuario": "1019984959",
+                    "discapacidad_usuario": "",
+                    "genero_usuario": "",
+                },
+                {
+                    "nombre_usuario": "Diego Fernando Ospina Quintero",
+                    "cedula_usuario": "1000859608",
+                    "discapacidad_usuario": "",
+                    "genero_usuario": "",
+                },
+                {
+                    "nombre_usuario": "Manuel Ricardo Bogota Gordo",
+                    "cedula_usuario": "1032385703",
+                    "discapacidad_usuario": "multiple",
+                    "genero_usuario": "",
+                },
+                {
+                    "nombre_usuario": "Cristian Andres Beltran Pulido",
+                    "cedula_usuario": "1032473838",
+                    "discapacidad_usuario": "Auditiva",
+                    "genero_usuario": "",
+                },
+                {
+                    "nombre_usuario": "Yulder Alexander Acosta Sanchez",
+                    "cedula_usuario": "1007646046",
+                    "discapacidad_usuario": "Auditiva",
+                    "genero_usuario": "",
+                },
+            ],
+        )
+
+    @patch("app.services.excel_acta_import._extract_pdf_text_pages")
+    def test_parse_acta_pdf_extracts_groupal_oferentes_without_spacing_before_cedula(self, mock_extract_pages) -> None:
+        mock_extract_pages.return_value = [
+            "\n".join(
+                [
+                    "PROCESO DE SELECCION INCLUYENTE GRUPAL - 2 A 4 OFERENTES",
+                    "Fecha de la Visita: 13/03/2026 Modalidad:Virtual",
+                    "Nombre de la Empresa:UNISYS DE COLOMBIA S A Ciudad/Municipio:Bogota",
+                    "Direccion de la Empresa:Cl. 93 #11-26 Numero de NIT: 860002433-5",
+                    "3. DATOS DEL OFERENTE",
+                    "1 Darley Giovanni Patino Carrero80237154No refiereDiscapacidad fisica3172427186Pendiente",
+                    "2 Fredy Nunez Alape111677973118,9 Discapacidad fisica3125360074Pendiente",
+                    "4. CARACTERIZACION DEL OFERENTE",
+                ]
+            )
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            temp_path = Path(tmp.name)
+
+        try:
+            result = parse_acta_pdf(str(temp_path))
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+        self.assertEqual(result["nit_empresa"], "860002433-5")
+        self.assertEqual(result["nombre_empresa"], "UNISYS DE COLOMBIA S A")
+        self.assertEqual(result["fecha_servicio"], "2026-03-13")
+        self.assertEqual(
+            result["participantes"],
+            [
+                {
+                    "nombre_usuario": "Darley Giovanni Patino Carrero",
+                    "cedula_usuario": "80237154",
+                    "discapacidad_usuario": "fisica",
+                    "genero_usuario": "",
+                },
+                {
+                    "nombre_usuario": "Fredy Nunez Alape",
+                    "cedula_usuario": "1116779731",
+                    "discapacidad_usuario": "fisica",
+                    "genero_usuario": "",
+                },
+            ],
+        )
+
+    @patch("app.services.excel_acta_import._extract_pdf_text_pages")
+    def test_parse_acta_pdf_extracts_joined_percentage_without_percent_symbol(self, mock_extract_pages) -> None:
+        mock_extract_pages.return_value = [
+            "\n".join(
+                [
+                    "PROCESO DE SELECCION INCLUYENTE GRUPAL - 2 A 4 OFERENTES",
+                    "Fecha de la Visita: 06/03/2026 Modalidad:Presencial",
+                    "Nombre de la Empresa:COMPANIA GENERAL DE ACEROS S.A Ciudad/Municipio:Bogota",
+                    "Direccion de la Empresa:Av. 68 #37B-51 Numero de NIT: 860069182",
+                    "3. DATOS DEL OFERENTE",
+                    "1 Edwin Posada Yara102234827325 Discapacidad auditiva3204260000Aprobado",
+                    "4. CARACTERIZACION DEL OFERENTE",
+                ]
+            )
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            temp_path = Path(tmp.name)
+
+        try:
+            result = parse_acta_pdf(str(temp_path))
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+        self.assertEqual(
+            result["participantes"],
+            [
+                {
+                    "nombre_usuario": "Edwin Posada Yara",
+                    "cedula_usuario": "1022348273",
+                    "discapacidad_usuario": "auditiva",
+                    "genero_usuario": "",
+                }
+            ],
+        )
+
+    @patch("app.services.excel_acta_import._extract_pdf_text_pages")
     def test_parse_acta_pdf_extracts_follow_up_participant_with_percentage(self, mock_extract_pages) -> None:
         mock_extract_pages.return_value = [
             "\n".join(

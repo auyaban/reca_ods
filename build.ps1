@@ -9,6 +9,17 @@ if (!(Test-Path $venvPath)) {
 }
 
 $python = Join-Path $venvPath "Scripts\\python.exe"
+$pythonVersionRaw = & $python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')"
+$pythonVersionParts = $pythonVersionRaw.Trim().Split(".")
+$pythonMajor = [int]$pythonVersionParts[0]
+$pythonMinor = [int]$pythonVersionParts[1]
+
+if ($pythonMajor -ne 3 -or $pythonMinor -lt 10 -or $pythonMinor -gt 14) {
+    throw "El build/release soporta Python 3.10 a 3.14. La venv actual usa Python $pythonVersionRaw. Recreate .venv con una version soportada antes de empaquetar."
+}
+if ($pythonMinor -ne 13) {
+    Write-Warning "La venv actual usa Python $pythonVersionRaw. Recomendado para build/release: Python 3.13.x."
+}
 
 & $python -m pip install --upgrade pip
 & $python -m pip install -r requirements.txt
@@ -35,9 +46,12 @@ $backendUrl = Get-EnvValue "BACKEND_URL"
 $googleDriveSharedFolderId = Get-EnvValue "GOOGLE_DRIVE_SHARED_FOLDER_ID"
 $googleDriveTemplateSpreadsheetName = Get-EnvValue "GOOGLE_DRIVE_TEMPLATE_SPREADSHEET_NAME"
 $googleServiceAccountFile = Get-EnvValue "GOOGLE_SERVICE_ACCOUNT_FILE"
+$googleServiceAccountBuildSourceFile = Get-EnvValue "GOOGLE_SERVICE_ACCOUNT_BUILD_SOURCE_FILE"
 $supabaseEdgeActaExtractionSecret = Get-EnvValue "SUPABASE_EDGE_ACTA_EXTRACTION_SECRET"
-$googleInstalledServiceAccountPath = '%APPDATA%\Sistema de Gestión ODS RECA\secrets\google-service-account.json'
+$googleInstalledServiceAccountPath = '%APPDATA%\Sistema de Gestion ODS RECA\secrets\google-service-account.json'
 $hasGoogleServiceAccount = 0
+$resolvedGoogleServiceAccountFile = ""
+$googleFeaturesConfigured = [bool]($googleDriveSharedFolderId -or $googleDriveTemplateSpreadsheetName)
 
 function Escape-InnoValue([string]$value) {
     if ($null -eq $value) {
@@ -46,13 +60,22 @@ function Escape-InnoValue([string]$value) {
     return $value.Replace('"', '""')
 }
 
-if ($googleServiceAccountFile) {
-    $resolvedGoogleServiceAccountFile = [Environment]::ExpandEnvironmentVariables($googleServiceAccountFile)
+if ($googleServiceAccountBuildSourceFile) {
+    $resolvedGoogleServiceAccountFile = [Environment]::ExpandEnvironmentVariables($googleServiceAccountBuildSourceFile)
     if (Test-Path $resolvedGoogleServiceAccountFile) {
         $hasGoogleServiceAccount = 1
     } else {
-        Write-Warning "No se encontro GOOGLE_SERVICE_ACCOUNT_FILE en '$resolvedGoogleServiceAccountFile'. El instalador se generara sin credencial Google empaquetada."
+        throw "GOOGLE_SERVICE_ACCOUNT_BUILD_SOURCE_FILE apunta a una ruta inexistente: '$resolvedGoogleServiceAccountFile'."
     }
+} elseif ($googleServiceAccountFile) {
+    $resolvedGoogleServiceAccountFile = [Environment]::ExpandEnvironmentVariables($googleServiceAccountFile)
+    if (Test-Path $resolvedGoogleServiceAccountFile) {
+        $hasGoogleServiceAccount = 1
+    }
+}
+
+if ($googleFeaturesConfigured -and !$hasGoogleServiceAccount) {
+    throw "Google Drive/Sheets esta configurado, pero no existe una credencial empaquetable. Define GOOGLE_SERVICE_ACCOUNT_BUILD_SOURCE_FILE con el JSON real o asegura que GOOGLE_SERVICE_ACCOUNT_FILE apunte a un archivo existente."
 }
 
 $installerConfig = @"

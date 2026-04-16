@@ -3,6 +3,7 @@ from typing import Any
 
 import requests
 
+from app.catalog_index import sync_local_catalog_indexes
 from app.models.payloads import TerminarServicioRequest, dump_ods_for_rpc
 from app.config import get_settings
 from app.google_drive_sync import sync_new_ods_record
@@ -247,6 +248,10 @@ def terminar_servicio(payload: TerminarServicioRequest, background_tasks) -> dic
                     lambda retry_client: retry_client.table("usuarios_reca").insert(to_insert).execute(),
                     context="terminar_servicio.insert_new_users",
                 )
+                try:
+                    sync_local_catalog_indexes(catalogs=("usuarios",))
+                except Exception as exc:
+                    _logger.warning("No se pudo actualizar indice local de usuarios tras insercion: %s", exc)
 
         ods_data = dump_ods_for_rpc(payload.ods)
         fecha_ingreso = ods_data.get("fecha_ingreso")

@@ -2,19 +2,21 @@ from __future__ import annotations
 
 import difflib
 import logging
-from functools import lru_cache
 from typing import Any
 
 from app.automation.document_classifier import classify_document
+from app.catalog_index import (
+    get_company_detail_by_nit,
+    get_indexed_empresas,
+    get_indexed_profesionales,
+    get_user_details_by_cedulas,
+)
 from app.automation.rules_engine import suggest_service_from_analysis
 from app.services.excel_acta_import import parse_acta_source
 from app.services.sections import seccion1
 from app.services.sections.seccion4 import DISCAPACIDADES, GENEROS
-from app.supabase_client import execute_with_reauth
-from app.utils.cache import ttl_bucket
 from app.utils.text import normalize_text
 
-_CACHE_TTL_SECONDS = 300
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -81,109 +83,36 @@ def _professional_name_matches(candidate: str, professional_name: str) -> float:
     return max(overlap, ratio)
 
 
-@lru_cache
-def _professionals_cached(_ttl_bucket: int) -> tuple[dict[str, Any], ...]:
-    response = execute_with_reauth(
-        lambda retry_client: (
-            retry_client.table("profesionales")
-            .select("nombre_profesional,correo_profesional,programa")
-            .execute()
-        ),
-        context="acta_import_pipeline.professionals",
-    )
-    return tuple(dict(row) for row in list(response.data or []))
-
-
-@lru_cache
-def _interpreters_cached(_ttl_bucket: int) -> tuple[dict[str, Any], ...]:
-    response = execute_with_reauth(
-        lambda retry_client: retry_client.table("interpretes").select("nombre").execute(),
-        context="acta_import_pipeline.interpretes",
-    )
-    return tuple(dict(row) for row in list(response.data or []))
-
-
-@lru_cache
-def _users_cached(_ttl_bucket: int) -> tuple[dict[str, Any], ...]:
-    response = execute_with_reauth(
-        lambda retry_client: (
-            retry_client.table("usuarios_reca")
-            .select(
-                "nombre_usuario,cedula_usuario,discapacidad_usuario,genero_usuario,"
-                "tipo_contrato,fecha_firma_contrato,cargo_oferente"
-            )
-            .order("cedula_usuario")
-            .execute()
-        ),
-        context="acta_import_pipeline.usuarios_reca",
-    )
-    return tuple(dict(row) for row in list(response.data or []))
-
-
-@lru_cache
-def _companies_cached(_ttl_bucket: int) -> tuple[dict[str, Any], ...]:
-    response = execute_with_reauth(
-        lambda retry_client: (
-            retry_client.table("empresas")
-            .select("nit_empresa,nombre_empresa,caja_compensacion,asesor,zona_empresa,sede_empresa,ciudad_empresa")
-            .execute()
-        ),
-        context="acta_import_pipeline.empresas",
-    )
-    return tuple(dict(row) for row in list(response.data or []))
-
-
-@lru_cache
-def _company_by_nit_cached(nit: str, _ttl_bucket: int) -> dict[str, Any] | None:
-    nit_clean = str(nit or "").strip()
-    if not nit_clean:
-        return None
-    response = execute_with_reauth(
-        lambda retry_client: (
-            retry_client.table("empresas")
-            .select("nit_empresa,nombre_empresa,caja_compensacion,asesor,zona_empresa,sede_empresa,ciudad_empresa")
-            .eq("nit_empresa", nit_clean)
-            .limit(1)
-            .execute()
-        ),
-        context="acta_import_pipeline.company_by_nit",
-    )
-    rows = list(response.data or [])
-    if not rows:
-        return None
-    return dict(rows[0])
-
-
 def clear_import_pipeline_caches() -> None:
-    _professionals_cached.cache_clear()
-    _interpreters_cached.cache_clear()
-    _users_cached.cache_clear()
-    _companies_cached.cache_clear()
-    _company_by_nit_cached.cache_clear()
+    return None
 
 
 def _professionals() -> tuple[dict[str, Any], ...]:
-    return _professionals_cached(ttl_bucket(_CACHE_TTL_SECONDS))
+    return tuple(
+        dict(row)
+        for row in get_indexed_profesionales()
+        if not bool(row.get("es_interprete"))
+    )
 
 
 def _interpreters() -> tuple[dict[str, Any], ...]:
-    return _interpreters_cached(ttl_bucket(_CACHE_TTL_SECONDS))
+    return tuple(
+        {"nombre": str(row.get("nombre_profesional") or "").strip()}
+        for row in get_indexed_profesionales()
+        if bool(row.get("es_interprete"))
+    )
 
 
-def _users_by_cedula() -> dict[str, dict[str, Any]]:
-    return {
-        str(item.get("cedula_usuario") or "").strip(): dict(item)
-        for item in _users_cached(ttl_bucket(_CACHE_TTL_SECONDS))
-        if str(item.get("cedula_usuario") or "").strip()
-    }
+def _users_by_cedula(cedulas: list[str]) -> dict[str, dict[str, Any]]:
+    return get_user_details_by_cedulas(cedulas)
 
 
 def _companies() -> tuple[dict[str, Any], ...]:
-    return _companies_cached(ttl_bucket(_CACHE_TTL_SECONDS))
+    return tuple(dict(row) for row in get_indexed_empresas())
 
 
 def _company_by_nit(nit: str) -> dict[str, Any] | None:
-    return _company_by_nit_cached(str(nit or "").strip(), ttl_bucket(_CACHE_TTL_SECONDS))
+    return get_company_detail_by_nit(str(nit or "").strip())
 
 
 def _professional_email_map() -> dict[str, str]:
@@ -292,7 +221,9 @@ def _build_minimum_user(persona: dict) -> dict | None:
 
 def _prepare_participants(parsed: dict) -> tuple[list[dict], list[str], list[str]]:
     participantes_raw = list(parsed.get("participantes") or [])
-    usuarios_by_cedula = _users_by_cedula()
+    usuarios_by_cedula = _users_by_cedula(
+        [str(item.get("cedula_usuario") or "").strip() for item in participantes_raw]
+    )
     participantes: list[dict] = []
     descartados: list[str] = []
     warnings: list[str] = []
@@ -369,8 +300,10 @@ def _resolve_company(parsed: dict) -> tuple[dict[str, Any] | None, list[str]]:
                 best_score = score
                 best_match = dict(row)
         if best_match:
+            nit_match = str(best_match.get("nit_empresa") or "").strip()
+            company_detail = _company_by_nit(nit_match) if nit_match else None
             warnings.append("NIT completado desde Supabase por coincidencia de nombre de empresa.")
-            return best_match, warnings
+            return dict(company_detail or best_match), warnings
 
     return None, ["No se pudo conciliar empresa/NIT con Supabase."]
 
