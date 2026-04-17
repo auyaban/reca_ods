@@ -4536,11 +4536,18 @@ class WizardApp:
 
         suggestion = dict(import_result.get("service_suggestion") or {})
         warnings = list(import_result.get("warnings") or [])
+        import_resolution_message = self._describe_import_resolution(import_result)
         summary = [
             f"Fuente: {source_label}",
-            f"NIT detectado: {nit}",
-            f"Cedulas cargadas: {len(participantes)}",
         ]
+        if import_resolution_message:
+            summary.append(import_resolution_message)
+        summary.extend(
+            [
+                f"NIT detectado: {nit}",
+                f"Cedulas cargadas: {len(participantes)}",
+            ]
+        )
         codigo = str(suggestion.get("codigo_servicio") or "").strip()
         if codigo:
             summary.append(f"Código sugerido: {codigo}")
@@ -4557,6 +4564,52 @@ class WizardApp:
             summary.append("Avisos:")
             summary.extend(f"- {item}" for item in warnings)
         messagebox.showinfo("Importar acta", "\n".join(summary))
+
+    def _describe_import_resolution(self, import_result: dict) -> str:
+        resolution = dict(import_result.get("import_resolution") or {})
+        strategy = str(resolution.get("strategy") or "").strip()
+        reason = str(resolution.get("reason") or "").strip()
+        acta_ref = str(resolution.get("acta_ref") or "").strip().upper()
+
+        if strategy == "finalized_record":
+            if reason == "acta_ref_lookup" and acta_ref:
+                return (
+                    f"La información se cargó usando el ACTA ID {acta_ref}. "
+                    "No fue necesario interpretar el archivo completo."
+                )
+            if reason == "payload_normalized" and acta_ref:
+                return (
+                    f"La información se cargó desde un registro finalizado de RECA "
+                    f"(ACTA ID {acta_ref})."
+                )
+            if reason == "payload_normalized":
+                return "La información se cargó desde un registro finalizado de RECA."
+
+        if strategy == "parser":
+            if reason == "no_acta_ref":
+                return (
+                    "No se encontró un ACTA ID legible en el archivo, "
+                    "así que la información se obtuvo interpretando el acta."
+                )
+            if reason == "acta_ref_not_found" and acta_ref:
+                return (
+                    f"Se encontró el ACTA ID {acta_ref}, pero no existe un registro "
+                    "finalizado asociado; la información se obtuvo interpretando el acta."
+                )
+            if reason == "acta_ref_lookup_failed" and acta_ref:
+                return (
+                    f"Se encontró el ACTA ID {acta_ref}, pero no se pudo consultar "
+                    "su registro asociado; la información se obtuvo interpretando el acta."
+                )
+            if reason == "acta_ref_invalid_payload" and acta_ref:
+                return (
+                    f"Se encontró el ACTA ID {acta_ref}, pero el registro asociado "
+                    "no se pudo reutilizar; la información se obtuvo interpretando el acta."
+                )
+            if reason == "direct_parser":
+                return "La información se obtuvo interpretando el acta directamente."
+
+        return ""
 
     def _wait_dialog_with_timeout(
         self,

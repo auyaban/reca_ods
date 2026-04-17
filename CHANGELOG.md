@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.19
+- El mensaje final al importar un acta ahora explica en lenguaje natural si la información se cargó usando `ACTA ID`, cuál fue ese ID o si el archivo tuvo que interpretarse con el parser.
+- El pipeline de importación ahora expone una resolución estructurada del origen (`registro finalizado`, `ACTA ID`, `parser`) para que la UI pueda mostrar trazabilidad clara al usuario.
+- Cobertura de pruebas ampliada para validar la nueva traza de origen y el mensaje final mostrado en la app.
+
 ## 2.2.18
 - El importador PDF ahora detecta `ACTA ID` en el footer de actas exportadas desde Google Sheets y lo expone como `acta_ref`.
 - `Actas Terminadas` puede resolver una acta finalizada por `acta_ref` en `formatos_finalizados_il` para reutilizar `payload_normalized` antes de caer al parser del archivo.

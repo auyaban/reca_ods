@@ -117,6 +117,38 @@ class ActaImportPreparationTests(unittest.TestCase):
 
         self.assertEqual(resolved, "Gabriela Rubiano Isaza")
 
+    def test_describe_import_resolution_mentions_acta_id_when_metadata_is_reused(self) -> None:
+        app = self._build_app()
+
+        message = app._describe_import_resolution(
+            {
+                "import_resolution": {
+                    "strategy": "finalized_record",
+                    "reason": "acta_ref_lookup",
+                    "acta_ref": "A7K29QF2",
+                }
+            }
+        )
+
+        self.assertIn("ACTA ID A7K29QF2", message)
+        self.assertIn("No fue necesario interpretar el archivo completo", message)
+
+    def test_describe_import_resolution_mentions_parser_when_no_acta_id_is_found(self) -> None:
+        app = self._build_app()
+
+        message = app._describe_import_resolution(
+            {
+                "import_resolution": {
+                    "strategy": "parser",
+                    "reason": "no_acta_ref",
+                    "acta_ref": "",
+                }
+            }
+        )
+
+        self.assertIn("No se encontró un ACTA ID legible", message)
+        self.assertIn("interpretando el acta", message)
+
 
 if __name__ == "__main__":
     unittest.main()

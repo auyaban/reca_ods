@@ -310,6 +310,7 @@ class ActaImportPipelineTests(unittest.TestCase):
         result = build_import_result_from_finalized_record(
             {
                 "registro_id": "row-1",
+                "acta_ref": "A7K29QF2",
                 "nombre_formato": "Condiciones de Vacante",
                 "path_formato": r"C:\tmp\vacante.xlsx",
                 "payload_schema_version": 1,
@@ -322,6 +323,14 @@ class ActaImportPipelineTests(unittest.TestCase):
         )
 
         self.assertEqual(result["source_label"], "payload")
+        self.assertEqual(
+            result["import_resolution"],
+            {
+                "strategy": "finalized_record",
+                "reason": "payload_normalized",
+                "acta_ref": "A7K29QF2",
+            },
+        )
         mock_from_payload.assert_called_once()
         mock_from_source.assert_not_called()
 
@@ -388,6 +397,14 @@ class ActaImportPipelineTests(unittest.TestCase):
         )
 
         self.assertEqual(result["source_label"], "payload")
+        self.assertEqual(
+            result["import_resolution"],
+            {
+                "strategy": "finalized_record",
+                "reason": "acta_ref_lookup",
+                "acta_ref": "A7K29QF2",
+            },
+        )
         mock_find_by_acta_ref.assert_called_once_with("A7K29QF2")
         mock_from_finalized.assert_called_once_with(
             mock_find_by_acta_ref.return_value,
@@ -417,6 +434,14 @@ class ActaImportPipelineTests(unittest.TestCase):
         )
 
         self.assertEqual(result["source_label"], "parsed")
+        self.assertEqual(
+            result["import_resolution"],
+            {
+                "strategy": "parser",
+                "reason": "acta_ref_not_found",
+                "acta_ref": "A7K29QF2",
+            },
+        )
         parsed_arg = mock_from_parsed.call_args.args[0]
         self.assertIn(
             'Se detecto ACTA ID "A7K29QF2" pero no existe en formatos_finalizados_il; se usara parser del archivo.',
@@ -451,6 +476,14 @@ class ActaImportPipelineTests(unittest.TestCase):
         )
 
         self.assertEqual(result["source_label"], "parsed")
+        self.assertEqual(
+            result["import_resolution"],
+            {
+                "strategy": "parser",
+                "reason": "acta_ref_invalid_payload",
+                "acta_ref": "A7K29QF2",
+            },
+        )
         parsed_arg = mock_from_parsed.call_args.args[0]
         self.assertIn(
             'Se detecto ACTA ID "A7K29QF2" pero el payload finalizado no es valido; se usara parser del archivo.',
@@ -479,6 +512,14 @@ class ActaImportPipelineTests(unittest.TestCase):
         )
 
         self.assertEqual(result["source_label"], "parsed")
+        self.assertEqual(
+            result["import_resolution"],
+            {
+                "strategy": "parser",
+                "reason": "acta_ref_lookup_failed",
+                "acta_ref": "A7K29QF2",
+            },
+        )
         parsed_arg = mock_from_parsed.call_args.args[0]
         self.assertIn(
             'Se detecto ACTA ID "A7K29QF2" pero la consulta a formatos_finalizados_il fallo; se usara parser del archivo.',

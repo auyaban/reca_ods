@@ -21,6 +21,22 @@ from app.utils.text import normalize_text
 _LOGGER = logging.getLogger(__name__)
 
 
+def _with_import_resolution(
+    result: dict,
+    *,
+    strategy: str,
+    reason: str,
+    acta_ref: str = "",
+) -> dict:
+    enriched = dict(result or {})
+    enriched["import_resolution"] = {
+        "strategy": str(strategy or "").strip(),
+        "reason": str(reason or "").strip(),
+        "acta_ref": str(acta_ref or "").strip().upper(),
+    }
+    return enriched
+
+
 def _normalize_import_name(value: str) -> str:
     clean = " ".join(str(value or "").split())
     if not clean:
@@ -465,11 +481,13 @@ def build_import_result_from_source(
     parsed = parse_acta_source(source)
     warnings = list(parsed.get("warnings") or [])
     acta_ref = str(parsed.get("acta_ref") or "").strip().upper()
+    parser_reason = "no_acta_ref"
 
     if allow_acta_ref_lookup and acta_ref:
         try:
             finalized_row = buscar_acta_finalizada_por_acta_ref(acta_ref)
         except Exception as exc:
+            parser_reason = "acta_ref_lookup_failed"
             warnings.append(
                 f'Se detecto ACTA ID "{acta_ref}" pero la consulta a formatos_finalizados_il fallo; se usara parser del archivo.'
             )
@@ -481,12 +499,18 @@ def build_import_result_from_source(
             finalized_row = None
         if finalized_row:
             try:
-                return build_import_result_from_finalized_record(
-                    finalized_row,
-                    create_missing_interpreter=create_missing_interpreter,
-                    allow_source_fallback=False,
+                return _with_import_resolution(
+                    build_import_result_from_finalized_record(
+                        finalized_row,
+                        create_missing_interpreter=create_missing_interpreter,
+                        allow_source_fallback=False,
+                    ),
+                    strategy="finalized_record",
+                    reason="acta_ref_lookup",
+                    acta_ref=acta_ref,
                 )
             except Exception as exc:
+                parser_reason = "acta_ref_invalid_payload"
                 warnings.append(
                     f'Se detecto ACTA ID "{acta_ref}" pero el payload finalizado no es valido; se usara parser del archivo.'
                 )
@@ -496,19 +520,28 @@ def build_import_result_from_source(
                     exc,
                 )
         else:
-            warnings.append(
-                f'Se detecto ACTA ID "{acta_ref}" pero no existe en formatos_finalizados_il; se usara parser del archivo.'
-            )
+            if parser_reason != "acta_ref_lookup_failed":
+                parser_reason = "acta_ref_not_found"
+                warnings.append(
+                    f'Se detecto ACTA ID "{acta_ref}" pero no existe en formatos_finalizados_il; se usara parser del archivo.'
+                )
+    elif not allow_acta_ref_lookup:
+        parser_reason = "direct_parser"
 
     if warnings:
         parsed["warnings"] = list(dict.fromkeys(warnings))
 
-    return build_import_result_from_parsed(
-        parsed,
-        source_label=source_label,
-        message=message,
-        attachment=attachment,
-        create_missing_interpreter=create_missing_interpreter,
+    return _with_import_resolution(
+        build_import_result_from_parsed(
+            parsed,
+            source_label=source_label,
+            message=message,
+            attachment=attachment,
+            create_missing_interpreter=create_missing_interpreter,
+        ),
+        strategy="parser",
+        reason=parser_reason,
+        acta_ref=acta_ref,
     )
 
 
@@ -525,11 +558,16 @@ def build_import_result_from_finalized_record(
 
     if isinstance(payload_normalized, dict) and payload_normalized:
         try:
-            return build_import_result_from_completion_payload(
-                payload_normalized,
-                source_label=source_label,
-                row_context=row_data,
-                create_missing_interpreter=create_missing_interpreter,
+            return _with_import_resolution(
+                build_import_result_from_completion_payload(
+                    payload_normalized,
+                    source_label=source_label,
+                    row_context=row_data,
+                    create_missing_interpreter=create_missing_interpreter,
+                ),
+                strategy="finalized_record",
+                reason="payload_normalized",
+                acta_ref=str(row_data.get("acta_ref") or "").strip().upper(),
             )
         except Exception as exc:
             payload_error = exc
