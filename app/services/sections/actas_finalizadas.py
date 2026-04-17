@@ -81,7 +81,7 @@ def listar_actas_finalizadas(limit: int = 500) -> dict:
         response = (
             client.table(_TABLE)
             .select(
-                "registro_id,session_id,created_at,finalizado_at_colombia,finalizado_at_iso,"
+                "registro_id,acta_ref,session_id,created_at,finalizado_at_colombia,finalizado_at_iso,"
                 "nombre_usuario,nombre_empresa,nombre_formato,path_formato,revisado,"
                 "source_item_key,payload_schema_version,payload_source,payload_raw,payload_normalized"
             )
@@ -125,3 +125,27 @@ def actualizar_revisado(payload: ActaRevisadoRequest) -> dict:
 
     pendientes = _count_pendientes()
     return {"data": updated.data or [], "pendientes": pendientes}
+
+
+def buscar_acta_finalizada_por_acta_ref(acta_ref: str) -> dict | None:
+    normalized_ref = str(acta_ref or "").strip().upper()
+    if not normalized_ref:
+        return None
+
+    client = get_supabase_client()
+    try:
+        response = (
+            client.table(_TABLE)
+            .select(
+                "registro_id,acta_ref,nombre_formato,path_formato,"
+                "payload_schema_version,payload_normalized"
+            )
+            .eq("acta_ref", normalized_ref)
+            .limit(1)
+            .execute()
+        )
+    except SUPABASE_ERRORS as exc:
+        raise ServiceError(f"Supabase error: {exc}", status_code=502) from exc
+
+    rows = list(response.data or [])
+    return rows[0] if rows else None

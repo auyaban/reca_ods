@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.2.18
+- El importador PDF ahora detecta `ACTA ID` en el footer de actas exportadas desde Google Sheets y lo expone como `acta_ref`.
+- `Actas Terminadas` puede resolver una acta finalizada por `acta_ref` en `formatos_finalizados_il` para reutilizar `payload_normalized` antes de caer al parser del archivo.
+- Cobertura de pruebas ampliada para extraccion de `ACTA ID` y fallback controlado cuando el lookup por `acta_ref` falla, no existe o trae payload invalido.
+
 ## 2.2.17
 - `tarifas` ahora se sincroniza a un indice local SQLite y la Seccion 3 carga desde ese cache, evitando que el arranque y `Crear nueva entrada` dependan de una consulta remota en vivo.
 - El cliente de Supabase usa un timeout HTTP explicito de 20 segundos para cortar antes cuando la red o el backend no responden.

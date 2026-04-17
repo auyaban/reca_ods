@@ -8,6 +8,7 @@ from app.services.acta_import_pipeline import (
     build_import_result_from_completion_payload,
     build_import_result_from_finalized_record,
     build_import_result_from_parsed,
+    build_import_result_from_source,
 )
 
 
@@ -346,6 +347,10 @@ class ActaImportPipelineTests(unittest.TestCase):
 
         self.assertEqual(result["source_label"], "fallback")
         mock_from_source.assert_called_once()
+        self.assertEqual(
+            mock_from_source.call_args.kwargs.get("allow_acta_ref_lookup"),
+            False,
+        )
 
     def test_build_import_result_from_finalized_record_raises_when_payload_fails_without_source(self) -> None:
         with self.assertRaises(RuntimeError):
@@ -357,6 +362,128 @@ class ActaImportPipelineTests(unittest.TestCase):
                     "payload_normalized": {"schema_version": 2},
                 }
             )
+
+    @patch("app.services.acta_import_pipeline.build_import_result_from_finalized_record")
+    @patch("app.services.acta_import_pipeline.buscar_acta_finalizada_por_acta_ref")
+    @patch("app.services.acta_import_pipeline.parse_acta_source")
+    def test_build_import_result_from_source_prefers_finalized_record_when_acta_ref_exists(
+        self,
+        mock_parse_source,
+        mock_find_by_acta_ref,
+        mock_from_finalized,
+    ) -> None:
+        mock_parse_source.return_value = {
+            "acta_ref": "A7K29QF2",
+            "warnings": [],
+        }
+        mock_find_by_acta_ref.return_value = {
+            "registro_id": "row-1",
+            "payload_normalized": {"schema_version": 1},
+        }
+        mock_from_finalized.return_value = {"source_label": "payload"}
+
+        result = build_import_result_from_source(
+            "C:/tmp/demo.pdf",
+            source_label="demo.pdf",
+        )
+
+        self.assertEqual(result["source_label"], "payload")
+        mock_find_by_acta_ref.assert_called_once_with("A7K29QF2")
+        mock_from_finalized.assert_called_once_with(
+            mock_find_by_acta_ref.return_value,
+            create_missing_interpreter=True,
+            allow_source_fallback=False,
+        )
+
+    @patch("app.services.acta_import_pipeline.build_import_result_from_parsed")
+    @patch("app.services.acta_import_pipeline.buscar_acta_finalizada_por_acta_ref")
+    @patch("app.services.acta_import_pipeline.parse_acta_source")
+    def test_build_import_result_from_source_warns_and_falls_back_when_acta_ref_is_missing(
+        self,
+        mock_parse_source,
+        mock_find_by_acta_ref,
+        mock_from_parsed,
+    ) -> None:
+        mock_parse_source.return_value = {
+            "acta_ref": "A7K29QF2",
+            "warnings": [],
+        }
+        mock_find_by_acta_ref.return_value = None
+        mock_from_parsed.return_value = {"source_label": "parsed"}
+
+        result = build_import_result_from_source(
+            "C:/tmp/demo.pdf",
+            source_label="demo.pdf",
+        )
+
+        self.assertEqual(result["source_label"], "parsed")
+        parsed_arg = mock_from_parsed.call_args.args[0]
+        self.assertIn(
+            'Se detecto ACTA ID "A7K29QF2" pero no existe en formatos_finalizados_il; se usara parser del archivo.',
+            parsed_arg["warnings"],
+        )
+
+    @patch("app.services.acta_import_pipeline.build_import_result_from_parsed")
+    @patch("app.services.acta_import_pipeline.build_import_result_from_finalized_record")
+    @patch("app.services.acta_import_pipeline.buscar_acta_finalizada_por_acta_ref")
+    @patch("app.services.acta_import_pipeline.parse_acta_source")
+    def test_build_import_result_from_source_warns_and_falls_back_when_acta_ref_payload_is_invalid(
+        self,
+        mock_parse_source,
+        mock_find_by_acta_ref,
+        mock_from_finalized,
+        mock_from_parsed,
+    ) -> None:
+        mock_parse_source.return_value = {
+            "acta_ref": "A7K29QF2",
+            "warnings": [],
+        }
+        mock_find_by_acta_ref.return_value = {
+            "registro_id": "row-1",
+            "payload_normalized": {"schema_version": 2},
+        }
+        mock_from_finalized.side_effect = RuntimeError("payload invalido")
+        mock_from_parsed.return_value = {"source_label": "parsed"}
+
+        result = build_import_result_from_source(
+            "C:/tmp/demo.pdf",
+            source_label="demo.pdf",
+        )
+
+        self.assertEqual(result["source_label"], "parsed")
+        parsed_arg = mock_from_parsed.call_args.args[0]
+        self.assertIn(
+            'Se detecto ACTA ID "A7K29QF2" pero el payload finalizado no es valido; se usara parser del archivo.',
+            parsed_arg["warnings"],
+        )
+
+    @patch("app.services.acta_import_pipeline.build_import_result_from_parsed")
+    @patch("app.services.acta_import_pipeline.buscar_acta_finalizada_por_acta_ref")
+    @patch("app.services.acta_import_pipeline.parse_acta_source")
+    def test_build_import_result_from_source_warns_and_falls_back_when_acta_ref_lookup_fails(
+        self,
+        mock_parse_source,
+        mock_find_by_acta_ref,
+        mock_from_parsed,
+    ) -> None:
+        mock_parse_source.return_value = {
+            "acta_ref": "A7K29QF2",
+            "warnings": [],
+        }
+        mock_find_by_acta_ref.side_effect = RuntimeError("supabase down")
+        mock_from_parsed.return_value = {"source_label": "parsed"}
+
+        result = build_import_result_from_source(
+            "C:/tmp/demo.pdf",
+            source_label="demo.pdf",
+        )
+
+        self.assertEqual(result["source_label"], "parsed")
+        parsed_arg = mock_from_parsed.call_args.args[0]
+        self.assertIn(
+            'Se detecto ACTA ID "A7K29QF2" pero la consulta a formatos_finalizados_il fallo; se usara parser del archivo.',
+            parsed_arg["warnings"],
+        )
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ _PDF_EXTENSIONS = {".pdf"}
 _PDF_BLOCK_RE = re.compile(
     r"(?ms)(?:^|\n)\s*(?P<idx>[1-9])\s+(?P<body>.*?)(?=(?:\n\s*[1-9]\s+[A-ZÃÃ‰ÃÃ“ÃšÃ‘])|\Z)"
 )
+_PDF_ACTA_ID_RE = re.compile(r"(?is)ACTA\s*ID:\s*([A-Z0-9]{8})")
 
 
 def _clean_text(value: Any) -> str:
@@ -477,6 +478,13 @@ def _extract_pdf_nits(text: str) -> list[str]:
         seen.add(clean)
         result.append(clean)
     return result
+
+
+def _extract_pdf_acta_ref(text: str) -> str:
+    match = _PDF_ACTA_ID_RE.search(str(text or ""))
+    if not match:
+        return ""
+    return _clean_text(match.group(1)).upper()
 
 
 def _parse_duration_hours(raw_value: str) -> float | None:
@@ -1141,6 +1149,7 @@ def _parse_interpreter_pdf(first_page: str, full_text: str, path: Path) -> dict:
 
     return {
         "file_path": str(path),
+        "acta_ref": _extract_pdf_acta_ref(full_text),
         "nit_empresa": nit,
         "nits_empresas": nits,
         "nombre_empresa": empresa,
@@ -1270,6 +1279,7 @@ def parse_acta_pdf(file_path: str) -> dict:
 
     full_text = "\n".join(page for page in pages if page)
     first_page = pages[0] if pages else ""
+    acta_ref = _extract_pdf_acta_ref(full_text)
     normalized_first_page = normalize_text(first_page)
     if "interprete" in normalize_text(first_page) and "sumatoria horas interpretes" in normalize_text(full_text):
         return _parse_interpreter_pdf(first_page, full_text, path)
@@ -1312,6 +1322,7 @@ def parse_acta_pdf(file_path: str) -> dict:
 
     return {
         "file_path": str(path),
+        "acta_ref": acta_ref,
         "nit_empresa": nit,
         "nits_empresas": nits,
         "nombre_empresa": empresa,

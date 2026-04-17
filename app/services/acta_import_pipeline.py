@@ -14,6 +14,7 @@ from app.catalog_index import (
 from app.automation.rules_engine import suggest_service_from_analysis
 from app.services.excel_acta_import import parse_acta_source
 from app.services.sections import seccion1
+from app.services.sections.actas_finalizadas import buscar_acta_finalizada_por_acta_ref
 from app.services.sections.seccion4 import DISCAPACIDADES, GENEROS
 from app.utils.text import normalize_text
 
@@ -459,8 +460,49 @@ def build_import_result_from_source(
     message: dict | None = None,
     attachment: dict | None = None,
     create_missing_interpreter: bool = True,
+    allow_acta_ref_lookup: bool = True,
 ) -> dict:
     parsed = parse_acta_source(source)
+    warnings = list(parsed.get("warnings") or [])
+    acta_ref = str(parsed.get("acta_ref") or "").strip().upper()
+
+    if allow_acta_ref_lookup and acta_ref:
+        try:
+            finalized_row = buscar_acta_finalizada_por_acta_ref(acta_ref)
+        except Exception as exc:
+            warnings.append(
+                f'Se detecto ACTA ID "{acta_ref}" pero la consulta a formatos_finalizados_il fallo; se usara parser del archivo.'
+            )
+            _LOGGER.warning(
+                "Fallo consultando ACTA ID %s en formatos_finalizados_il: %s",
+                acta_ref,
+                exc,
+            )
+            finalized_row = None
+        if finalized_row:
+            try:
+                return build_import_result_from_finalized_record(
+                    finalized_row,
+                    create_missing_interpreter=create_missing_interpreter,
+                    allow_source_fallback=False,
+                )
+            except Exception as exc:
+                warnings.append(
+                    f'Se detecto ACTA ID "{acta_ref}" pero el payload finalizado no es valido; se usara parser del archivo.'
+                )
+                _LOGGER.warning(
+                    "Fallo resolviendo ACTA ID %s contra formatos_finalizados_il: %s",
+                    acta_ref,
+                    exc,
+                )
+        else:
+            warnings.append(
+                f'Se detecto ACTA ID "{acta_ref}" pero no existe en formatos_finalizados_il; se usara parser del archivo.'
+            )
+
+    if warnings:
+        parsed["warnings"] = list(dict.fromkeys(warnings))
+
     return build_import_result_from_parsed(
         parsed,
         source_label=source_label,
@@ -474,6 +516,7 @@ def build_import_result_from_finalized_record(
     row: dict,
     *,
     create_missing_interpreter: bool = True,
+    allow_source_fallback: bool = True,
 ) -> dict:
     row_data = dict(row or {})
     source_label = str(row_data.get("nombre_formato") or "").strip() or "Acta revisada"
@@ -497,14 +540,19 @@ def build_import_result_from_finalized_record(
             )
 
     source = str(row_data.get("path_formato") or "").strip()
-    if source:
+    if source and allow_source_fallback:
         return build_import_result_from_source(
             source,
             source_label=source_label,
             create_missing_interpreter=create_missing_interpreter,
+            allow_acta_ref_lookup=False,
         )
 
     if payload_error is not None:
+        if source and not allow_source_fallback:
+            raise RuntimeError(
+                "El payload del acta finalizada no es valido y el fallback al source fue deshabilitado."
+            ) from payload_error
         raise RuntimeError(
             "El payload del acta finalizada no es válido y no hay path_formato para usar fallback."
         ) from payload_error

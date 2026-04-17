@@ -412,6 +412,31 @@ class ActaImportTests(unittest.TestCase):
         self.assertNotIn("No se detecto fecha de servicio en formato valido.", result["warnings"])
 
     @patch("app.services.excel_acta_import._extract_pdf_text_pages")
+    def test_parse_acta_pdf_extracts_acta_ref_from_footer(self, mock_extract_pages) -> None:
+        mock_extract_pages.return_value = [
+            "\n".join(
+                [
+                    "Fecha de la Visita: 03/03/2026 Modalidad:Virtual",
+                    "Nombre de la Empresa:SIS VIDA SAS Ciudad/Municipio:Bogota",
+                    "Direccion de la Empresa:Cra. 23 #166-36 Numero de NIT: 830132432-6",
+                    "www.recacolombia.org",
+                    "ACTA ID: A7K29QF2",
+                ]
+            )
+        ]
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+            temp_path = Path(tmp.name)
+
+        try:
+            result = parse_acta_pdf(str(temp_path))
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+        self.assertEqual(result["acta_ref"], "A7K29QF2")
+
+    @patch("app.services.excel_acta_import._extract_pdf_text_pages")
     def test_parse_acta_pdf_supports_groupal_vinculados_layout(self, mock_extract_pages) -> None:
         mock_extract_pages.return_value = [
             "\n".join(
